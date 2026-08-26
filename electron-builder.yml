@@ -1,0 +1,41 @@
+appId: com.creativeaieditor.app
+productName: Creative AI Editor
+publish:
+  provider: github
+  owner: Devchhun
+  repo: App
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - resources/**
+  - node_modules/ffmpeg-static/**
+  - node_modules/ffprobe-static/**
+extraResources:
+  - from: python-worker
+    to: python-worker
+    filter:
+      - '**/*'
+  - from: resources/python-runtime
+    to: python-runtime
+    filter:
+      - '**/*'
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+npmRebuild: false

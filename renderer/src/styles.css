@@ -1,0 +1,6488 @@
+:root {
+  color-scheme: dark;
+  /* Surfaces (darkest to lightest) -- measured against the reference image. */
+  --bg: #070b10;
+  --panel: #0c1219;
+  --surface: #101821;
+  --surface-elevated: #151f29;
+  --surface-hover: #1a2632;
+  --border: #1d2935;
+  --border-strong: #2a3948;
+
+  --text: #f4f7fb;
+  --text-dim: #a8b2bd;
+  --text-muted: #74808d;
+
+  /* Brand accent (primary actions, links, focus) */
+  --accent: #1687ff;
+  --accent-hover: #3d9aff;
+  --accent-soft: rgba(22, 135, 255, 0.16);
+
+  /* AI / generative actions get their own violet identity, matching the
+     reference's "Generate AI Graphics"-style buttons. */
+  --ai: #8b42ff;
+  --ai-hover: #a165ff;
+
+  /* Semantic status colors */
+  --success: #18d77b;
+  --warning: #f2ad18;
+  --danger: #ff5364;
+  --info: #1687ff;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Chromium's default focus ring reads as a thick double blue outline
+   against this dark UI, especially on already-blue buttons. Keep a focus
+   indicator for keyboard navigation, but drop it for mouse/touch clicks. */
+button,
+input,
+select,
+textarea,
+a {
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  /* Leelawadee UI ships on Windows 10/11 and has full Khmer glyph coverage;
+     a dedicated bundled Khmer font (per Brand Preset) lands in Phase F. */
+  font-family: 'Segoe UI', 'Leelawadee UI', system-ui, sans-serif;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.titlebar-wrap {
+  -webkit-app-region: drag;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  min-height: 56px;
+  box-sizing: border-box;
+}
+
+.titlebar-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), var(--ai));
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.titlebar-name {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.titlebar-project {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.titlebar-history {
+  display: flex;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-icon-button:not(:disabled):hover {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.titlebar-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.titlebar-save-status {
+  color: var(--text-dim);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.titlebar-save-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.titlebar-save-status-pending::before {
+  background: var(--text-dim);
+}
+
+.titlebar-aspect-select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 6px;
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.titlebar-badge-ready {
+  color: var(--success);
+  background: rgba(52, 199, 123, 0.12);
+  border-color: rgba(52, 199, 123, 0.35);
+}
+
+.titlebar-badge-pending {
+  color: var(--text-dim);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.titlebar-badge-gpu {
+  color: var(--warning);
+  background: rgba(245, 166, 35, 0.12);
+  border-color: rgba(245, 166, 35, 0.35);
+}
+
+.titlebar-badge-cpu {
+  color: var(--text-dim);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.window-controls {
+  display: flex;
+  gap: 2px;
+  margin-left: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.window-control-button:hover {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.window-control-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.titlebar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.header-generate-button,
+.header-export-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: 999px;
+  height: 28px;
+  padding: 0 14px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.header-generate-button {
+  background: linear-gradient(135deg, var(--ai), var(--ai-hover));
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(139, 66, 255, 0.4), 0 4px 16px rgba(139, 66, 255, 0.45);
+}
+
+.header-generate-button:hover {
+  box-shadow: 0 0 0 1px rgba(139, 66, 255, 0.55), 0 4px 20px rgba(139, 66, 255, 0.6);
+}
+
+.header-export-button {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(22, 135, 255, 0.35), 0 4px 14px rgba(22, 135, 255, 0.3);
+}
+
+.header-export-button:disabled {
+  background: var(--surface-elevated);
+  color: var(--text-dim);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.workspace {
+  flex: 1;
+  display: grid;
+  position: relative;
+  /* Actual column widths are set inline from useWorkspaceLayout's persisted
+     state (see App.tsx's buildWorkspaceGridColumns) -- this is only the
+     fallback for the instant before that first inline style is applied.
+     Four tracks: icon rail, left panel, Player, right panel. The draggable
+     splitters are separate absolutely-positioned overlays (see
+     computeSplitterOffsets in workspaceLayout.ts), not grid tracks -- with
+     `gap: 0` and no left/right panel margins, Templates, Preview, and
+     Properties sit flush against each other as one connected surface. */
+  grid-template-columns: 72px 460px minmax(600px, 1fr) 400px;
+  /* Without an explicit row track, a single implicit `auto` row sizes to the
+     tallest grid item's max-content height instead of filling the `flex: 1`
+     space this container was actually given -- that mismatch is what forced
+     .panel-preview's height to exceed its available space and trip its
+     (now-removed) `overflow: auto`, showing a scrollbar on the video preview
+     instead of the video shrinking to fit. */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  column-gap: 0;
+  min-height: 0;
+  padding: 8px 8px 8px 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.workspace > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A draggable overlay on top of the 1px divider between a side panel and
+   the Player (the divider itself is each panel's own border -- see
+   .panel-import/.panel-preview/.panel-brand). Absolutely positioned (left/
+   right set inline from computeSplitterOffsets), so it consumes no grid
+   track width of its own. The 5px hit area stays invisible until hover/
+   drag, when a thin 2px accent line appears centered on the divider -- no
+   chevrons/collapse buttons, Templates and Properties stay open at all
+   times, resizable only by dragging (or double-click to reset). */
+.workspace-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.workspace-splitter::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.workspace-splitter:hover::before,
+.workspace-splitter:active::before {
+  background: var(--accent);
+}
+
+.workspace-splitter-horizontal {
+  top: auto;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 5px;
+  cursor: row-resize;
+}
+
+.workspace-splitter-horizontal::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  bottom: auto;
+  width: auto;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  padding: 12px 16px;
+  overflow: hidden;
+}
+
+/* Templates/Media panel (left) -- the left segment of the connected
+   workspace surface (Templates | Preview | Properties, .workspace gap: 0).
+   Rounds only its outer-left corners; the right edge touches Preview
+   directly, with a 1px divider (overlaid by .workspace-splitter for
+   dragging) instead of a border-radius + gap gap. */
+.panel-import {
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  border-right: 1px solid var(--border);
+}
+
+/* Properties/AI Suggestions/Brand panel (right) -- the right segment of the
+   connected workspace surface. Rounds only its outer-right corners; the
+   left edge touches Preview directly, with a 1px divider owned here (not
+   duplicated on Preview's own right edge). */
+.panel-brand {
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  border-left: 1px solid var(--border);
+}
+
+.panel h2 {
+  flex-shrink: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin: 0 0 10px;
+}
+
+/* Shared fixed-head / scrollable-body split for panels whose content
+   shouldn't scroll as one document (heading/search/tabs stay put; only the
+   results/list/fields below scroll). Pair the scrollable one with
+   .editor-scroll for the thin custom scrollbar. */
+.panel-fixed-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-scroll-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.editor-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #34404c transparent;
+}
+
+.editor-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 7px;
+}
+
+.editor-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.editor-scroll::-webkit-scrollbar-thumb {
+  background: #34404c;
+  border-radius: 999px;
+}
+
+.editor-scroll::-webkit-scrollbar-thumb:hover {
+  background: #526273;
+}
+
+.editor-scroll::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.editor-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.placeholder {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.panel-timeline {
+  /* Height is now a user-resizable preference (see TimelineViewContext's
+     timelinePanelHeightPx, dragged via the top-edge Splitter in App.tsx) set
+     as an inline style on this element -- flex-shrink:0 so the flex column
+     above it (Titlebar+Workspace) never squeezes it, min-height:0 so the
+     inner .timeline-scroll-2d is actually allowed to be the scrolling
+     element instead of this panel growing past its own height. */
+  position: relative;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 8px 8px;
+}
+
+.panel-tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  margin: -2px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-tab {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 4px 8px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.panel-tab-active {
+  color: var(--text);
+  border-bottom-color: var(--ai);
+}
+
+/* Icon rail */
+
+.icon-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.icon-rail-add {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+
+.icon-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.icon-rail-group-bottom {
+  margin-top: auto;
+}
+
+.icon-rail-button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 2px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.icon-rail-button:not(:disabled):hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.icon-rail-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.icon-rail-button-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.icon-rail-button-active::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+
+.icon-rail-button-label {
+  line-height: 1;
+}
+
+/* Template Library */
+
+.template-library {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.template-library-filter-row {
+  display: flex;
+  gap: 6px;
+}
+
+.template-library-filter-row select {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.template-library-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-content: start;
+  gap: 8px;
+}
+
+.template-library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.template-library-card:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.template-library-card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.template-library-card-actions button {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.template-library-card-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.template-library-card-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.template-library-card-name {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 2px 2px;
+  text-align: center;
+  /* Wraps instead of clipping with an ellipsis -- the wider Templates panel
+     (see workspaceLayout.ts) fits most names on one line already; a name
+     that's still too long wraps to a second line rather than being cut off. */
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.template-thumb-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #05070c;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.template-thumb-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 960px;
+  height: 540px;
+  transform: scale(0.16);
+  transform-origin: top left;
+}
+
+.placeholder-footer {
+  margin: 4px 0 0;
+}
+
+/* Import panel */
+
+.import-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ffmpeg-warning {
+  background: #3a1d1d;
+  border: 1px solid #6b2b2b;
+  color: #ffb4b4;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+}
+
+/* No visible dropzone box -- the whole Media panel is a drop target, with
+   just a subtle border highlight while a drag is over it (matches the
+   reference, which shows no drag-and-drop affordance at all). */
+.import-panel-drag-over {
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -1.5px;
+}
+
+.media-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-search-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.media-search-input:focus-visible {
+  border-color: var(--accent);
+}
+
+.media-icon-button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+}
+
+.media-icon-button:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.media-icon-button-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.media-view-toggle {
+  flex-shrink: 0;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.media-view-toggle .media-icon-button {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+}
+
+.media-view-toggle .media-icon-button-active {
+  background: var(--accent-soft);
+}
+
+.media-kind-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.media-kind-tab {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.media-kind-tab:hover {
+  background: var(--surface);
+}
+
+.media-kind-tab-active {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+
+.media-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-content: start;
+  gap: 8px;
+}
+
+.media-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 4px;
+  /* Without this, a grid item's default min-width:auto lets a large-
+     intrinsic-size <img> inside .media-card-thumb push this column wider
+     than its intended 1fr share -- "grid blowout" -- breaking the uniform
+     square sizing for whichever item happens to have a big source image. */
+  min-width: 0;
+}
+
+.media-card:hover {
+  background: var(--surface);
+}
+
+.media-card-selected {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.media-card-multi-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.media-card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #0f1216;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-thumb-placeholder {
+  color: var(--text-dim);
+  font-size: 18px;
+}
+
+.media-card-check {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #fff;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.media-card-duration {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.media-card-progress-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 11, 20, 0.75);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.media-card-name {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.media-progress-track {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.media-progress-bar {
+  height: 100%;
+  background: var(--accent);
+}
+
+.media-progress-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.media-error {
+  font-size: 10px;
+  color: #ff8a8a;
+  padding: 0 2px;
+}
+
+.media-card-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.media-card-actions button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.media-thumb-add-button {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ai);
+  color: #fff;
+  border: none;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.media-card:hover .media-thumb-add-button,
+.media-row:hover .media-thumb-add-button {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.media-thumb-add-button:hover {
+  filter: brightness(1.15);
+}
+
+.media-row-thumb .media-thumb-add-button {
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  bottom: 2px;
+  right: 2px;
+}
+
+.media-grid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.media-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.media-row:hover {
+  background: var(--surface);
+}
+
+.media-row-selected {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.media-row-multi-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.media-row-thumb {
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 28px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0f1216;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-row-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-row-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-row-progress-track {
+  width: 100%;
+  margin-top: 3px;
+}
+
+.media-row-duration {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.media-row-check {
+  position: static;
+  flex-shrink: 0;
+}
+
+/* Left column: compact Transcript / AI Suggestions preview split */
+
+.left-column-split {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.left-column-split-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.left-column-split-col h2 {
+  margin: 0 0 4px;
+}
+
+.transcript-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.transcript-preview-row {
+  display: flex;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.transcript-preview-row:hover {
+  background: var(--surface);
+}
+
+.transcript-preview-row-active {
+  background: var(--surface-elevated);
+  outline: 1px solid var(--accent);
+}
+
+.transcript-preview-time {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.transcript-preview-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ai-preview-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.ai-preview-card:hover {
+  border-color: var(--ai);
+}
+
+.ai-preview-purpose-badge {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ai);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ai-preview-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-preview-title {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ai-preview-text {
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-preview-time {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-preview-add {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Preview player -- sits flush between Templates and Properties (see
+   .workspace's gap: 0) as the middle segment of one connected editor
+   surface, so it has no outer rounded corners of its own and no side
+   borders (the 1px dividers are owned by the neighboring panels). */
+.panel-preview {
+  padding: 8px;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+
+.preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.preview-player {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.preview-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.preview-header-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.preview-header-menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.preview-header-menu:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preview-mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 5px;
+  padding: 2px;
+}
+
+.preview-mode-button {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.preview-mode-button-active {
+  background: var(--ai);
+  color: #fff;
+}
+
+.preview-mode-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preview-stage-gap {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The preview viewport must never scroll -- it only centers and clamps the
+   aspect-ratio-locked stage within whatever space is actually available. */
+.preview-stage-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.preview-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.preview-stage video {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  background: #000;
+  object-fit: contain;
+}
+
+/* Clips the video + rendered graphics to the stage's rounded corners. The
+   selection overlay (drag/resize handles) deliberately lives OUTSIDE this
+   element, as a sibling within .preview-stage, so a graphic dragged near or
+   past the frame edge never has its own handles clipped away and made
+   unreachable -- only the decorative video/graphics content is clipped. */
+.preview-stage-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+/* Overlay video/image tracks (PreviewPlayer.tsx's SecondaryTrackMedia, spec
+   section 20) -- layered above the main video via z-index (track order),
+   positioned/sized the same way the main <video> already is. */
+.preview-secondary-visual {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+}
+
+.graphics-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+}
+
+.scene-selection-overlay {
+  position: absolute;
+  z-index: 2;
+}
+
+.scene-selection-box {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--accent);
+  cursor: move;
+  pointer-events: auto;
+}
+
+.scene-selection-box-locked {
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+/* Full-frame scenes' foreground content group (background stays fixed,
+   never part of this selection) -- same box/handle look as an ordinary
+   overlay scene, just driven by contentTransform instead of scene.position. */
+.scene-selection-overlay-content-group {
+  z-index: 2;
+}
+
+.scene-selection-rotate-handle {
+  position: absolute;
+  left: 50%;
+  top: -28px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  cursor: grab;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+.scene-selection-rotate-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1px;
+  height: 20px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.scene-selection-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+/* The visible handle stays 9-10px, but the actual pointer hit target is
+   ~23-24px (9px box + 7px extra on every side) -- corner/edge handles are
+   easy to miss at their visible size alone, especially at high DPI scaling.
+   Positioned via a pseudo-element (not by enlarging the handle itself) so
+   the enlarged area is invisible and never changes the handle's appearance;
+   pointerdown on this pseudo-element still bubbles to the handle's own
+   onPointerDown/onPointerMove/onPointerUp React handlers. */
+.scene-selection-handle::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+
+.scene-selection-handle-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+
+.scene-selection-handle-n {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+
+.scene-selection-handle-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+
+.scene-selection-handle-e {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+
+.scene-selection-handle-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+
+.scene-selection-handle-s {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+
+.scene-selection-handle-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+
+.scene-selection-handle-w {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+
+.preview-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.preview-controls button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.preview-controls button:not(:disabled):hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.preview-controls button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.preview-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-transport {
+  flex: 0 0 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preview-transport-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.preview-play-button {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 50% !important;
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+
+.preview-play-button:hover {
+  background: var(--accent-hover) !important;
+}
+
+.preview-controls-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.preview-seek {
+  width: 100%;
+}
+
+.preview-volume {
+  width: 60px;
+}
+
+.preview-fit-select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  padding: 3px 4px;
+  height: 26px;
+}
+
+/* Tools toolbar (selection/cut/delete/text/zoom) -- hosted here directly
+   below playback transport, per an explicit layout request, even though it
+   drives the Timeline panel's shared zoom/scene state below. */
+.preview-toolbar-row {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+/* Transcript panel */
+
+.transcript-empty,
+.transcript-empty-hint {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.transcript-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.transcript-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.transcript-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.transcript-toolbar select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  height: 32px;
+  padding: 0 26px 0 8px;
+  font-size: 12px;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) center,
+    calc(100% - 9px) center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.transcript-toolbar select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.transcript-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.transcript-toolbar button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.transcript-toolbar button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.transcript-toolbar button:disabled {
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.transcript-toolbar-secondary {
+  margin-left: auto;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.transcript-toolbar-secondary:hover:not(:disabled) {
+  border-color: var(--border-strong) !important;
+  background: var(--surface-hover) !important;
+}
+
+.device-badge {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.gpu-status-links {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.transcript-status-banner {
+  background: #17202b;
+  border: 1px solid #24384d;
+  color: #9fc4e8;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-error-banner {
+  background: #3a1d1d;
+  border: 1px solid #6b2b2b;
+  color: #ffb4b4;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.inline-link-button {
+  background: none !important;
+  border: none;
+  color: #9fc4e8 !important;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0 !important;
+  font-size: 11px !important;
+}
+
+.transcript-script-input {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.transcript-script-input textarea {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+}
+
+.transcript-script-input textarea:focus-visible {
+  border-color: var(--accent);
+}
+
+.transcript-script-input button {
+  flex-shrink: 0;
+  align-self: stretch;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.transcript-script-input button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.transcript-script-input button:disabled {
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.transcript-alignment-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 90px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.alignment-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.alignment-row-low {
+  color: #ffb4b4;
+}
+
+.alignment-confidence {
+  margin-left: auto;
+}
+
+.transcript-search-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.transcript-search-bar input {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  flex: 1;
+  outline: none;
+}
+
+.transcript-search-bar input:focus-visible {
+  border-color: var(--accent);
+}
+
+.transcript-search-bar button {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+}
+
+.transcript-search-bar button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.transcript-search-bar button:disabled {
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.segment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.segment-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.segment-row-active {
+  border-color: var(--accent);
+  background: #1b1f26;
+}
+
+.segment-row-review {
+  border-left: 2px solid #ffb84d;
+}
+
+.segment-time {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+  height: fit-content;
+  white-space: nowrap;
+}
+
+.segment-text-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.segment-text {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  resize: none;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 2px 0;
+}
+
+.segment-text:focus {
+  background: #0f1216;
+  outline: 1px solid var(--accent);
+  border-radius: 3px;
+}
+
+.segment-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.segment-review-badge {
+  color: #ffb84d;
+}
+
+.segment-edited-badge {
+  color: #9fc4e8;
+}
+
+/* GPU status bar */
+
+.gpu-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.gpu-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.gpu-verify-ok {
+  color: var(--success);
+}
+
+.gpu-verify-fail {
+  color: var(--danger);
+}
+
+/* Modal overlay (Correction Dictionary) */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 720px;
+  max-width: 92vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* Export dialog */
+
+.export-modal {
+  width: 560px;
+}
+
+.export-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.export-field-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.export-field-row label {
+  color: var(--text-dim);
+}
+
+.export-field-row input,
+.export-field-row select {
+  background: #0f1216;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  width: 100%;
+}
+
+.export-path-row {
+  display: flex;
+  gap: 6px;
+}
+
+.export-path-row input {
+  flex: 1;
+}
+
+.export-path-row button {
+  background: #15181d;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.export-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.export-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.export-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.export-section-chevron {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.export-inline-hint {
+  font-size: 11px;
+  color: #ffb84d;
+}
+
+.export-color-space {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding-left: 100px;
+}
+
+.export-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  gap: 10px;
+}
+
+.export-footer-stats {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.export-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.export-cancel-button {
+  background: #15181d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 7px 16px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.export-primary-button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.export-primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-progress-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.export-progress-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.export-progress-bar-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.export-progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.export-progress-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.export-result-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.export-result-path {
+  font-size: 12px;
+  color: var(--text-dim);
+  word-break: break-all;
+  user-select: text;
+}
+
+.export-result-error {
+  font-size: 12px;
+  color: #ff8a8a;
+}
+
+/* Correction dictionary */
+
+.dictionary-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dictionary-form input {
+  flex: 1;
+  min-width: 120px;
+  background: #0f1216;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.dictionary-form select,
+.dictionary-form button {
+  background: #15181d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.dictionary-form button {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+}
+
+.dictionary-toolbar {
+  display: flex;
+  gap: 6px;
+}
+
+.dictionary-toolbar input {
+  flex: 1;
+  background: #0f1216;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.dictionary-toolbar button {
+  background: #15181d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dictionary-message {
+  font-size: 11px;
+  color: #9fc4e8;
+}
+
+.dictionary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.dictionary-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #15181d;
+}
+
+.dictionary-entry-disabled {
+  opacity: 0.5;
+}
+
+.dictionary-entry-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dictionary-original {
+  color: #ffb4b4;
+}
+
+.dictionary-correction {
+  color: #7cd992;
+}
+
+.dictionary-category {
+  font-size: 10px;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.dictionary-applied-count {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.dictionary-entry button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.dictionary-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.dictionary-apply-section {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.dictionary-apply-section h3 {
+  font-size: 12px;
+  margin: 0 0 6px;
+  color: var(--text-dim);
+}
+
+.dictionary-apply-section button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.dictionary-preview {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.dictionary-preview-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  color: var(--text-dim);
+}
+
+/* Timeline */
+
+.timeline-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.timeline-empty-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 20px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.timeline-empty-icon {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.timeline-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.timeline-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+
+.timeline-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  flex-wrap: wrap;
+}
+
+.timeline-tool-group-right {
+  margin-left: auto;
+}
+
+.timeline-tool-button-wide {
+  width: auto;
+  padding: 0 6px;
+  gap: 2px;
+}
+
+.timeline-toolbar-freeze-glyph,
+.timeline-toolbar-snap-glyph {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.timeline-tool-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+}
+
+.timeline-tool-button:not(:disabled):hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.timeline-tool-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.timeline-tool-button-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.timeline-tool-button-active:disabled {
+  opacity: 1;
+}
+
+.timeline-add-track-button {
+  width: auto;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.timeline-current-time {
+  font-variant-numeric: tabular-nums;
+  margin-right: 6px;
+}
+
+.timeline-zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.timeline-zoom-slider {
+  width: 90px;
+  accent-color: var(--accent);
+}
+
+/* Single 2D scroll container -- replaces the old .timeline-body (flex row of
+   two independently-scrolling children, horizontal-only) with ONE
+   overflow:auto-both-axes container holding two sticky-positioned columns.
+   Sticky-inside-one-scroll-container (not two JS-synced scroll elements) is
+   what makes the header column stay put horizontally while the ruler stays
+   put vertically, simultaneously, with no scroll-sync code. */
+.timeline-scroll-2d {
+  display: flex;
+  align-items: flex-start;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: auto;
+}
+
+.timeline-header-column {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex-shrink: 0;
+  background: #101215;
+  border-right: 1px solid var(--border);
+}
+
+.timeline-headers {
+  position: relative;
+}
+
+.timeline-header-spacer {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 20px;
+  background: #101215;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Positioned relative to .timeline-root (viewport-sized and stable), NOT
+   .timeline-header-column (which is position:sticky nested inside the
+   scrolling container and has the FULL, often-taller-than-the-viewport
+   track-list height as its geometric rect) -- anchoring here keeps the
+   handle's clickable area matched to what's actually visible on screen
+   instead of extending far past it when there are many tracks. */
+.timeline-header-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  margin-left: -3px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.timeline-header-resize-handle:hover,
+.timeline-header-resize-handle:active {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+.timeline-content-column {
+  position: relative;
+  flex: 1;
+}
+
+.timeline-header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* Locked-track visual distinction (spec section 15) -- dims the whole row so
+   a locked track is unmistakable at a glance, not just via its lock icon. */
+.timeline-header-row-locked {
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0.65;
+}
+
+/* Cross-track drag's destination-track highlight (spec section 9) --
+   applied/removed imperatively by ClipTrack.tsx during a move drag. */
+.clip-track-drop-target {
+  background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.timeline-header-kind-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+
+.timeline-header-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.timeline-header-label-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+
+.track-menu-root {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.track-menu-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  gap: 1px;
+}
+
+.track-menu-popover-right {
+  left: auto;
+  right: 0;
+}
+
+/* Escapes the trigger's own ancestor stacking context via viewport-relative
+   fixed positioning (see TimelineViewOptionsMenu.tsx's doc comment) --
+   `top`/`right` are set inline from a measured getBoundingClientRect(). */
+.track-menu-popover-fixed {
+  position: fixed;
+  top: auto;
+  left: auto;
+  z-index: 100;
+}
+
+.track-menu-item {
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 11px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.track-menu-item:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.08));
+}
+
+.track-menu-item-danger {
+  color: var(--danger);
+}
+
+.voiceover-recorder-popover {
+  width: 220px;
+  gap: 8px;
+  padding: 10px;
+}
+
+.voiceover-recorder-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.voiceover-recorder-error {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.voiceover-recorder-device-select {
+  width: 100%;
+  font-size: 11px;
+  padding: 4px 6px;
+  background: #0b0d10;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.voiceover-recorder-level-track {
+  width: 100%;
+  height: 6px;
+  background: #0b0d10;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.voiceover-recorder-level-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--success);
+}
+
+.voiceover-recorder-record-button {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #fff;
+  background: var(--danger);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.voiceover-recorder-record-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.voiceover-recorder-countdown,
+.voiceover-recorder-recording {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.voiceover-recorder-recording-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: voiceover-recorder-pulse 1s infinite;
+}
+
+@keyframes voiceover-recorder-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.voiceover-recorder-cancel-button,
+.voiceover-recorder-stop-button {
+  font-size: 11px;
+  padding: 3px 8px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.voiceover-recorder-stop-button:hover,
+.voiceover-recorder-cancel-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.track-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.track-menu-item:disabled:hover {
+  background: none;
+}
+
+/* Cursor-positioned context menu (ContextMenu.tsx) -- same visual language
+   as .track-menu-popover/.track-menu-item, just position:fixed with an
+   inline left/top instead of anchored to a relative-positioned parent. */
+.context-menu-popover {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  max-width: 260px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  gap: 1px;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--border);
+}
+
+.context-menu-item-active {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.08));
+}
+
+.timeline-header-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.timeline-header-icon:not(:disabled):hover {
+  color: var(--text);
+}
+
+.timeline-header-icon:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.timeline-header-icon-active {
+  color: var(--danger);
+}
+
+/* Flex spacer pushing the action icons to the row's right edge, now that
+   there's no text label to absorb the remaining width (see
+   TimelineTrackHeaders.tsx's compact icon-only row). */
+.timeline-header-spring {
+  flex: 1;
+  min-width: 0;
+}
+
+.timeline-content {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  background: #0b0d10;
+}
+
+.timeline-ruler {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 20px;
+  border-bottom: 1px solid var(--border);
+  background: #0b0d10;
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+}
+
+.timeline-tick-label {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.timeline-marker-flag {
+  position: absolute;
+  bottom: 0;
+  width: 9px;
+  height: 9px;
+  transform: translateX(-50%) rotate(45deg);
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  z-index: 2;
+}
+
+.timeline-marker-flag:active {
+  cursor: grabbing;
+}
+
+.timeline-marker-editor {
+  position: absolute;
+  top: 22px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  z-index: 20;
+  transform: translateX(-4px);
+}
+
+.timeline-marker-editor-input {
+  width: 120px;
+  font-size: 11px;
+  padding: 2px 4px;
+  background: #0b0d10;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.timeline-marker-editor-delete {
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.timeline-marker-editor-delete:hover {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.timeline-track {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-track-video {
+  position: relative;
+  height: 40px;
+  background: #15181d;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.video-filmstrip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.video-filmstrip-frame {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-right: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.video-filmstrip-frame:last-child {
+  border-right: none;
+}
+
+.timeline-video-label {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin: 0 0 3px 4px;
+}
+
+.timeline-track-waveform {
+  background: #0f1216;
+}
+
+.timeline-track-music {
+  height: 24px;
+  background: #101317;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-track-empty-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.drop-ghost-preview {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.drop-ghost-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px dashed var(--accent);
+  background: rgba(91, 140, 255, 0.15);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.timeline-track-hidden {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.timeline-track-captions {
+  background: #0b0d10;
+}
+
+.timeline-caption-block {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  background: #1b2740;
+  border: 1px solid #2c3a5c;
+  border-radius: 3px;
+  padding: 2px 4px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+
+.timeline-caption-block:hover {
+  border-color: var(--accent);
+}
+
+.timeline-caption-review {
+  background: #3a2a1d;
+  border-color: #6b4b2b;
+}
+
+.timeline-caption-active {
+  outline: 1px solid var(--accent);
+}
+
+.timeline-caption-text {
+  font-size: 10px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Hover skimmer (spec section 7) -- thinner, dimmer secondary line that
+   follows the mouse without moving the real playhead. Positioned directly
+   via ref in Timeline.tsx (not React state), matching the trim tooltip's
+   own per-pixel-frequency update pattern. */
+.timeline-skimmer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.4);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.timeline-box-select {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Range tool's time-range selection -- spans the full track-list height
+   (not just visible clips), matching "a range spans one or more tracks" --
+   in practice all of them, since the tool operates on time, not track rows. */
+.timeline-range-select {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, #ffb84d 12%, transparent);
+  border-left: 1px solid #ffb84d;
+  border-right: 1px solid #ffb84d;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.timeline-playhead-badge {
+  position: absolute;
+  top: -1px;
+  left: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* AI Suggestions (Phase E) */
+
+.ai-suggestions-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.local-ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Quality controls (expanded) + banners + toolbar can grow tall enough to
+   squeeze the scrollable scene-card list below to zero height, making it
+   completely inaccessible -- capping the fixed head and letting IT scroll
+   internally instead guarantees the card list always keeps real, usable
+   space no matter how much is expanded above it. */
+.local-ai-panel > .panel-fixed-head {
+  max-height: 60%;
+  overflow-y: auto;
+}
+
+.local-ai-health-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.local-ai-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.local-ai-health-running {
+  background: var(--success, #18d77b);
+}
+
+.local-ai-health-installed-not-running {
+  background: #f2ad18;
+}
+
+.local-ai-health-not-installed,
+.local-ai-health-unknown {
+  background: var(--danger, #ff5364);
+}
+
+.local-ai-health-label {
+  flex: 1;
+  color: var(--text-dim);
+}
+
+.local-ai-model-row,
+.local-ai-pull-row {
+  display: flex;
+  gap: 6px;
+}
+
+.local-ai-model-row select,
+.local-ai-pull-row input {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.local-ai-suggested-models {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.local-ai-pull-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.local-ai-pull-progress progress {
+  flex: 1;
+  height: 6px;
+}
+
+.local-ai-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.local-ai-quality-controls {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.local-ai-quality-controls summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.local-ai-quality-row {
+  margin-top: 8px;
+}
+
+.local-ai-quality-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-ai-quality-row input[type='range'] {
+  flex: 1;
+}
+
+.local-ai-quality-row input[type='number'] {
+  width: 60px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+}
+
+.local-ai-quality-row select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+}
+
+.local-ai-category-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.local-ai-category-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.local-ai-category-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.local-ai-preview-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.local-ai-preview-summary-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.local-ai-preview-summary ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.local-ai-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.local-ai-edit-form input,
+.local-ai-edit-form select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.ai-key-form {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-key-form input {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ai-key-form button {
+  background: var(--ai);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-key-form button:disabled {
+  background: var(--border);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.ai-suggestions-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ai-suggestions-toolbar button:first-child {
+  background: linear-gradient(135deg, var(--ai), var(--ai-hover));
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-suggestions-toolbar button:first-child:disabled {
+  background: var(--border);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.ai-suggestions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.ai-suggestion-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-suggestion-accepted {
+  border-color: var(--success);
+}
+
+.ai-suggestion-rejected {
+  opacity: 0.5;
+}
+
+.ai-suggestion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ai-suggestion-purpose {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ai-hover);
+}
+
+.ai-suggestion-confidence {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-suggestion-time {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.ai-suggestion-visual-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ai-suggestion-reason {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-suggestion-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.ai-suggestion-actions button {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-suggestion-status-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.consent-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.consent-preview {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.consent-actions button {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.consent-confirm {
+  background: linear-gradient(135deg, var(--ai), var(--ai-hover)) !important;
+  color: #fff !important;
+  border: none !important;
+}
+
+.ai-cancel-button {
+  background: var(--danger) !important;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-search-input {
+  flex: 1;
+  min-width: 120px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.ai-filters select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 6px;
+  font-size: 11px;
+}
+
+.ai-filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ai-suggestion-locked {
+  opacity: 0.85;
+  border-color: var(--warning);
+}
+
+.ai-suggestion-edited-badge {
+  font-size: 10px;
+  color: var(--info);
+  align-self: flex-start;
+}
+
+.ai-suggestion-visual-text,
+.ai-suggestion-reason {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  resize: none;
+  font-family: inherit;
+  padding: 2px 0;
+}
+
+.ai-suggestion-visual-text {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-suggestion-reason {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-suggestion-visual-text:focus,
+.ai-suggestion-reason:focus {
+  background: var(--surface-elevated);
+  outline: 1px solid var(--ai);
+  border-radius: 3px;
+}
+
+.ai-suggestion-visual-text:disabled,
+.ai-suggestion-reason:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+/* Phase F: graphics overlay + motion templates */
+
+.scene-graphic {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  transition: opacity 60ms linear, transform 60ms linear;
+}
+
+.scene-graphic span {
+  color: #fff;
+}
+
+/* Applied to a template's inner "box" element when the scene has an explicit
+   Position & Size override, so its content fills the resized rectangle
+   instead of staying an intrinsically-sized pill floating inside it. */
+.scene-graphic-fill {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+/* Lower Third */
+.scene-graphic-lower-third {
+  left: 5%;
+  bottom: 8%;
+  gap: 0;
+}
+
+.scene-graphic-accent-bar {
+  width: 5px;
+  align-self: stretch;
+  border-radius: 2px 0 0 2px;
+}
+
+.scene-graphic-lower-third-box {
+  padding: 8px 16px;
+  font-size: 20px;
+  font-weight: 700;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Statistic Callout */
+.scene-graphic-statistic {
+  left: 50%;
+  top: 20%;
+  transform-origin: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.scene-graphic-statistic-box {
+  padding: 14px 28px;
+  font-size: 30px;
+  font-weight: 800;
+  border: 2px solid;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scene-graphic-statistic-icon {
+  flex-shrink: 0;
+}
+
+.scene-graphic-statistic-underline {
+  height: 4px;
+  width: 60px;
+  border-radius: 2px;
+}
+
+/* Numbered Steps */
+.scene-graphic-steps {
+  left: 5%;
+  top: 12%;
+  gap: 10px;
+}
+
+.scene-graphic-steps-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.scene-graphic-steps-box {
+  padding: 8px 14px;
+  font-size: 18px;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Comparison */
+.scene-graphic-comparison {
+  left: 50%;
+  top: 15%;
+  /* Horizontal centering is folded into the inline `transform` in
+     Comparison.tsx, since inline style fully replaces this property rather
+     than merging with it. */
+}
+
+.scene-graphic-comparison-split {
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.scene-graphic-comparison-side {
+  padding: 12px 20px;
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scene-graphic-comparison-vs {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  color: #fff;
+}
+
+.scene-graphic-comparison-single {
+  padding: 12px 24px;
+  font-size: 20px;
+  font-weight: 700;
+  border: 2px solid;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Warning / Alert */
+.scene-graphic-warning {
+  left: 0;
+  right: 0;
+  top: 0;
+  justify-content: center;
+}
+
+.scene-graphic-warning-box {
+  padding: 10px 24px;
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.scene-graphic-warning-icon {
+  font-size: 20px;
+}
+
+/* Title Card -- previously had no dedicated CSS at all, which rendered it
+   (and the four templates below) unpositioned and effectively invisible at
+   default size, appearing as an empty/black Template Library thumbnail. */
+.scene-graphic-title-card {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.scene-graphic-title-card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.scene-graphic-title-card-bar {
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.scene-graphic-title-card-title {
+  font-size: 40px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.25;
+}
+
+.scene-graphic-title-card-subtitle {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* Keyword Highlight */
+.scene-graphic-keyword {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.scene-graphic-keyword-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 80%;
+}
+
+.scene-graphic-keyword-text {
+  font-size: 56px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.15;
+  overflow-wrap: break-word;
+}
+
+.scene-graphic-keyword-underline {
+  height: 5px;
+  width: 90px;
+  border-radius: 3px;
+}
+
+/* Percentage Card */
+.scene-graphic-percentage {
+  right: 5%;
+  top: 12%;
+}
+
+.scene-graphic-percentage-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.scene-graphic-percentage-ring {
+  flex-shrink: 0;
+}
+
+.scene-graphic-percentage-number {
+  fill: #fff;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.scene-graphic-percentage-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scene-graphic-percentage-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* Person / Profile Card */
+.scene-graphic-person {
+  left: 5%;
+  bottom: 8%;
+}
+
+.scene-graphic-person-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px 8px 8px;
+  background: rgba(8, 12, 18, 0.72);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.scene-graphic-person-avatar {
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-graphic-person-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.scene-graphic-person-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.scene-graphic-person-role {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+/* Checklist */
+.scene-graphic-checklist {
+  left: 6%;
+  top: 14%;
+}
+
+.scene-graphic-checklist-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 22px;
+  min-width: 220px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.scene-graphic-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scene-graphic-checklist-check {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-graphic-checklist-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* Cinematic templates are authored in a fixed 1920x1080 (or 1080x1920 /
+   1080x1080) DESIGN-SPACE canvas -- see DesignCanvas.tsx -- which is then
+   uniformly transform-scaled to the real, much smaller, Preview stage. Every
+   px value below is a design-space pixel, not a screen pixel. */
+
+/* Background layer shared by the cinematic templates -- sits above the
+   <video> and below the editable graphic content, purely decorative
+   (pointer-events: none) so it never intercepts clicks. Defaults to nothing
+   painted at all (transparent -- see SceneBackgroundLayer.tsx), so the video
+   underneath stays visible unless a scene explicitly opts into one of these. */
+.scene-bg-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.scene-bg-dim {
+  position: absolute;
+  inset: 0;
+}
+
+.scene-bg-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(160deg, rgba(4, 8, 14, 0.95), rgba(8, 14, 26, 0.9));
+}
+
+.scene-bg-solid {
+  position: absolute;
+  inset: 0;
+}
+
+.scene-bg-glow {
+  position: absolute;
+  inset: -20%;
+}
+
+.scene-bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+/* Technology Title Scene -- full-frame cinematic chapter title.
+   `.scene-graphic-tech-title-full` (the default) always fills the whole
+   1920x1080 design canvas edge-to-edge; only an explicit 'overlay'
+   presentationMode falls back to ordinary Position & Size placement. */
+.scene-graphic-tech-title {
+  position: absolute;
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+}
+
+.scene-graphic-tech-title-full {
+  inset: 0;
+  background: linear-gradient(160deg, rgba(4, 8, 14, 0.95), rgba(8, 14, 26, 0.92));
+}
+
+.scene-tech-title-content {
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-tech-title-content-compact {
+  gap: 20px;
+}
+
+/* When explicitly switched to Overlay mode, the glow becomes a contained
+   backdrop behind the (now user-positioned/sized) content box instead of a
+   full-canvas layer -- so switching modes never leaves the title with no
+   background at all. */
+.scene-tech-title-content-boxed {
+  position: relative;
+  overflow: hidden;
+  padding: 48px 56px;
+  border-radius: 20px;
+  background: linear-gradient(160deg, rgba(4, 8, 14, 0.94), rgba(8, 14, 26, 0.9));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.scene-tech-title-icon-badge {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2.5px solid;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.scene-tech-title-eyebrow {
+  font-size: 30px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.scene-graphic-tech-title-compact .scene-tech-title-eyebrow {
+  font-size: 26px;
+}
+
+.scene-tech-title-mask {
+  display: block;
+  overflow: hidden;
+}
+
+.scene-tech-title-heading {
+  display: block;
+  font-size: 92px;
+  font-weight: 800;
+  line-height: 1.24;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  color: #fff;
+}
+
+.scene-graphic-tech-title-compact .scene-tech-title-heading {
+  font-size: 72px;
+}
+
+.scene-tech-title-accent {
+  display: block;
+  font-size: 46px;
+  font-weight: 700;
+  overflow-wrap: break-word;
+}
+
+.scene-graphic-tech-title-compact .scene-tech-title-accent {
+  font-size: 38px;
+}
+
+/* Three-Step Presenter Plan -- glass lower panel over the presenter video,
+   capped to the lower third of the frame so it never reaches a face. */
+.scene-graphic-step-plan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  padding: 0 3% 4%;
+  min-height: 31%;
+  max-height: 34%;
+}
+
+.scene-step-plan-panel {
+  width: 100%;
+  max-width: 1800px;
+  height: 100%;
+  background: rgba(9, 13, 19, 0.7);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid;
+  border-radius: 28px;
+  padding: 60px 60px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 26px;
+  box-sizing: border-box;
+}
+
+.scene-step-plan-eyebrow {
+  font-size: 24px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.scene-step-plan-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 44px;
+}
+
+.scene-graphic-step-plan-compact .scene-step-plan-cards {
+  grid-template-columns: 1fr;
+  gap: 28px;
+}
+
+.scene-graphic-step-plan-compact .scene-graphic-step-plan {
+  min-height: 40%;
+  max-height: 48%;
+}
+
+.scene-step-plan-card {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.scene-step-plan-number {
+  flex-shrink: 0;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 36px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.scene-step-plan-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scene-step-plan-title {
+  font-size: 38px;
+  font-weight: 700;
+  line-height: 1.22;
+  overflow-wrap: break-word;
+  color: #fff;
+}
+
+.scene-step-plan-subtitle {
+  font-size: 24px;
+  color: rgba(255, 255, 255, 0.65) !important;
+  line-height: 1.3;
+  overflow-wrap: break-word;
+}
+
+/* Device Compatibility Lineup -- full-frame CSS/SVG device silhouettes, no
+   bounding card around the composition. `.scene-graphic-device-lineup-full`
+   (the default) always fills the whole design canvas edge-to-edge. */
+.scene-graphic-device-lineup {
+  position: absolute;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.scene-graphic-device-lineup-full {
+  inset: 0;
+  background: linear-gradient(160deg, rgba(4, 8, 14, 0.96), rgba(8, 14, 26, 0.93));
+}
+
+.scene-device-lineup-glow-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.scene-device-lineup-glow-left,
+.scene-device-lineup-glow-right {
+  position: absolute;
+  inset: 0;
+}
+
+/* The editable FOREGROUND content group -- a fixed design-space box (not a
+   percentage of the background) so it has a stable, predictable footprint
+   for the selection/resize handles regardless of text length. ~79% of the
+   1920px 16:9 design canvas width (the 75-82% target). */
+.scene-device-lineup-content {
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* When explicitly switched to Overlay mode, the glow/texture becomes a
+   contained backdrop behind the (now user-positioned/sized) content box
+   instead of a full-canvas layer. */
+.scene-device-lineup-content-boxed {
+  position: relative;
+  overflow: hidden;
+  padding: 48px 56px;
+  border-radius: 24px;
+  background: linear-gradient(160deg, rgba(4, 8, 14, 0.94), rgba(8, 14, 26, 0.9));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.scene-device-lineup-heading {
+  font-size: 104px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 96px;
+  color: #fff;
+}
+
+.scene-device-lineup-content-compact .scene-device-lineup-heading {
+  font-size: 68px;
+  margin-bottom: 64px;
+}
+
+.scene-device-lineup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 100%;
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
+.scene-device-lineup-content-compact .scene-device-lineup-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 72px 40px;
+  justify-items: center;
+}
+
+.scene-device-lineup-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+.scene-device-lineup-glow {
+  position: absolute;
+  bottom: -20px;
+  width: 260px;
+  height: 90px;
+  border-radius: 50%;
+  filter: blur(36px);
+  z-index: -1;
+}
+
+.scene-device-lineup-icon {
+  margin-top: -8px;
+}
+
+.scene-device-lineup-label {
+  font-size: 38px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.94) !important;
+}
+
+.scene-device-lineup-content-compact .scene-device-lineup-label {
+  font-size: 30px;
+}
+
+.scene-device-lineup-cta {
+  display: block;
+  margin-top: 8px;
+  font-size: 34px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.scene-device-frame-svg {
+  display: block;
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.4));
+}
+
+/* Social Channel / Profile Card -- presenter-overlay glass panel. */
+.scene-graphic-social-card {
+  position: absolute;
+  right: 4%;
+  top: 12%;
+  bottom: 12%;
+  display: flex;
+  align-items: center;
+}
+
+.scene-graphic-social-card-compact {
+  right: auto;
+  left: 50%;
+  top: auto;
+  bottom: 6%;
+  transform: translateX(-50%);
+}
+
+.scene-social-card-panel {
+  width: 460px;
+  background: rgba(9, 13, 19, 0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid;
+  border-radius: 22px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+.scene-graphic-social-card-compact .scene-social-card-panel {
+  width: 640px;
+}
+
+.scene-social-card-profile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.scene-social-card-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.scene-social-card-profile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.scene-social-card-name {
+  font-size: 24px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.scene-social-card-subtitle {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.scene-social-card-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scene-social-card-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.scene-social-card-row-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.scene-social-card-row-name {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-social-card-row-action {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Security Login Flow -- device frame + sequential security rows.
+   Positioning/sizing is owned entirely by the parent (SceneContentFrame's
+   intrinsic-size inner box in full-frame mode, or the overlay wrapper's own
+   absolute positioning otherwise) -- this class only fills that box and
+   centers its own content within it. */
+.scene-graphic-login-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-graphic-login-flow-compact {
+  flex-direction: column;
+  gap: 20px;
+}
+
+.scene-login-flow-device {
+  position: relative;
+  width: 170px;
+  height: 320px;
+  border: 3px solid;
+  border-radius: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 19, 0.55);
+  flex-shrink: 0;
+}
+
+.scene-login-flow-device-dot {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.scene-login-flow-connector {
+  width: 48px;
+  height: 2px;
+  background: currentColor;
+  color: rgba(255, 255, 255, 0.3);
+  transform-origin: left center;
+  flex-shrink: 0;
+}
+
+.scene-graphic-login-flow-compact .scene-login-flow-connector {
+  width: 2px;
+  height: 28px;
+}
+
+.scene-login-flow-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 460px;
+}
+
+.scene-graphic-login-flow-compact .scene-login-flow-rows {
+  width: 620px;
+}
+
+.scene-login-flow-eyebrow {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.scene-login-flow-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: rgba(9, 13, 19, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+}
+
+.scene-login-flow-row-blocked {
+  border-color: rgba(255, 83, 100, 0.4);
+}
+
+.scene-login-flow-row-warning {
+  border-color: rgba(242, 173, 24, 0.4);
+}
+
+.scene-login-flow-row-number {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.scene-login-flow-row-icon {
+  flex-shrink: 0;
+  display: flex;
+}
+
+.scene-login-flow-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.scene-login-flow-row-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.scene-login-flow-row-subtitle {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.scene-login-flow-row-cross,
+.scene-login-flow-row-check {
+  flex-shrink: 0;
+  display: flex;
+}
+
+.scene-login-flow-footer {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 2px;
+}
+
+/* Feature Benefits Pills -- title + accent phrase over rounded pills. */
+.scene-graphic-benefits {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 1200px;
+}
+
+.scene-graphic-benefits-compact {
+  width: 880px;
+}
+
+.scene-benefits-eyebrow {
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.scene-benefits-mask {
+  overflow: hidden;
+  display: block;
+}
+
+.scene-benefits-title {
+  display: block;
+  font-size: 56px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.28;
+}
+
+.scene-graphic-benefits-compact .scene-benefits-title {
+  font-size: 44px;
+}
+
+.scene-benefits-title-accent {
+  font-weight: 800;
+}
+
+.scene-benefits-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.scene-graphic-benefits-compact .scene-benefits-pills {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.scene-benefits-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-radius: 999px;
+  background: rgba(9, 13, 19, 0.62);
+  border: 1.5px solid;
+}
+
+.scene-benefits-pill-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.scene-benefits-pill-label {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+
+/* Cause and Effect Flow -- two connected nodes with a drawing connector.
+   Positioning/sizing is owned entirely by the parent (SceneContentFrame's
+   intrinsic-size inner box in full-frame mode, or the overlay wrapper's own
+   absolute positioning otherwise) -- this class only fills that box and
+   centers its own content within it, so it never fights the parent's
+   transform with one of its own. */
+.scene-graphic-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-flow-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+}
+
+.scene-graphic-flow-compact .scene-flow-main {
+  flex-direction: column;
+  gap: 20px;
+}
+
+.scene-flow-node {
+  width: 520px;
+  padding: 26px 30px;
+  border: 1.5px solid;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scene-graphic-flow-compact .scene-flow-node {
+  width: 100%;
+}
+
+.scene-flow-node-eyebrow {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.scene-flow-node-icon {
+  display: flex;
+}
+
+.scene-flow-node-title {
+  font-size: 26px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.scene-flow-node-subtitle {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.scene-flow-connector {
+  position: relative;
+  width: 120px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.scene-graphic-flow-compact .scene-flow-connector {
+  width: 24px;
+  height: 80px;
+}
+
+.scene-flow-connector-line {
+  display: block;
+  width: 100%;
+  height: 3px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+.scene-graphic-flow-compact .scene-flow-connector-line {
+  width: 3px;
+  height: 100%;
+  transform-origin: top center;
+}
+
+.scene-flow-connector-arrow {
+  position: absolute;
+  right: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid;
+}
+
+.scene-graphic-flow-compact .scene-flow-connector-arrow {
+  right: auto;
+  bottom: -2px;
+  top: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 12px solid;
+  border-bottom: none;
+}
+
+.scene-flow-connector-dot {
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.scene-graphic-flow-compact .scene-flow-connector-dot {
+  top: auto;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.scene-flow-support-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.scene-flow-support-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(9, 13, 19, 0.55);
+}
+
+/* AI Connected Story Visualization -- six visualization-family templates.
+   The comparison/branch families reuse .scene-graphic-flow/.scene-flow-node
+   (defined above for Cause and Effect Flow) directly for their side cards. */
+
+.scene-graphic-central-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  height: 100%;
+  text-align: center;
+}
+
+.scene-central-ring {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-central-avatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-central-name {
+  font-size: 30px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.scene-central-origin {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.65);
+  margin-top: -8px;
+}
+
+.scene-central-badge {
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1.5px solid;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.scene-central-timeline {
+  position: relative;
+  width: 220px;
+  height: 8px;
+  margin-top: 6px;
+}
+
+.scene-central-timeline-line {
+  display: block;
+  width: 100%;
+  height: 2px;
+  margin-top: 3px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+.scene-central-timeline-dot {
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+}
+
+/* Reality vs. Dao Dream -- split composition. */
+.scene-graphic-reality-dream {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-graphic-reality-dream-compact {
+  flex-direction: column;
+  align-items: center;
+}
+
+.scene-reality-side {
+  width: 560px;
+  padding: 28px 32px;
+  border: 1.5px solid;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+
+.scene-graphic-reality-dream-compact .scene-reality-side {
+  width: 100%;
+}
+
+.scene-reality-real-track {
+  position: relative;
+  height: 3px;
+  margin-top: 10px;
+}
+
+.scene-reality-real-track-line {
+  display: block;
+  width: 100%;
+  height: 3px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+.scene-reality-branches {
+  position: relative;
+  height: 20px;
+  margin-top: 10px;
+}
+
+.scene-reality-branch-line {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 2px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+.scene-reality-divider {
+  width: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.scene-graphic-reality-dream-compact .scene-reality-divider {
+  width: 100%;
+  flex-direction: row;
+  padding: 10px 0;
+}
+
+.scene-reality-divider-line {
+  width: 2px;
+  flex: 1;
+  min-height: 40px;
+  border-radius: 2px;
+  opacity: 0.6;
+}
+
+.scene-graphic-reality-dream-compact .scene-reality-divider-line {
+  width: 40%;
+  height: 2px;
+  flex: none;
+}
+
+.scene-reality-divider-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.75);
+  text-align: center;
+  max-width: 90px;
+}
+
+/* Body vs. Cultivation Avatar -- symmetric comparison with a center badge
+   (no arrowhead: neither side is implied to be more "real"). */
+.scene-body-avatar-connector .scene-flow-connector-line {
+  height: 2px;
+}
+
+.scene-body-avatar-badge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  border: 1.5px solid;
+  background: rgba(9, 13, 19, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.scene-body-avatar-badge-text {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  text-align: center;
+  line-height: 1.25;
+}
+
+/* Source and Branch Diagram -- reuses .scene-flow-* directly, plus a
+   relationship label along the connector. */
+.scene-source-branch-connector {
+  position: relative;
+}
+
+.scene-source-branch-label {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Chapter Evidence Card -- compact evidence callout. */
+.scene-graphic-chapter-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  justify-content: center;
+  padding: 8px 4px;
+}
+
+.scene-evidence-marker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scene-evidence-marker {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.scene-evidence-claim {
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.35;
+}
+
+.scene-evidence-status {
+  align-self: flex-start;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scene-evidence-connector {
+  height: 3px;
+  margin-top: 4px;
+}
+
+.scene-evidence-connector-line {
+  display: block;
+  width: 100%;
+  height: 2px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+/* Final Three-Point Summary -- nodes converging on one central identity. */
+.scene-graphic-final-summary {
+  position: relative;
+}
+
+.scene-summary-connector {
+  position: absolute;
+  height: 2px;
+  transform-origin: left center;
+  border-radius: 2px;
+}
+
+.scene-summary-node {
+  position: absolute;
+  width: 220px;
+  padding: 12px 16px;
+  border: 1.5px solid;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scene-summary-node-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.3;
+}
+
+.scene-summary-center {
+  position: absolute;
+  width: 200px;
+  padding: 14px 18px;
+  border: 2px solid;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.scene-summary-center-label {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+}
+
+/* Isometric System Diagram -- three CSS/SVG isometric platform layers. */
+.scene-graphic-isometric {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8%;
+}
+
+.scene-graphic-isometric-compact {
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 8% 4%;
+  gap: 24px;
+}
+
+.scene-isometric-text {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 520px;
+}
+
+.scene-graphic-isometric-compact .scene-isometric-text {
+  max-width: 100%;
+  align-items: center;
+  text-align: center;
+}
+
+.scene-isometric-eyebrow {
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.scene-isometric-title {
+  font-size: 48px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.25;
+}
+
+.scene-isometric-diagram {
+  position: relative;
+  width: 220px;
+  height: 368px;
+  flex-shrink: 0;
+}
+
+.scene-graphic-isometric-compact .scene-isometric-diagram {
+  transform: scale(1.1);
+  margin-top: 8px;
+}
+
+.scene-isometric-glow {
+  position: absolute;
+  inset: -70px;
+  border-radius: 50%;
+  filter: blur(44px);
+  pointer-events: none;
+}
+
+.scene-isometric-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.scene-isometric-nodes {
+  position: absolute;
+  inset: 0;
+}
+
+.scene-isometric-node-wrap {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.scene-isometric-node {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 2px solid;
+  background: rgba(9, 13, 19, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-isometric-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+
+/* Vault Break-In Animation -- three-floor isometric heist scene.
+   Positioning/sizing is owned entirely by the parent (SceneContentFrame's
+   intrinsic-size inner box in full-frame mode, or the overlay wrapper's own
+   absolute positioning otherwise) -- this class only fills that box. 16:9:
+   text left, diagram right. Compact (9:16/1:1): text on top, diagram
+   stacked below -- a genuinely different arrangement, not the row layout
+   merely shrunk. */
+.scene-vault-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-vault-root-compact {
+  flex-direction: column;
+  gap: 16px;
+}
+
+.scene-vault-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 480px;
+  flex-shrink: 0;
+}
+
+.scene-vault-root-compact .scene-vault-text {
+  max-width: 100%;
+  text-align: center;
+  align-items: center;
+}
+
+.scene-vault-eyebrow {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scene-vault-title {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff;
+  white-space: pre-line;
+}
+
+.scene-vault-root-compact .scene-vault-title {
+  font-size: 32px;
+}
+
+.scene-vault-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.scene-vault-svg {
+  overflow: visible;
+  width: 340px;
+  height: auto;
+}
+
+.scene-vault-root-compact .scene-vault-svg {
+  width: 300px;
+}
+
+/* Animated Break-In Vault Diagram -- tall transparent three-floor isometric
+   security-breach composition (a distinct, more detailed reproduction of a
+   reference image, not the earlier Vault Break-In Animation template).
+   Positioning/sizing is owned entirely by the parent (SceneContentFrame's
+   intrinsic-size inner box in full-frame mode) -- this class only fills
+   that box. 16:9: text left, diagram right. Compact: text on top, diagram
+   centered below (9:16 narrower/taller, 1:1 more centered/less empty space). */
+.scene-vault2-root {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  width: 100%;
+  height: 100%;
+}
+
+/* Scoped to the diagram's own box (moves/resizes with its 8 handles)
+   instead of covering the full video frame -- see scene-bg-layer's own
+   default sizing (position:absolute; inset:0) for the full-canvas variant
+   used by other templates. */
+.scene-vault2-root > .scene-bg-layer {
+  border-radius: 18px;
+}
+
+.scene-vault2-root-compact {
+  flex-direction: column;
+  gap: 18px;
+}
+
+.scene-vault2-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 460px;
+  flex-shrink: 0;
+}
+
+.scene-vault2-root-compact .scene-vault2-text {
+  max-width: 100%;
+  text-align: center;
+  align-items: center;
+}
+
+.scene-vault2-eyebrow {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* Keeps the label legible against any chosen Background color, not just
+     the near-black default the template was designed against. */
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+}
+
+.scene-vault2-title {
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff;
+  white-space: pre-line;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.65);
+}
+
+.scene-vault2-root-compact .scene-vault2-title {
+  font-size: 30px;
+}
+
+.scene-vault2-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /* The diagram occupies ~82% of its content box height, per spec -- the
+     surrounding flex gap/padding is what supplies the remaining ~18%. */
+  height: 82%;
+}
+
+.scene-vault2-svg {
+  overflow: visible;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  /* A soft dark contact-shadow behind every line/fill so the diagram keeps
+     reading clearly against any Background color (bright solid, gradient,
+     or the source video), not just the near-black default it was designed
+     against -- without this, the thin cyan outlines wash out and the
+     diagram visually disappears into a light background. */
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 4px rgba(0, 0, 0, 0.4));
+}
+
+.scene-vault2-root-compact .scene-vault2-diagram {
+  height: 78%;
+}
+
+.scene-vault2-root-square .scene-vault2-diagram {
+  height: 86%;
+}
+
+.scene-dc1-root {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  width: 100%;
+  height: 100%;
+}
+
+/* Scoped to the diagram's own box (moves/resizes with its 8 handles)
+   instead of covering the full video frame. */
+.scene-dc1-root > .scene-bg-layer {
+  border-radius: 18px;
+}
+
+.scene-dc1-root-compact {
+  flex-direction: column;
+  gap: 18px;
+}
+
+.scene-dc1-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 460px;
+  flex-shrink: 0;
+}
+
+.scene-dc1-root-compact .scene-dc1-text {
+  max-width: 100%;
+  text-align: center;
+  align-items: center;
+}
+
+.scene-dc1-eyebrow {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+}
+
+.scene-dc1-title {
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff;
+  white-space: pre-line;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.65);
+}
+
+.scene-dc1-root-compact .scene-dc1-title {
+  font-size: 30px;
+}
+
+.scene-dc1-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 82%;
+}
+
+.scene-dc1-svg {
+  overflow: visible;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 4px rgba(0, 0, 0, 0.4));
+}
+
+.scene-dc1-root-compact .scene-dc1-diagram {
+  height: 78%;
+}
+
+.scene-dc1-root-square .scene-dc1-diagram {
+  height: 86%;
+}
+
+.scene-her1-root {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  width: 100%;
+  height: 100%;
+}
+
+.scene-her1-root > .scene-bg-layer {
+  border-radius: 18px;
+}
+
+.scene-her1-root-compact {
+  flex-direction: column;
+  gap: 18px;
+}
+
+.scene-her1-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 460px;
+  flex-shrink: 0;
+}
+
+.scene-her1-root-compact .scene-her1-text {
+  max-width: 100%;
+  text-align: center;
+  align-items: center;
+}
+
+.scene-her1-eyebrow {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+}
+
+.scene-her1-title {
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff;
+  white-space: pre-line;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.65);
+}
+
+.scene-her1-root-compact .scene-her1-title {
+  font-size: 30px;
+}
+
+.scene-her1-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: 82%;
+}
+
+.scene-her1-svg {
+  overflow: visible;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 4px rgba(0, 0, 0, 0.4));
+}
+
+.scene-her1-root-compact .scene-her1-diagram {
+  height: 78%;
+}
+
+.scene-her1-root-square .scene-her1-diagram {
+  height: 86%;
+}
+
+/* Graphics timeline tracks (V2/V3) */
+
+.timeline-track-graphics {
+  background: #12141c;
+}
+
+.graphics-clip {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 3px;
+  background: var(--ai);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  cursor: grab;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.graphics-clip-lower-third {
+  background: #4d7bff;
+}
+
+.graphics-clip-statistic-callout {
+  background: #9b5cf6;
+}
+
+.graphics-clip-numbered-steps {
+  background: #34c77b;
+}
+
+.graphics-clip-comparison {
+  background: #f5a623;
+}
+
+.graphics-clip-warning-alert {
+  background: #ef5a5a;
+}
+
+.graphics-clip-selected {
+  outline: 2px solid #fff;
+  outline-offset: -1px;
+}
+
+.graphics-clip-locked {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.graphics-clip-fx {
+  font-size: 8px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  padding: 1px 3px;
+  margin-left: 6px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.graphics-clip-text {
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+  pointer-events: none;
+}
+
+.graphics-clip-handle {
+  width: 10px;
+  align-self: stretch;
+  cursor: ew-resize;
+  flex-shrink: 0;
+}
+
+.graphics-clip-handle:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.graphics-clip-handle-left {
+  margin-right: auto;
+}
+
+.graphics-clip-handle-right {
+  margin-left: auto;
+}
+
+/* Real Timeline clips (V1/A1/A2) -- ClipTrack.tsx */
+
+.clip-track {
+  position: relative;
+  background: #15181d;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.clip-track-kind-video {
+  background: #15181d;
+}
+
+.clip-track-kind-audio {
+  background: #101317;
+}
+
+/* Per-tool cursor, applied to the whole track row so it shows even over
+   empty space between clips, not just over a clip itself. */
+.clip-track-tool-blade,
+.clip-track-tool-blade .clip-track-clip {
+  cursor: crosshair;
+}
+.clip-track-tool-hand,
+.clip-track-tool-hand .clip-track-clip {
+  cursor: grab;
+}
+.clip-track-tool-range {
+  cursor: text;
+}
+.clip-track-tool-roll .clip-track-clip {
+  cursor: col-resize;
+}
+
+.clip-track-clip {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  cursor: grab;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.clip-track-clip-video {
+  background: #1c3f7a;
+  position: relative;
+}
+
+/* Decorative embedded-audio strip along the bottom edge, matching the
+   reference editor's video-clip look -- purely visual (not real waveform
+   data), just signals "this clip carries audio" at a glance. */
+.clip-track-clip-video::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  background-color: rgba(6, 20, 36, 0.55);
+  background-image: repeating-linear-gradient(90deg, rgba(120, 220, 255, 0.55) 0, rgba(120, 220, 255, 0.55) 1px, transparent 1px, transparent 3px);
+  pointer-events: none;
+}
+
+.clip-track-clip-image {
+  background: #0d6b6b;
+}
+
+.clip-track-clip-audio {
+  background: #1f6b3d;
+}
+
+.clip-track-clip-selected {
+  outline: 2px solid #fff;
+  outline-offset: -1px;
+}
+
+.clip-track-clip-locked {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.clip-track-clip-disabled {
+  opacity: 0.4;
+  background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.35) 0, rgba(0, 0, 0, 0.35) 4px, transparent 4px, transparent 8px);
+}
+
+.clip-track-clip-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.clip-track-clip-type-icon {
+  position: relative;
+  z-index: 1;
+  font-size: 9px;
+  margin-left: 5px;
+  flex-shrink: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
+}
+
+.clip-track-clip-label {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.clip-track-clip-badge {
+  position: relative;
+  z-index: 1;
+  font-size: 9px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.clip-track-clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.clip-track-clip-handle-left {
+  left: 0;
+}
+
+.clip-track-clip-handle-right {
+  right: 0;
+}
+
+.clip-track-clip-handle:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Live timecode/duration tooltip shown while trimming or roll-editing (spec
+   section 5) -- positioned by ClipTrack.tsx directly via ref (not React
+   state) on every pointermove, so it tracks the drag without re-rendering
+   the whole track. */
+.clip-track-trim-tooltip {
+  position: absolute;
+  z-index: 6;
+  transform: translateX(-50%);
+  background: #0b0d10;
+  border: 1px solid var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* Scene Properties panel */
+
+.scene-properties {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 2px;
+}
+
+.scene-properties-scroll-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.scene-properties-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scene-properties-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.scene-properties-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.scene-properties-field input,
+.scene-properties-field select,
+.scene-properties-field textarea {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.scene-properties-field textarea {
+  min-height: unset;
+}
+
+.scene-properties-field select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) center,
+    calc(100% - 9px) center;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 26px;
+}
+
+.scene-properties-field input:focus,
+.scene-properties-field select:focus,
+.scene-properties-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.scene-properties-row {
+  display: flex;
+  gap: 10px;
+}
+
+.scene-properties-row .scene-properties-field {
+  flex: 1;
+}
+
+.scene-properties-tabs {
+  margin: 0 0 2px;
+}
+
+.scene-properties-position-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.scene-properties-grid-2x2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.scene-properties-reason {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+  margin: 0;
+}
+
+.scene-properties-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scene-properties-actions button {
+  background: var(--surface-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.scene-properties-subtitle {
+  margin: -6px 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.scene-properties-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.scene-properties-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.scene-properties-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.scene-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scene-preset-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 2px solid;
+  cursor: pointer;
+}
+
+.scene-preset-swatch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-preset-add {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scene-preset-add:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scene-template-recommend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scene-template-recommend-chip {
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-template-recommend-chip:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.scene-template-recommend-chip-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scene-template-recommend-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-align-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scene-align-button {
+  flex: 1;
+  height: 32px;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scene-align-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.scene-align-button-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.scene-color-input {
+  width: 36px;
+  height: 32px;
+  padding: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.scene-properties-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.scene-properties-checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.scene-properties-reset-button {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.scene-properties-reset-button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.panel-fixed-foot {
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.scene-layer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scene-layer-controls button {
+  flex: 1;
+  min-width: 70px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scene-layer-controls button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.scene-layer-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-layer-delete {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+
+/* Icon Picker (Properties > Design > Icon) */
+
+.scene-icon-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.scene-icon-trigger:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.scene-icon-trigger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scene-icon-trigger-empty {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.scene-icon-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scene-icon-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.scene-icon-item-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-icon-item-row .icon-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+}
+
+.icon-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin-top: 6px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  width: 260px;
+  max-width: 100%;
+}
+
+.icon-picker-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-picker-search {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.icon-picker-search:focus {
+  border-color: var(--accent);
+}
+
+.icon-picker-category {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.icon-picker-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.icon-picker-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.icon-picker-cell:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.icon-picker-cell-selected {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.icon-picker-empty {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+
+.icon-picker-remove {
+  align-self: flex-start;
+}
+
+.scene-icon-glyph {
+  flex-shrink: 0;
+}
+
+/* Structured per-item editing (Three-Step Presenter Plan steps, Device
+   Compatibility Lineup devices) -- label + accent color + icon per row. */
+.scene-structured-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.scene-structured-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.scene-structured-item-label,
+.scene-structured-item-description {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.scene-structured-item-label:focus,
+.scene-structured-item-description:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.scene-structured-item-status {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 11px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  align-self: flex-start;
+}
+
+.scene-structured-item-status:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Brand Preset panel */
+
+.brand-preset-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.brand-color-row {
+  display: flex;
+  gap: 10px;
+}
+
+.brand-color-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.brand-color-field input[type='color'] {
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}

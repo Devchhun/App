@@ -1,0 +1,14 @@
+faster-whisper==1.0.3
+huggingface_hub==0.25.2
+ctranslate2==4.8.1
+onnxruntime==1.28.0
+av==12.3.0
+tokenizers==0.23.1
+
+# Windows CUDA runtime, published officially by NVIDIA on PyPI so it can be
+# vendored as a normal pip dependency instead of requiring a system CUDA
+# Toolkit install. See python-worker/gpu_support.py for how these are wired
+# up (process-scoped DLL directories only, never the system PATH) and its
+# module docstring for the redistribution terms.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.24.0.43

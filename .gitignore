@@ -1,0 +1,14 @@
+node_modules/
+out/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Claude Code's own local session/settings state -- machine-specific, not project source.
+.claude/
+
+# Staged by scripts/fetch-portable-python.ps1 before a production build;
+# regenerate rather than commit (hundreds of MB of native binaries).
+resources/python-runtime/*
+!resources/python-runtime/.gitkeep
