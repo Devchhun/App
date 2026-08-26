@@ -8,6 +8,7 @@ import {
   findOrCreateTrack,
   sortTracksForDisplay,
   visibleTracksForDisplay,
+  isInViewport,
   trackDisplayHeight,
   resolveActiveVideoClip,
   getMainVideoTrackId,
@@ -189,6 +190,27 @@ describe('visibleTracksForDisplay', () => {
     const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'V2', kind: 'graphic', order: 0 })]
     visibleTracksForDisplay(tracks, {})
     expect(tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
+  })
+})
+
+describe('isInViewport', () => {
+  it('is true for a clip fully inside the visible window', () => {
+    expect(isInViewport(10, 5, 0, 100)).toBe(true)
+  })
+
+  it('is true for a clip that only partially overlaps the visible window', () => {
+    expect(isInViewport(95, 10, 0, 100)).toBe(true) // starts before the end, ends after it
+    expect(isInViewport(-5, 10, 0, 100)).toBe(true) // starts before the start, ends after it
+  })
+
+  it('is false for a clip entirely before or after the visible window', () => {
+    expect(isInViewport(-20, 10, 0, 100)).toBe(false)
+    expect(isInViewport(110, 10, 0, 100)).toBe(false)
+  })
+
+  it('a clip exactly touching the viewport edge does not count as visible (half-open interval)', () => {
+    expect(isInViewport(100, 10, 0, 100)).toBe(false)
+    expect(isInViewport(-10, 10, 0, 100)).toBe(false)
   })
 })
 

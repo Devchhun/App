@@ -22,10 +22,18 @@ import {
   MagnetIcon,
   RippleIcon,
   LinkIcon,
+  LockIcon,
+  MirrorIcon,
+  RotateIcon,
   ZoomOutGlyphIcon,
   ZoomInGlyphIcon,
   ZoomToFitIcon
 } from '../nav/icons'
+
+/** Identity default for a clip with no transform yet -- same constant
+ * ClipPropertiesPanel.tsx uses, kept in sync with it since both read/merge
+ * `TimelineClip.transform`. */
+const IDENTITY_TRANSFORM = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
 
 const ZOOM_SLIDER_MAX = 100
 /** Matches SceneContext.insertScene's own fixed default duration for a
@@ -40,18 +48,38 @@ function sliderToPps(value: number): number {
   return MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, value / ZOOM_SLIDER_MAX)
 }
 
-/** CapCut-style Timeline toolbar, hosted in the Preview panel directly below
- * playback transport (not inside the Timeline panel itself), but still
- * driving the same shared scene/sequence/zoom state the Timeline renders
- * from. Two groups: editing tools (left) and Timeline-behavior toggles +
- * zoom (right). Every toggle shows its state via the app's existing cyan/
- * blue accent (see ToggleButton.tsx) -- never a merely-disabled-looking icon
- * for something that's actually available. */
-export function TimelineToolbar(): JSX.Element {
+/** CapCut-style Timeline toolbar, rendered as the first child of
+ * `.timeline-root` (directly above the ruler) by Timeline.tsx -- a thin
+ * strip matching the reference editor's own toolbar-then-ruler layout, not
+ * a Preview-panel control. Two groups: editing tools (left) and Timeline-
+ * behavior toggles + zoom (right). Every toggle shows its state via the
+ * app's existing cyan/blue accent (see ToggleButton.tsx) -- never a merely-
+ * disabled-looking icon for something that's actually available. */
+interface Props {
+  /** Playhead-anchored zoom (preserves the playhead's on-screen position,
+   * same math as the Timeline's own cursor-anchored wheel-zoom) -- used by
+   * the zoom in/out buttons and the slider below. "Fit to window" does NOT
+   * use this (it deliberately resets the view to show everything, so there's
+   * nothing to anchor). */
+  onZoom: (newPps: number) => void
+}
+
+export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   const { items, selectedId } = useMedia()
   const { currentTime } = usePlayback()
   const { scenesByMedia, selectedSceneId, deleteScene, splitScene, insertScene } = useScenes()
-  const { sequence, selectedTimelineClipIds, splitSelected, deleteSelected, trimClip, ensureTrack, addTrack, collapseAllTracks } = useSequence()
+  const {
+    sequence,
+    selectedTimelineClipIds,
+    splitSelected,
+    deleteSelected,
+    trimClip,
+    ensureTrack,
+    addTrack,
+    collapseAllTracks,
+    toggleClipLock,
+    updateClipProperties
+  } = useSequence()
   const { canUndo, canRedo, undo, redo } = useHistory()
   const { triggerFreezeFrame } = useFreezeFrame()
   const {
@@ -93,12 +121,35 @@ export function TimelineToolbar(): JSX.Element {
   const canDelete = !!selectedClip || !!selectedScene
   const canTrimToPlayhead = !!selectedClip && !selectedClip.locked && currentTime > selectedClip.startTime && currentTime < selectedClip.startTime + selectedClip.duration
   const canFreezeFrame = canFreezeFrameCheck(selectedClip, currentTime)
+  const canTransformClip = !!selectedClip && !selectedClip.locked && (selectedClip.type === 'video' || selectedClip.type === 'image')
   const sceneMaxEnd = allScenes.reduce((max, s) => Math.max(max, s.endTime), 0)
   const effectiveDuration = Math.max(sequence.duration, sceneMaxEnd > 0 ? sceneMaxEnd + 5 : 0)
 
   const handleFreezeFrame = (): void => {
     if (!selectedClip) return
     triggerFreezeFrame(selectedClip)
+  }
+
+  const handleToggleLock = (): void => {
+    if (!selectedClip) return
+    toggleClipLock(selectedClip.id)
+  }
+
+  // Mirror/Rotate reuse the same TimelineClip.transform field
+  // ClipPropertiesPanel.tsx already edits -- no new data model, just a
+  // one-click quick-action for two of its numeric fields. Both a no-op on a
+  // locked clip (matching every other toolbar mutation's disabled-while-
+  // locked convention).
+  const handleMirror = (): void => {
+    if (!selectedClip || selectedClip.locked) return
+    const transform = selectedClip.transform ?? IDENTITY_TRANSFORM
+    updateClipProperties(selectedClip.id, { transform: { ...transform, scaleX: -transform.scaleX } })
+  }
+
+  const handleRotate = (): void => {
+    if (!selectedClip || selectedClip.locked) return
+    const transform = selectedClip.transform ?? IDENTITY_TRANSFORM
+    updateClipProperties(selectedClip.id, { transform: { ...transform, rotation: (transform.rotation + 90) % 360 } })
   }
 
   // No manual beginTransaction/endTransaction here -- each of these is a
@@ -147,7 +198,7 @@ export function TimelineToolbar(): JSX.Element {
   }
 
   const zoomStep = (factor: number): void => {
-    setPixelsPerSecond((prev) => Math.max(MIN_PPS, Math.min(MAX_PPS, prev * factor)))
+    onZoom(Math.max(MIN_PPS, Math.min(MAX_PPS, pixelsPerSecond * factor)))
   }
 
   return (
@@ -172,6 +223,15 @@ export function TimelineToolbar(): JSX.Element {
           onClick={handleTrimRightToPlayhead}
         />
         <ToggleButton icon={<TrashIcon />} label="Delete" shortcut="Delete" active={false} disabled={!canDelete} onClick={handleDelete} />
+        <ToggleButton
+          icon={<LockIcon locked={!!selectedClip?.locked} />}
+          label={selectedClip?.locked ? 'Unlock Clip' : 'Lock Clip'}
+          active={!!selectedClip?.locked}
+          disabled={!selectedClip}
+          onClick={handleToggleLock}
+        />
+        <ToggleButton icon={<MirrorIcon />} label="Mirror" active={false} disabled={!canTransformClip} onClick={handleMirror} />
+        <ToggleButton icon={<RotateIcon />} label="Rotate 90°" active={false} disabled={!canTransformClip} onClick={handleRotate} />
         <ToggleButton
           icon={<span className="timeline-toolbar-freeze-glyph">❄</span>}
           label="Freeze Frame"
@@ -210,7 +270,7 @@ export function TimelineToolbar(): JSX.Element {
             max={ZOOM_SLIDER_MAX}
             step={0.1}
             value={ppsToSlider(pixelsPerSecond)}
-            onChange={(e) => setPixelsPerSecond(Math.min(MAX_PPS, Math.max(MIN_PPS, sliderToPps(Number(e.target.value)))))}
+            onChange={(e) => onZoom(Math.min(MAX_PPS, Math.max(MIN_PPS, sliderToPps(Number(e.target.value)))))}
             title="Zoom"
           />
           <button className="timeline-tool-button" onClick={() => zoomStep(1.4)} title="Zoom in">

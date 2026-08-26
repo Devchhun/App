@@ -1651,17 +1651,6 @@ body {
   height: 26px;
 }
 
-/* Tools toolbar (selection/cut/delete/text/zoom) -- hosted here directly
-   below playback transport, per an explicit layout request, even though it
-   drives the Timeline panel's shared zoom/scene state below. */
-.preview-toolbar-row {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: center;
-  padding-top: 4px;
-  border-top: 1px solid var(--border);
-}
-
 /* Transcript panel */
 
 .transcript-empty,
@@ -2588,9 +2577,27 @@ body {
   align-items: flex-start;
   flex: 1;
   min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.timeline-scroll-2d::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.timeline-scroll-2d::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.timeline-scroll-2d::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+.timeline-scroll-2d::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
 }
 
 .timeline-header-column {
@@ -2647,8 +2654,8 @@ body {
 .timeline-header-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 6px;
+  gap: 2px;
+  padding: 0 5px;
   border-bottom: 1px solid var(--border);
   overflow: hidden;
 }
@@ -2898,8 +2905,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   background: none;
   border: none;
   color: var(--text-dim);
@@ -2946,16 +2953,24 @@ body {
 
 .timeline-tick {
   position: absolute;
-  top: 0;
   bottom: 0;
+  height: 8px;
+  border-left: 1px solid var(--border-strong);
+}
+
+.timeline-tick-minor {
+  position: absolute;
+  bottom: 0;
+  height: 4px;
   border-left: 1px solid var(--border);
+  opacity: 0.6;
 }
 
 .timeline-tick-label {
   position: absolute;
   top: 2px;
-  left: 3px;
-  font-size: 10px;
+  left: 4px;
+  font-size: 9px;
   color: var(--text-dim);
   white-space: nowrap;
 }
@@ -3157,6 +3172,23 @@ body {
   z-index: 5;
 }
 
+/* Small flat-top grip sitting right at the ruler line (CapCut-style), the
+   one part of the playhead that's actually interactive -- everywhere else on
+   `.timeline-playhead` stays pointer-events:none so it never blocks clicks on
+   whatever's underneath it. */
+.timeline-playhead-handle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 0 0 2px 2px;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
 /* Hover skimmer (spec section 7) -- thinner, dimmer secondary line that
    follows the mouse without moving the real playhead. Positioned directly
    via ref in Timeline.tsx (not React state), matching the trim tooltip's
@@ -3169,6 +3201,21 @@ body {
   background: rgba(255, 255, 255, 0.4);
   pointer-events: none;
   z-index: 4;
+}
+
+/* Snap-guide line -- shown for the duration of an active snap match during a
+   clip/scene drag or trim (see ClipTrack.tsx/GraphicsTrack.tsx's onSnapGuide
+   callback), distinct from both the real playhead (accent-colored, always
+   visible) and the hover skimmer (dim, follows the mouse) -- a warm amber so
+   "you're snapped to something" reads as its own, momentary signal. */
+.timeline-snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #ffb84d;
+  pointer-events: none;
+  z-index: 6;
 }
 
 .timeline-box-select {
@@ -3195,16 +3242,14 @@ body {
 
 .timeline-playhead-badge {
   position: absolute;
-  top: -1px;
+  top: 9px;
   left: 4px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
+  color: var(--text-dim);
+  font-size: 8px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  padding: 1px 4px;
-  border-radius: 3px;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 /* AI Suggestions (Phase E) */
@@ -5790,7 +5835,7 @@ body {
   bottom: 3px;
   border-radius: 3px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   overflow: hidden;
   cursor: grab;
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -5798,22 +5843,6 @@ body {
 
 .clip-track-clip-video {
   background: #1c3f7a;
-  position: relative;
-}
-
-/* Decorative embedded-audio strip along the bottom edge, matching the
-   reference editor's video-clip look -- purely visual (not real waveform
-   data), just signals "this clip carries audio" at a glance. */
-.clip-track-clip-video::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 5px;
-  background-color: rgba(6, 20, 36, 0.55);
-  background-image: repeating-linear-gradient(90deg, rgba(120, 220, 255, 0.55) 0, rgba(120, 220, 255, 0.55) 1px, transparent 1px, transparent 3px);
-  pointer-events: none;
 }
 
 .clip-track-clip-image {
@@ -5821,11 +5850,11 @@ body {
 }
 
 .clip-track-clip-audio {
-  background: #1f6b3d;
+  background: #142018;
 }
 
 .clip-track-clip-selected {
-  outline: 2px solid #fff;
+  outline: 1.5px solid var(--accent);
   outline-offset: -1px;
 }
 
@@ -5839,6 +5868,46 @@ body {
   background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.35) 0, rgba(0, 0, 0, 0.35) 4px, transparent 4px, transparent 8px);
 }
 
+/* Title-bar strip (filename + duration) over the filmstrip body -- video/
+   image clips only, matching the reference editor's clip design. A darker
+   band than the clip body so it reads as a header even on a light thumbnail. */
+.clip-track-clip-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 5px;
+  background: rgba(0, 0, 0, 0.4);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.clip-track-clip-title {
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.clip-track-clip-duration {
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.65);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.clip-track-clip-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .clip-track-clip-thumb {
   position: absolute;
   inset: 0;
@@ -5849,37 +5918,44 @@ body {
   pointer-events: none;
 }
 
-.clip-track-clip-type-icon {
-  position: relative;
-  z-index: 1;
-  font-size: 9px;
-  margin-left: 5px;
-  flex-shrink: 0;
+.clip-track-clip-waveform {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
-  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
 }
 
-.clip-track-clip-label {
-  position: relative;
+/* Audio clips have no title bar (the waveform fills nearly the whole clip
+   height) -- filename shown subtly in a corner instead. */
+.clip-track-clip-label-audio {
+  position: absolute;
+  top: 1px;
+  left: 5px;
   z-index: 1;
-  font-size: 10px;
+  font-size: 8px;
   font-weight: 600;
-  color: #fff;
+  color: rgba(255, 255, 255, 0.55);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 0 6px;
+  max-width: calc(100% - 10px);
   pointer-events: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
 .clip-track-clip-badge {
-  position: relative;
+  position: absolute;
+  top: 1px;
+  right: 3px;
   z-index: 1;
   font-size: 9px;
-  margin-right: 4px;
-  flex-shrink: 0;
   pointer-events: none;
+}
+
+.clip-track-clip-badge-locked {
+  right: 16px;
+}
+
+.clip-track-clip-badge-muted {
+  right: 29px;
 }
 
 .clip-track-clip-handle {
@@ -5889,6 +5965,10 @@ body {
   width: 10px;
   cursor: ew-resize;
   z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 3px;
 }
 
 .clip-track-clip-handle-left {
@@ -5900,7 +5980,19 @@ body {
 }
 
 .clip-track-clip-handle:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Small circular corner grip (CapCut-style) shown inside each trim handle's
+   hit area -- the handle's own hit target stays a full-height 10px strip for
+   an easy grab, this is just the visual affordance at the bottom corner. */
+.clip-track-clip-grip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  pointer-events: none;
 }
 
 /* Live timecode/duration tooltip shown while trimming or roll-editing (spec

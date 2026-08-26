@@ -1,15 +1,35 @@
 import { ipcMain, dialog, type BrowserWindow, type WebContents } from 'electron'
 import { spawn } from 'child_process'
-import { mkdir, writeFile, rm, rename } from 'fs/promises'
+import { mkdir, writeFile, rm, rename, readFile } from 'fs/promises'
 import { join } from 'path'
 import { SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
-import type { MediaItem } from '@shared/media'
+import type { MediaItem, WaveformData } from '@shared/media'
 import type { MediaSource } from '@shared/project'
 import { detectFfmpeg, ffmpegPath } from '../media/ffmpeg'
 import { processMediaFile } from '../media/pipeline'
 import { cancelJob, CanceledError } from '../media/jobRunner'
 import { registerMediaToken } from '../media/protocol'
-import { getMediaCacheRoot } from '../media/cache'
+import { getMediaCacheRoot, cacheKeyForFile, pathExists } from '../media/cache'
+
+/** Waveform data lives in the same per-file cache directory as the
+ * thumbnail/proxy (see pipeline.ts's shared `cacheDir`), but -- unlike those
+ * two -- it was never re-read on rehydrate, so it silently disappeared every
+ * time a project was reopened even though the generated `waveform.json` was
+ * still sitting on disk. Recomputes the same content-hash cache key
+ * `generateWaveform` originally wrote under (path+size+mtime of the ORIGINAL
+ * file, not the proxy) rather than requiring a new persisted field on
+ * MediaSource. Silently returns undefined if the source file's moved/missing
+ * or nothing was ever cached for it (e.g. a video with no audio track). */
+async function tryReadCachedWaveform(originalPath: string): Promise<WaveformData | undefined> {
+  try {
+    const key = await cacheKeyForFile(originalPath)
+    const waveformPath = join(getMediaCacheRoot(), key, 'waveform.json')
+    if (!(await pathExists(waveformPath))) return undefined
+    return JSON.parse(await readFile(waveformPath, 'utf-8')) as WaveformData
+  } catch {
+    return undefined
+  }
+}
 
 // mediaId -> original file path, so a Retry can re-run the same source file.
 const retryPaths = new Map<string, string>()
@@ -18,7 +38,7 @@ const retryPaths = new Map<string, string>()
  * re-registers app-media:// tokens for the files already on disk (proxy,
  * thumbnail, original) instead of re-running the whole ffmpeg pipeline,
  * since every field it needs (duration, hasAudio, paths) was already saved. */
-function rehydrateMediaSource(source: MediaSource): MediaItem {
+async function rehydrateMediaSource(source: MediaSource): Promise<MediaItem> {
   return {
     id: source.id,
     kind: source.kind,
@@ -30,6 +50,7 @@ function rehydrateMediaSource(source: MediaSource): MediaItem {
     proxyUrl: source.proxyPath ? registerMediaToken(source.proxyPath) : undefined,
     thumbnailPath: source.thumbnailPath,
     thumbnailUrl: source.thumbnailPath ? registerMediaToken(source.thumbnailPath) : undefined,
+    waveform: source.hasAudio ? await tryReadCachedWaveform(source.originalPath) : undefined,
     metadata: {
       durationSeconds: source.durationSeconds,
       hasVideo: source.kind === 'video',
@@ -49,7 +70,7 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle(MEDIA_IPC.rehydrate, async (_event, sources: MediaSource[]) => {
     for (const source of sources) retryPaths.set(source.id, source.originalPath)
-    return sources.map(rehydrateMediaSource)
+    return Promise.all(sources.map(rehydrateMediaSource))
   })
 
   ipcMain.handle(MEDIA_IPC.pickFiles, async () => {

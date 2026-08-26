@@ -442,6 +442,23 @@ export function applyClipProperties(sequence: ProjectSequence, clipIds: string[]
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
 
+/** "Reset Attributes" (clip context menu) -- same shape as "Paste
+ * Attributes" (applyClipProperties), but the patch is always every
+ * ClipPropertyPatch field cleared back to its un-adjusted default (playback
+ * speed 1x, full opacity/volume, no fades, identity transform) instead of a
+ * copied clip's values. Never touches timing/track/media/link identity,
+ * same as applyClipProperties. */
+export function resetClipProperties(sequence: ProjectSequence, clipIds: string[]): ProjectSequence {
+  return applyClipProperties(sequence, clipIds, {
+    playbackRate: 1,
+    opacity: 1,
+    volume: 1,
+    fadeIn: 0,
+    fadeOut: 0,
+    transform: undefined
+  })
+}
+
 const DURATION_INPUT_PATTERN = /^\s*(?:(\d+(?:\.\d+)?)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s?)?\s*$/i
 
 /** Parses a Clip Properties duration field: "5s", "30s", "1m", "2m 30s", or

@@ -8,12 +8,13 @@ import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
 import { useTimelineShortcuts } from './useTimelineShortcuts'
 import { useUiState } from '../nav/UiStateContext'
 import { TimeRuler } from './TimeRuler'
+import { TimelineToolbar } from './TimelineToolbar'
 import { CaptionsTrack } from './CaptionsTrack'
 import { GraphicsTrack } from './GraphicsTrack'
 import { ClipTrack } from './ClipTrack'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { visibleTracksForDisplay, trackDisplayHeight, type OccupiedRange } from './trackModel'
+import { visibleTracksForDisplay, trackDisplayHeight, isInViewport, type OccupiedRange } from './trackModel'
 import { planSequentialDrop, planStackDrop, type PlannedPlacement } from './placementPlanning'
 import { DropGhostPreview } from './DropGhostPreview'
 import { normalizeRect, clipsInRect, applyBoxSelection, type ClipGeometry, type ScreenRect } from './boxSelection'
@@ -31,7 +32,7 @@ import type { TimelineClip, Scene } from '@shared/project'
 const RULER_HEIGHT_PX = 20
 
 export function Timeline(): JSX.Element {
-  const { items, selectedId, select: selectMediaForInspection } = useMedia()
+  const { items, selectedId, select: selectMediaForInspection, importPaths } = useMedia()
   const { transcripts } = useTranscript()
   const { currentTime, seekTo } = usePlayback()
   const { scenesByMedia, selectedSceneId, selectScene, retimeScene } = useScenes()
@@ -66,6 +67,8 @@ export function Timeline(): JSX.Element {
     removeGap,
     removeAllGapsOnTrack,
     reorderTrack,
+    resetClipProperties,
+    replaceClipMedia,
     addTrack
   } = useSequence()
   const {
@@ -104,9 +107,24 @@ export function Timeline(): JSX.Element {
    * (not React state), same performance pattern as ClipTrack.tsx's live trim
    * tooltip -- a per-pixel-frequency visual doesn't need a re-render. */
   const skimmerRef = useRef<HTMLDivElement>(null)
+  const snapGuideRef = useRef<HTMLDivElement>(null)
   const rangeStartTimeRef = useRef<number | null>(null)
   const headerResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [dragPlacements, setDragPlacements] = useState<PlannedPlacement[] | null>(null)
+  /** "Replace Media" (clip context menu) -- picking a file starts a real
+   * import (proxy/thumbnail/duration all need generating same as any other
+   * import), so the actual `replaceClipMedia` call has to wait until that
+   * freshly-imported MediaItem shows up in `items` as 'ready'. Same
+   * pending-ref-plus-effect-on-items pattern VoiceoverRecorder.tsx already
+   * uses for its own "wait for the import pipeline" case. */
+  const pendingReplaceRef = useRef<{ clipId: string; path: string } | null>(null)
+  /** The visible horizontal time window, in project-absolute seconds -- for
+   * long timelines (1-2 hour narration files) ClipTrack/GraphicsTrack use
+   * this to skip rendering any clip/scene DOM node entirely outside it (see
+   * their own `isInViewport` filter). `null` until the scroll container
+   * exists/has been measured, meaning "render everything" -- a conservative
+   * fallback, never a broken one. */
+  const [viewportRange, setViewportRange] = useState<{ start: number; end: number } | null>(null)
 
   // The currently-selected Media asset is used only to pick which media's
   // transcript/captions to show -- it must never gate whether the Timeline
@@ -302,6 +320,30 @@ export function Timeline(): JSX.Element {
     [splitClipAt, linkageOn]
   )
 
+  const handleReplaceMedia = useCallback(
+    async (clipId: string) => {
+      const paths = await window.api.media.pickFiles()
+      const path = paths[0]
+      if (!path) return
+      pendingReplaceRef.current = { clipId, path }
+      await importPaths([path])
+    },
+    [importPaths]
+  )
+
+  // Completes handleReplaceMedia once the freshly-imported file actually
+  // finishes going through the import pipeline (proxy/thumbnail/duration).
+  useEffect(() => {
+    const pending = pendingReplaceRef.current
+    if (!pending) return
+    const match = items.find((item) => item.originalPath === pending.path)
+    if (!match || (match.stage !== 'ready' && match.stage !== 'error')) return
+    pendingReplaceRef.current = null
+    if (match.stage === 'error') return
+    replaceClipMedia(pending.clipId, match.id, match.metadata?.durationSeconds ?? 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only `items` should retrigger this; replaceClipMedia is a stable context callback.
+  }, [items])
+
   /** Clip context menu (spec section 11) -- every item delegates to an
    * already-real command (clipboard, linkage, group, gap, track-reorder,
    * Freeze Frame via the shared useFreezeFrame hook -- see its own doc
@@ -346,6 +388,9 @@ export function Timeline(): JSX.Element {
         },
         { label: clip.groupId ? 'Ungroup' : 'Group Selected', onClick: clip.groupId ? ungroupSelected : groupSelected, disabled: !clip.groupId && selectedTimelineClipIds.length < 2 },
         { separator: true, label: '' },
+        { label: 'Replace Media…', onClick: () => void handleReplaceMedia(clip.id), disabled: clip.locked },
+        { label: 'Reset Attributes', onClick: () => resetClipProperties(selectedTimelineClipIds.includes(clip.id) ? selectedTimelineClipIds : [clip.id]) },
+        { separator: true, label: '' },
         { label: 'Speed…', onClick: () => setRightTab('graphics') },
         { label: 'Freeze Frame', onClick: () => triggerFreezeFrame(clip), disabled: !canFreezeFrameCheck(clip, currentTime) },
         ...(otherCompatibleTracks.length > 0
@@ -383,7 +428,9 @@ export function Timeline(): JSX.Element {
       selectMediaForInspection,
       setRightTab,
       linkageOn,
-      triggerFreezeFrame
+      triggerFreezeFrame,
+      handleReplaceMedia,
+      resetClipProperties
     ]
   )
 
@@ -431,6 +478,29 @@ export function Timeline(): JSX.Element {
       }
     },
     [pixelsPerSecond, trackHeaderWidth, setPixelsPerSecond]
+  )
+
+  /** Same cursor-preserving math the wheel handler above uses, anchored on
+   * the playhead's own position instead of the mouse -- there's no "last
+   * mouse position" to anchor to when the toolbar's zoom-in/out buttons or
+   * slider are clicked, and the playhead is the one position on screen a
+   * user zooming via those controls is most likely trying to keep in view. */
+  const zoomAroundPlayhead = useCallback(
+    (newPps: number) => {
+      const scrollEl = scrollRef.current
+      const clamped = Math.max(MIN_PPS, Math.min(MAX_PPS, newPps))
+      if (!scrollEl) {
+        setPixelsPerSecond(clamped)
+        return
+      }
+      const cursorX = currentTime * pixelsPerSecond - scrollEl.scrollLeft
+      const newScrollLeft = computeZoomAroundCursor(scrollEl.scrollLeft, cursorX, pixelsPerSecond, clamped)
+      setPixelsPerSecond(clamped)
+      requestAnimationFrame(() => {
+        if (scrollRef.current) scrollRef.current.scrollLeft = newScrollLeft
+      })
+    },
+    [currentTime, pixelsPerSecond, setPixelsPerSecond]
   )
 
   const buildRulerMenuItems = useCallback(
@@ -490,7 +560,7 @@ export function Timeline(): JSX.Element {
         }
       }
 
-      if (target.closest('.timeline-ruler')) {
+      if (target.closest('.timeline-ruler') || target.closest('.timeline-playhead-handle')) {
         setContextMenu({ x: e.clientX, y: e.clientY, items: buildRulerMenuItems(atTime) })
         return
       }
@@ -577,11 +647,12 @@ export function Timeline(): JSX.Element {
       setRangeSelection({ start: t, end: t })
       return
     }
-    // Ruler drags scrub the playhead (existing behavior); everywhere else
-    // starts a POTENTIAL box-select -- it isn't committed to one until the
-    // pointer actually moves (see handlePointerMove), so a plain click still
-    // just clears selection + seeks like before.
-    if ((e.target as HTMLElement).closest('.timeline-ruler')) {
+    // Ruler drags (and grabbing the playhead's own handle) scrub the playhead
+    // (existing behavior); everywhere else starts a POTENTIAL box-select --
+    // it isn't committed to one until the pointer actually moves (see
+    // handlePointerMove), so a plain click still just clears selection +
+    // seeks like before.
+    if ((e.target as HTMLElement).closest('.timeline-ruler, .timeline-playhead-handle')) {
       draggingRef.current = 'scrub'
       seekFromClientX(e.clientX)
       return
@@ -671,7 +742,26 @@ export function Timeline(): JSX.Element {
     setBoxRect(null)
     panStartRef.current = null
     if (skimmerRef.current) skimmerRef.current.style.display = 'none'
+    if (snapGuideRef.current) snapGuideRef.current.style.display = 'none'
   }
+
+  // Imperative, ref-mutation update for the shared snap-guide line -- passed
+  // to every ClipTrack/GraphicsTrack row so a drag/trim on ANY track can show
+  // the SAME one line (matches the skimmer's own "no React state, no
+  // per-pixel re-render" pattern). `time === null` hides it.
+  const updateSnapGuide = useCallback(
+    (time: number | null) => {
+      const el = snapGuideRef.current
+      if (!el) return
+      if (time === null) {
+        el.style.display = 'none'
+        return
+      }
+      el.style.display = 'block'
+      el.style.left = `${time * pixelsPerSecond}px`
+    },
+    [pixelsPerSecond]
+  )
 
   // Track-header column width resize -- lightweight local pointer-drag
   // rather than reusing Splitter.tsx (that component's absolute-overlay
@@ -714,32 +804,66 @@ export function Timeline(): JSX.Element {
     return () => scrollEl.removeEventListener('wheel', handleWheel)
   }, [handleWheel, isEmpty])
 
+  // Horizontal-culling viewport tracking (spec section 17: long narration
+  // files must stay smooth) -- rAF-throttled since native scroll events fire
+  // far more often than once per frame. A margin past both edges means a
+  // clip just outside the visible area is already mounted (thumbnails
+  // decoding, etc.) by the time a normal-speed scroll brings it into view,
+  // rather than popping in only once fully visible.
+  useEffect(() => {
+    const scrollEl = scrollRef.current
+    if (!scrollEl) return
+    let rafId: number | null = null
+    const marginPx = 400
+    const update = (): void => {
+      rafId = null
+      const start = Math.max(0, (scrollEl.scrollLeft - marginPx) / pixelsPerSecond)
+      const end = (scrollEl.scrollLeft + scrollEl.clientWidth + marginPx) / pixelsPerSecond
+      setViewportRange({ start, end })
+    }
+    const onScroll = (): void => {
+      if (rafId === null) rafId = requestAnimationFrame(update)
+    }
+    update()
+    scrollEl.addEventListener('scroll', onScroll, { passive: true })
+    const observer = new ResizeObserver(update)
+    observer.observe(scrollEl)
+    return () => {
+      scrollEl.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+      if (rafId !== null) cancelAnimationFrame(rafId)
+    }
+  }, [pixelsPerSecond, isEmpty])
+
   if (isEmpty) {
     return (
-      <div
-        className="timeline-empty"
-        onDragOver={(e) => {
-          if (!getCurrentDragMediaIds()) return
-          e.preventDefault()
-          e.dataTransfer.dropEffect = 'copy'
-        }}
-        onDrop={(e) => {
-          e.preventDefault()
-          setCurrentDragMediaIds(null)
-          const raw = e.dataTransfer.getData(MEDIA_DRAG_MIME_TYPE)
-          if (!raw) return
-          try {
-            const payload: MediaDragPayload = JSON.parse(raw)
-            const assets = payload.mediaIds.map((id) => mediaById[id]).filter((m): m is MediaItem => Boolean(m)).map(assetFromMediaItem)
-            if (assets.length > 0) insertPlannedClips(planSequentialDrop(assets, 0, sequence.tracks, []))
-          } catch {
-            // Malformed/foreign drag payload -- ignore.
-          }
-        }}
-      >
-        <div className="timeline-empty-card">
-          <span className="timeline-empty-icon">▭</span>
-          <span>Drag material here and start to create</span>
+      <div className="timeline-root">
+        <TimelineToolbar onZoom={zoomAroundPlayhead} />
+        <div
+          className="timeline-empty"
+          onDragOver={(e) => {
+            if (!getCurrentDragMediaIds()) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            setCurrentDragMediaIds(null)
+            const raw = e.dataTransfer.getData(MEDIA_DRAG_MIME_TYPE)
+            if (!raw) return
+            try {
+              const payload: MediaDragPayload = JSON.parse(raw)
+              const assets = payload.mediaIds.map((id) => mediaById[id]).filter((m): m is MediaItem => Boolean(m)).map(assetFromMediaItem)
+              if (assets.length > 0) insertPlannedClips(planSequentialDrop(assets, 0, sequence.tracks, []))
+            } catch {
+              // Malformed/foreign drag payload -- ignore.
+            }
+          }}
+        >
+          <div className="timeline-empty-card">
+            <span className="timeline-empty-icon">▭</span>
+            <span>Drag material here and start to create</span>
+          </div>
         </div>
       </div>
     )
@@ -747,6 +871,7 @@ export function Timeline(): JSX.Element {
 
   return (
     <div className="timeline-root">
+      <TimelineToolbar onZoom={zoomAroundPlayhead} />
       <div
         className="timeline-header-resize-handle"
         style={{ left: trackHeaderWidth }}
@@ -779,11 +904,15 @@ export function Timeline(): JSX.Element {
 
             {sortedTracks.map((track) => {
               if (track.kind === 'graphic' || track.kind === 'text') {
+                const trackScenes = scenesByTrackId[track.id] ?? []
+                const visibleScenes = viewportRange
+                  ? trackScenes.filter((s) => isInViewport(s.startTime, s.endTime - s.startTime, viewportRange.start, viewportRange.end))
+                  : trackScenes
                 return (
                   <GraphicsTrack
                     key={track.id}
                     track={track}
-                    scenes={scenesByTrackId[track.id] ?? []}
+                    scenes={visibleScenes}
                     allClips={sequence.clips}
                     allScenes={allScenes}
                     markers={sequence.markers}
@@ -793,6 +922,7 @@ export function Timeline(): JSX.Element {
                     selectedSceneId={selectedSceneId}
                     onSelect={handleSelectScene}
                     onRetime={(sceneId, start, end) => retimeScene(sceneMediaIdById[sceneId] ?? '', sceneId, start, end)}
+                    onSnapGuide={updateSnapGuide}
                   />
                 )
               }
@@ -812,11 +942,12 @@ export function Timeline(): JSX.Element {
               }
               // video / audio
               const clips = clipsByTrackId[track.id] ?? []
+              const visibleClips = viewportRange ? clips.filter((c) => isInViewport(c.startTime, c.duration, viewportRange.start, viewportRange.end)) : clips
               return (
                 <div key={track.id}>
                   <ClipTrack
                     track={track}
-                    clips={clips}
+                    clips={visibleClips}
                     allClips={sequence.clips}
                     tracks={sequence.tracks}
                     markers={sequence.markers}
@@ -831,6 +962,7 @@ export function Timeline(): JSX.Element {
                     onTrim={trimClip}
                     onBladeSplit={handleBladeSplit}
                     onRollEdit={rollEditClips}
+                    onSnapGuide={updateSnapGuide}
                   />
                   {track.kind === 'audio' && clips.length === 0 && (
                     <span className="timeline-track-empty-label">No audio on this track</span>
@@ -840,10 +972,12 @@ export function Timeline(): JSX.Element {
             })}
 
             <div className="timeline-playhead" style={{ left: currentTime * pixelsPerSecond }}>
+              <div className="timeline-playhead-handle" title="Drag to scrub" />
               <span className="timeline-playhead-badge">{formatDuration(currentTime)}</span>
             </div>
 
             {skimmerOn && <div ref={skimmerRef} className="timeline-skimmer" style={{ display: 'none' }} />}
+            <div ref={snapGuideRef} className="timeline-snap-guide" style={{ display: 'none' }} />
 
             {dragPlacements && (
               <DropGhostPreview placements={dragPlacements} pixelsPerSecond={pixelsPerSecond} trackTopById={trackTopById} trackHeightById={trackHeightById} />

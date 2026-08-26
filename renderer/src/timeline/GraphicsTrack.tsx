@@ -21,6 +21,9 @@ interface Props {
   selectedSceneId: string | null
   onSelect: (sceneId: string) => void
   onRetime: (sceneId: string, startTime: number, endTime: number) => void
+  /** See ClipTrack.tsx's identical prop -- imperatively shows/hides the
+   * shared Timeline-wide snap-guide line. */
+  onSnapGuide: (time: number | null) => void
 }
 
 type DragMode = 'move' | 'resize-left' | 'resize-right'
@@ -37,7 +40,7 @@ interface DragState {
 const MIN_SCENE_DURATION = 0.2
 const SNAP_THRESHOLD_PX = 8
 
-export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, playheadTime, duration, pixelsPerSecond, selectedSceneId, onSelect, onRetime }: Props): JSX.Element {
+export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, playheadTime, duration, pixelsPerSecond, selectedSceneId, onSelect, onRetime, onSnapGuide }: Props): JSX.Element {
   const trackLocked = track.locked
   const dragState = useRef<DragState | null>(null)
   /** Same rAF-throttled commit pattern as ClipTrack.tsx -- see its comment.
@@ -78,10 +81,15 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
 
   const applySnap = useCallback(
     (rawTime: number, altKey: boolean, candidates: SnapCandidate[]): number => {
-      if (!snappingOn || altKey) return rawTime
-      return findSnapMatch(rawTime, candidates, SNAP_THRESHOLD_PX, pixelsPerSecond).time
+      if (!snappingOn || altKey) {
+        onSnapGuide(null)
+        return rawTime
+      }
+      const match = findSnapMatch(rawTime, candidates, SNAP_THRESHOLD_PX, pixelsPerSecond)
+      onSnapGuide(match.snapped ? match.time : null)
+      return match.time
     },
-    [snappingOn, pixelsPerSecond]
+    [snappingOn, pixelsPerSecond, onSnapGuide]
   )
 
   const performMove = useCallback(
@@ -142,8 +150,9 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
     if (dragState.current) {
       dragState.current = null
       endTransaction()
+      onSnapGuide(null)
     }
-  }, [endTransaction, performMove])
+  }, [endTransaction, performMove, onSnapGuide])
 
   return (
     <div

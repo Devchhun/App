@@ -21,6 +21,11 @@ function pickTickInterval(pixelsPerSecond: number): number {
   return candidates[candidates.length - 1]
 }
 
+/** How many minor (unlabeled, shorter) ticks render between each major
+ * (labeled) tick -- purely visual, CapCut-style subdivision, no effect on
+ * `pickTickInterval`'s own major-spacing math. */
+const MINOR_TICKS_PER_MAJOR = 5
+
 /** Movement past this (px) while a marker flag is held down counts as a drag
  * rather than a click-to-seek -- matches the same click-vs-drag threshold
  * convention used for box-select elsewhere in the Timeline. */
@@ -38,6 +43,13 @@ export function TimeRuler({ duration, pixelsPerSecond, markers }: Props): JSX.El
   const interval = pickTickInterval(pixelsPerSecond)
   const tickCount = Math.ceil(duration / interval) + 1
   const ticks = Array.from({ length: tickCount }, (_, i) => i * interval)
+  // One shorter, unlabeled tick per minor subdivision -- skips i=0 of every
+  // major interval (that's the major tick itself, already rendered above).
+  const minorStep = interval / MINOR_TICKS_PER_MAJOR
+  const minorTickCount = Math.ceil(duration / minorStep) + 1
+  const minorTicks = Array.from({ length: minorTickCount }, (_, i) => i)
+    .filter((i) => i % MINOR_TICKS_PER_MAJOR !== 0)
+    .map((i) => i * minorStep)
 
   const timeFromClientX = (clientX: number): number => {
     const rect = rulerRef.current?.getBoundingClientRect()
@@ -86,6 +98,9 @@ export function TimeRuler({ duration, pixelsPerSecond, markers }: Props): JSX.El
 
   return (
     <div className="timeline-ruler" style={{ width: duration * pixelsPerSecond }} ref={rulerRef}>
+      {minorTicks.map((t) => (
+        <div key={t} className="timeline-tick-minor" style={{ left: t * pixelsPerSecond }} />
+      ))}
       {ticks.map((t) => (
         <div key={t} className="timeline-tick" style={{ left: t * pixelsPerSecond }}>
           <span className="timeline-tick-label">{formatDuration(t)}</span>

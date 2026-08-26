@@ -6,7 +6,6 @@ import { useSequence } from '../sequence/SequenceContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
 import { GraphicsOverlay } from '../templates/GraphicsOverlay'
 import { SceneSelectionOverlay } from '../scenes/SceneSelectionOverlay'
-import { TimelineToolbar } from '../timeline/TimelineToolbar'
 import { formatTimecode } from './format'
 import { computeStageSize } from './previewStageSize'
 import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode } from './previewPreferences'
@@ -567,9 +566,6 @@ export function PreviewPlayer(): JSX.Element {
           </div>
         </>
       )}
-      <div className="preview-toolbar-row">
-        <TimelineToolbar />
-      </div>
     </div>
   )
 }

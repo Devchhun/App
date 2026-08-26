@@ -8,8 +8,9 @@ import { trackDisplayHeight, getMainVideoTrackId, nextTrackId } from './trackMod
 import { buildSnapCandidates, findSnapMatch, type SnapCandidate } from './snapping'
 import type { RippleScope } from './timelineViewPrefs'
 import { VideoFilmstrip } from './VideoFilmstrip'
+import { WaveformTrack } from './WaveformTrack'
 import type { ClickModifiers } from '../sequence/sequenceSelection'
-import { formatDuration } from '../media/format'
+import { formatDuration, formatTimecode } from '../media/format'
 
 interface Props {
   track: TimelineTrack
@@ -40,6 +41,12 @@ interface Props {
    * keyed by clip id, so a right-edge extension doesn't exceed either
    * clip's own real source length. */
   onRollEdit: (leftClipId: string, rightClipId: string, pointerTime: number, sourceDurationSecondsByClip?: Record<string, number | undefined>) => void
+  /** Imperatively shows/hides the shared Timeline-wide snap-guide line (owned
+   * by Timeline.tsx, matching the skimmer's own ref-mutation pattern rather
+   * than React state) -- `null` hides it. Called on every drag/trim
+   * pointermove and once more on pointerup to always clear it when the drag
+   * ends. */
+  onSnapGuide: (time: number | null) => void
 }
 
 type DragMode = 'move' | 'trim-left' | 'trim-right' | 'roll'
@@ -111,7 +118,8 @@ export function ClipTrack({
   onMove,
   onTrim,
   onBladeSplit,
-  onRollEdit
+  onRollEdit,
+  onSnapGuide
 }: Props): JSX.Element {
   const trackLocked = track.locked
   const dragState = useRef<DragState | null>(null)
@@ -132,7 +140,7 @@ export function ClipTrack({
    * mid-drag doesn't leave a stale highlight on the previous one. */
   const dropTargetElRef = useRef<HTMLElement | null>(null)
   const { beginTransaction, endTransaction } = useHistory()
-  const { magnetOn, rippleOn, rippleScope, snappingOn, linkageOn, tool, trackHeightMode } = useTimelineView()
+  const { magnetOn, rippleOn, rippleScope, snappingOn, linkageOn, tool, trackHeightMode, showWaveforms } = useTimelineView()
 
   /** Live timecode/duration tooltip during trim/roll (spec section 5) --
    * updates a DOM node directly via ref rather than React state, matching
@@ -248,10 +256,15 @@ export function ClipTrack({
 
   const applySnap = useCallback(
     (rawTime: number, altKey: boolean, candidates: SnapCandidate[]): number => {
-      if (!snappingOn || altKey) return rawTime
-      return findSnapMatch(rawTime, candidates, SNAP_THRESHOLD_PX, pixelsPerSecond).time
+      if (!snappingOn || altKey) {
+        onSnapGuide(null)
+        return rawTime
+      }
+      const match = findSnapMatch(rawTime, candidates, SNAP_THRESHOLD_PX, pixelsPerSecond)
+      onSnapGuide(match.snapped ? match.time : null)
+      return match.time
     },
-    [snappingOn, pixelsPerSecond]
+    [snappingOn, pixelsPerSecond, onSnapGuide]
   )
 
   const performMove = useCallback(
@@ -372,15 +385,25 @@ export function ClipTrack({
       dragState.current = null
       endTransaction()
       hideTrimTooltip()
+      onSnapGuide(null)
       dropTargetElRef.current?.classList.remove('clip-track-drop-target')
       dropTargetElRef.current = null
     }
-  }, [endTransaction, hideTrimTooltip, performMove])
+  }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide])
+
+  const rowHeight = trackDisplayHeight(track, trackHeightMode)
+  // Video/image clips get a real title-bar strip (filename + duration) over
+  // a filmstrip body, matching the reference editor's clip design; audio
+  // clips skip the opaque strip entirely so the waveform can fill nearly the
+  // whole clip height (spec: "waveform fills most of the track height"),
+  // with just a subtle overlaid label instead. Clamped so a very short
+  // compact-mode row never loses all its body space to the title bar.
+  const titleBarHeightPx = Math.min(14, Math.max(0, rowHeight - 10))
 
   return (
     <div
       className={`timeline-track clip-track clip-track-kind-${track.kind} clip-track-tool-${tool}${track.hidden ? ' timeline-track-hidden' : ''}`}
-      style={{ width: Math.max(1, duration * pixelsPerSecond), height: trackDisplayHeight(track, trackHeightMode) }}
+      style={{ width: Math.max(1, duration * pixelsPerSecond), height: rowHeight }}
       data-track-id={track.id}
       data-track-kind={track.kind}
       onPointerMove={handlePointerMove}
@@ -391,6 +414,8 @@ export function ClipTrack({
         const locked = clip.locked || trackLocked
         const selected = selectedClipIds.includes(clip.id)
         const widthPx = Math.max(MIN_CLIP_WIDTH_PX, clip.duration * pixelsPerSecond)
+        const isAudio = clip.type === 'audio'
+        const bodyHeightPx = Math.max(0, rowHeight - (isAudio ? 0 : titleBarHeightPx) - 6)
 
         return (
           <div
@@ -413,21 +438,43 @@ export function ClipTrack({
             }}
             title={clipLabel(clip, media)}
           >
-            {clip.type === 'video' && media && (
-              <VideoFilmstrip src={media.proxyUrl ?? media.originalUrl} duration={clip.duration} widthPx={widthPx} startOffset={clip.sourceIn} />
+            {!isAudio && (
+              <div className="clip-track-clip-titlebar" style={{ height: titleBarHeightPx }}>
+                <span className="clip-track-clip-title">{clipLabel(clip, media)}</span>
+                <span className="clip-track-clip-duration">{formatTimecode(clip.duration, media?.metadata?.frameRate)}</span>
+              </div>
             )}
-            {clip.type === 'image' && media?.thumbnailUrl && <img className="clip-track-clip-thumb" src={media.thumbnailUrl} alt="" draggable={false} />}
 
-            <span className="clip-track-clip-type-icon">{clip.type === 'video' ? '▶' : clip.type === 'image' ? '🖼' : '♪'}</span>
-            <span className="clip-track-clip-label">{clipLabel(clip, media)}</span>
+            <div className="clip-track-clip-body" style={{ height: bodyHeightPx }}>
+              {clip.type === 'video' && media && (
+                <VideoFilmstrip src={media.proxyUrl ?? media.originalUrl} duration={clip.duration} widthPx={widthPx} startOffset={clip.sourceIn} />
+              )}
+              {clip.type === 'image' && media?.thumbnailUrl && <img className="clip-track-clip-thumb" src={media.thumbnailUrl} alt="" draggable={false} />}
+              {isAudio && showWaveforms && (
+                <WaveformTrack
+                  waveform={media?.waveform}
+                  sourceDurationSeconds={media?.metadata?.durationSeconds ?? 0}
+                  sourceIn={clip.sourceIn}
+                  duration={clip.duration}
+                  widthPx={widthPx}
+                  heightPx={bodyHeightPx}
+                />
+              )}
+            </div>
+
+            {isAudio && <span className="clip-track-clip-label clip-track-clip-label-audio">{clipLabel(clip, media)}</span>}
             {clip.linkedClipId && <span className="clip-track-clip-badge clip-track-clip-badge-linked" title="Linked to its audio/video partner">🔗</span>}
             {clip.locked && <span className="clip-track-clip-badge clip-track-clip-badge-locked" title="Locked">🔒</span>}
             {clip.muted && <span className="clip-track-clip-badge clip-track-clip-badge-muted" title="Muted">🔇</span>}
 
             {!locked && selected && tool === 'select' && (
               <>
-                <div className="clip-track-clip-handle clip-track-clip-handle-left" onPointerDown={(e) => handlePointerDown(e, clip, 'trim-left')} />
-                <div className="clip-track-clip-handle clip-track-clip-handle-right" onPointerDown={(e) => handlePointerDown(e, clip, 'trim-right')} />
+                <div className="clip-track-clip-handle clip-track-clip-handle-left" onPointerDown={(e) => handlePointerDown(e, clip, 'trim-left')}>
+                  <span className="clip-track-clip-grip" />
+                </div>
+                <div className="clip-track-clip-handle clip-track-clip-handle-right" onPointerDown={(e) => handlePointerDown(e, clip, 'trim-right')}>
+                  <span className="clip-track-clip-grip" />
+                </div>
               </>
             )}
           </div>

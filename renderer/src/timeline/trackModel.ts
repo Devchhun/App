@@ -128,6 +128,17 @@ export function findOrCreateTrack(
   return { trackId: id, newTrack }
 }
 
+/** Horizontal-culling predicate (spec section 17: 1-2 hour narration files
+ * must stay smooth) -- half-open-interval overlap test, same convention as
+ * rangesOverlap, so a clip exactly touching the viewport edge (startTime ===
+ * viewEnd) correctly counts as NOT visible rather than off-by-one flickering
+ * in. Generic over just the two numbers every clip/scene shares (startTime +
+ * duration, or startTime/endTime translated to duration by the caller) so
+ * this works for both TimelineClip and Scene without importing either type. */
+export function isInViewport(startTime: number, duration: number, viewStart: number, viewEnd: number): boolean {
+  return startTime < viewEnd && startTime + duration > viewStart
+}
+
 /** Which tracks the Timeline actually renders as a row -- an empty track (no
  * clips, no scenes) is only worth showing if it's structurally required: the
  * current main video track (isMain, so there's always an obvious place to

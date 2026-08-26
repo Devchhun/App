@@ -99,6 +99,22 @@ export function ExportIcon({ size = 16 }: IconProps): JSX.Element {
   )
 }
 
+export function MirrorIcon({ size = 15 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M10 3v14M4 6l3 4-3 4M16 6l-3 4 3 4" />
+    </svg>
+  )
+}
+
+export function RotateIcon({ size = 15 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M4 10a6 6 0 1 1 2 4.5M4 10v4h4" />
+    </svg>
+  )
+}
+
 export function UpdateIcon({ size = 16 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} {...base}>

@@ -29,6 +29,7 @@ import {
   moveClipToNewTrack,
   pickClipProperties,
   applyClipProperties,
+  resetClipProperties,
   replaceClipMedia,
   addMarker,
   moveMarker,
@@ -840,6 +841,39 @@ describe('pickClipProperties / applyClipProperties (Paste Attributes)', () => {
     const result = applyClipProperties(sequence, ['a', 'b'], { opacity: 0.4 })
     expect(result.clips.find((c) => c.id === 'a')!.opacity).toBe(0.4)
     expect(result.clips.find((c) => c.id === 'b')!.opacity).toBe(1)
+  })
+})
+
+describe('resetClipProperties', () => {
+  it('clears every adjustable field back to its un-adjusted default', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'a', opacity: 0.4, volume: 0.2, playbackRate: 2, fadeIn: 1, fadeOut: 1, transform: { x: 5, y: 5, scaleX: -1, scaleY: 1, rotation: 90, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 } })
+    ])
+    const result = resetClipProperties(sequence, ['a'])
+    const clip = result.clips.find((c) => c.id === 'a')!
+    expect(clip.opacity).toBe(1)
+    expect(clip.volume).toBe(1)
+    expect(clip.playbackRate).toBe(1)
+    expect(clip.fadeIn).toBe(0)
+    expect(clip.fadeOut).toBe(0)
+    expect(clip.transform).toBeUndefined()
+  })
+
+  it('never touches timing, track, media, or link identity', () => {
+    const sequence = seqOf([videoClip({ id: 'a', startTime: 5, duration: 10, trackId: 'V1', mediaId: 'm1', linkedClipId: 'b', opacity: 0.5 })])
+    const result = resetClipProperties(sequence, ['a'])
+    const clip = result.clips.find((c) => c.id === 'a')!
+    expect(clip.startTime).toBe(5)
+    expect(clip.duration).toBe(10)
+    expect(clip.trackId).toBe('V1')
+    expect(clip.mediaId).toBe('m1')
+    expect(clip.linkedClipId).toBe('b')
+  })
+
+  it('leaves a locked clip untouched', () => {
+    const sequence = seqOf([videoClip({ id: 'a', opacity: 0.3, locked: true })])
+    const result = resetClipProperties(sequence, ['a'])
+    expect(result.clips.find((c) => c.id === 'a')!.opacity).toBe(0.3)
   })
 })
 

@@ -17,6 +17,8 @@ import {
   setClipsMuted as setClipsMutedOp,
   pickClipProperties,
   applyClipProperties as applyClipPropertiesOp,
+  resetClipProperties as resetClipPropertiesOp,
+  replaceClipMedia as replaceClipMediaOp,
   type ClipPropertyPatch,
   linkClips as linkClipsOp,
   unlinkClips as unlinkClipsOp,
@@ -148,6 +150,13 @@ interface SequenceContextValue {
    * section 16). Applies to exactly one clip (the panel only ever edits the
    * first selected one); a no-op for a locked clip. */
   updateClipProperties: (clipId: string, patch: ClipPropertyPatch) => void
+  /** "Reset Attributes" (clip context menu) -- clears every ClipPropertyPatch
+   * field on the given clips back to its un-adjusted default. */
+  resetClipProperties: (clipIds: string[]) => void
+  /** "Replace Media" (clip context menu) -- swaps which media asset a clip
+   * points at (already-imported `newMediaId`), resetting sourceIn/duration to
+   * fit the replacement's own length. */
+  replaceClipMedia: (clipId: string, newMediaId: string, newSourceDurationSeconds: number) => void
 
   /** Blade tool -- splits exactly `clipId` at `atTime`, independent of the
    * current selection (unlike splitSelected). A no-op for a locked clip. */
@@ -467,6 +476,14 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSequence((prev) => applyClipPropertiesOp(prev, [clipId], patch))
   }, [])
 
+  const resetClipProperties = useCallback((clipIds: string[]) => {
+    setSequence((prev) => resetClipPropertiesOp(prev, clipIds))
+  }, [])
+
+  const replaceClipMedia = useCallback((clipId: string, newMediaId: string, newSourceDurationSeconds: number) => {
+    setSequence((prev) => replaceClipMediaOp(prev, clipId, newMediaId, newSourceDurationSeconds))
+  }, [])
+
   const splitClipAt = useCallback((clipId: string, atTime: number, options?: { linked?: boolean }) => {
     setSequence((prev) => splitClipOp(prev, clipId, atTime, { linked: options?.linked ?? true }))
   }, [])
@@ -570,6 +587,8 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       pasteAttributesToSelected,
       hasClipboardContent,
       updateClipProperties,
+      resetClipProperties,
+      replaceClipMedia,
       splitClipAt,
       rollEditClips,
       deleteRange,
@@ -623,6 +642,8 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       pasteAttributesToSelected,
       hasClipboardContent,
       updateClipProperties,
+      resetClipProperties,
+      replaceClipMedia,
       splitClipAt,
       rollEditClips,
       deleteRange,
