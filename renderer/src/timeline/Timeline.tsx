@@ -125,13 +125,15 @@ export function Timeline(): JSX.Element {
    * exists/has been measured, meaning "render everything" -- a conservative
    * fallback, never a broken one. */
   const [viewportRange, setViewportRange] = useState<{ start: number; end: number } | null>(null)
-  /** IDs of every clip seen in `sequence.clips` as of the last render --
-   * lets the effect below tell "a clip was just added" apart from any other
-   * reason the array changed (move/trim/delete), without needing every
-   * different insertion call site (Add to Timeline, drag-drop from Media,
-   * template insert, paste, duplicate...) to separately remember to scroll
-   * the view afterward. */
+  /** IDs of every clip/scene seen as of the last render -- lets the effect
+   * below tell "something was just added" apart from any other reason the
+   * arrays changed (move/trim/delete), without needing every different
+   * insertion call site (Add to Timeline, drag-drop from Media, template
+   * insert, Voiceover Recorder, paste, duplicate...) to separately remember
+   * to scroll the view afterward. Covers clips (video/image/audio) AND
+   * scenes (graphics/text) in one combined id set. */
   const knownClipIdsRef = useRef<Set<string> | null>(null)
+  const knownSceneIdsRef = useRef<Set<string> | null>(null)
 
   // The currently-selected Media asset is used only to pick which media's
   // transcript/captions to show -- it must never gate whether the Timeline
@@ -842,32 +844,41 @@ export function Timeline(): JSX.Element {
     }
   }, [pixelsPerSecond, isEmpty])
 
-  // Scrolls the Timeline to center the view on a clip the moment it first
-  // appears -- covers every insertion path (Add to Timeline, drag-drop from
-  // Media, template insert, paste, duplicate) in one place, rather than
-  // requiring each call site to separately remember to do this. Skipped on
-  // the very first render after mount/project-load (knownClipIdsRef.current
-  // still null) so opening a project with existing clips doesn't yank the
-  // view to wherever its last clip happens to be.
+  // Scrolls the Timeline the moment a new clip or scene first appears --
+  // covers every insertion path (Add to Timeline, drag-drop from Media,
+  // template insert, Voiceover Recorder, paste, duplicate) in one place,
+  // rather than requiring each call site to separately remember to do this.
+  // Skipped on the very first render after mount/project-load (the known-id
+  // refs still null) so opening a project with existing content doesn't yank
+  // the view to wherever its last item happens to be.
+  //
+  // This is purely a scroll position -- it never touches a clip/scene's real
+  // startTime or the playhead. New items are always inserted at the exact
+  // playhead time by their insertion call site (ImportPanel, Templates,
+  // Voiceover Recorder); this effect only decides where that same point
+  // lands within the visible viewport afterward.
   useEffect(() => {
-    const currentIds = new Set(sequence.clips.map((c) => c.id))
-    const previousIds = knownClipIdsRef.current
-    knownClipIdsRef.current = currentIds
-    if (!previousIds) return
-    const newClips = sequence.clips.filter((c) => !previousIds.has(c.id))
-    if (newClips.length === 0) return
+    const currentClipIds = new Set(sequence.clips.map((c) => c.id))
+    const previousClipIds = knownClipIdsRef.current
+    knownClipIdsRef.current = currentClipIds
+    const currentSceneIds = new Set(allScenes.map((s) => s.id))
+    const previousSceneIds = knownSceneIdsRef.current
+    knownSceneIdsRef.current = currentSceneIds
+    if (!previousClipIds || !previousSceneIds) return
+    const newClips = sequence.clips.filter((c) => !previousClipIds.has(c.id))
+    const newScenes = allScenes.filter((s) => !previousSceneIds.has(s.id))
+    if (newClips.length === 0 && newScenes.length === 0) return
     const scrollEl = scrollRef.current
     if (!scrollEl) return
-    // The EARLIEST new clip's own start time, not the group's midpoint -- so
-    // the clip visually begins right at the view's horizontal center and
-    // extends rightward from there, matching "row-wise centered, but the
-    // clip itself comes in from the left of that center point" rather than
-    // splitting the clip's body evenly across the center line.
-    const earliestStart = Math.min(...newClips.map((c) => c.startTime))
+    // The EARLIEST new item's own start time -- which is also the playhead
+    // time it was inserted at -- placed at ~42% from the left edge of the
+    // viewport rather than dead-center, so more of the Timeline is visible
+    // to the right (where the clip continues) than to the left.
+    const earliestStart = Math.min(...newClips.map((c) => c.startTime), ...newScenes.map((s) => s.startTime))
     const contentWidthPx = scrollEl.clientWidth - trackHeaderWidth
-    scrollEl.scrollLeft = Math.max(0, earliestStart * pixelsPerSecond - contentWidthPx / 2)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately excludes pixelsPerSecond/trackHeaderWidth: this should only re-run when the CLIP SET changes, not when the user separately zooms/resizes the header.
-  }, [sequence.clips])
+    scrollEl.scrollLeft = Math.max(0, earliestStart * pixelsPerSecond - contentWidthPx * 0.42)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately excludes pixelsPerSecond/trackHeaderWidth: this should only re-run when the clip/scene SET changes, not when the user separately zooms/resizes the header.
+  }, [sequence.clips, allScenes])
 
   if (isEmpty) {
     return (

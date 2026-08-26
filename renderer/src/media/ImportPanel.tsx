@@ -55,31 +55,26 @@ export function ImportPanel(): JSX.Element {
     return sorted
   }, [items, kindFilter, search, sortBy])
 
-  // "Add to Timeline" (double-click / button) now auto-routes around
-  // overlapping content the same way the Timeline's own drag-and-drop
-  // already does (findOrCreateTrack) -- previously this always inserted
-  // onto the fixed V1/A1 track regardless of what was already there,
-  // silently landing two overlapping clips on the SAME track instead of
-  // routing the second one to a free/new track.
-  //
-  // Placement time is appended after the LATEST clip on the timeline (across
-  // every track), not the playhead -- clicking "+" repeatedly on several
-  // media items in a row (without moving the playhead in between, which
-  // nothing about this button prompts a user to do) previously landed every
-  // one of them at the same `currentTime` on separate tracks, stacking them
-  // all on top of each other instead of chaining one after another the way
-  // Timeline.tsx's own drag-and-drop default (planSequentialDrop) already
-  // does. An empty timeline still starts at the playhead (usually 0).
+  // "Add to Timeline" (double-click / button) always lands exactly at the
+  // current playhead -- matching every other manual insertion point in this
+  // app (Templates, Voiceover Recorder) and the explicit requirement that a
+  // new item's real startTime equals wherever the playhead currently is, not
+  // some computed "after the last clip" position. Still auto-routes around
+  // whatever's already occupying that time (findOrCreateTrack) so it lands
+  // on a free/new track instead of overlapping an existing clip on the same
+  // track -- clicking "+" repeatedly without moving the playhead stacks
+  // items vertically (separate tracks, same start time) rather than
+  // chaining them forward in time; that's the deliberate tradeoff of
+  // "always at the playhead," not a bug.
   const handleAddToTimeline = useCallback(
     (item: MediaItem) => {
       const isAudio = item.assetType === 'audio' || (item.kind === 'audio' && item.assetType !== 'video')
       const kind = isAudio ? 'audio' : 'video'
       const duration = item.assetType === 'image' ? DEFAULT_IMAGE_DURATION_SECONDS : (item.metadata?.durationSeconds ?? DEFAULT_IMAGE_DURATION_SECONDS)
       const occupied: OccupiedRange[] = sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
-      const appendAt = sequence.clips.length > 0 ? Math.max(...sequence.clips.map((c) => c.startTime + c.duration)) : currentTime
-      const routing = findOrCreateTrack(sequence.tracks, occupied, appendAt, duration, kind)
+      const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, duration, kind)
       if (routing.newTrack) ensureTrack(routing.newTrack)
-      insertClip(assetFromMediaItem(item), appendAt, routing.trackId)
+      insertClip(assetFromMediaItem(item), currentTime, routing.trackId)
     },
     [insertClip, currentTime, sequence.clips, sequence.tracks, ensureTrack]
   )
