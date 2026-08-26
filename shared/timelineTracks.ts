@@ -57,3 +57,37 @@ export function createDefaultTracks(): TimelineTrack[] {
     { id: 'C1', kind: 'caption', name: 'Transcript', order: 0, height: DEFAULT_CAPTION_TRACK_HEIGHT, hidden: false, locked: false, removable: false }
   ]
 }
+
+/** Every track id actually referenced by a clip or a scene -- the input to
+ * pruneEmptyTracks below. Generic over minimal shapes (not the real
+ * TimelineClip/Scene types) so this file never has to import from
+ * project.ts, which itself imports FROM this file (createDefaultTracks) --
+ * an import the other direction would be circular. */
+export function usedTrackIds(clips: readonly { trackId: string }[], scenes: readonly { track: string }[]): Set<string> {
+  const ids = new Set<string>()
+  for (const c of clips) ids.add(c.trackId)
+  for (const s of scenes) ids.add(s.track)
+  return ids
+}
+
+/** Drops any track that has nothing on it AND isn't structurally required --
+ * the current main video track (isMain, so there's always an obvious primary
+ * drop target even in an otherwise audio/graphics-only project) and the one
+ * fixed caption track (removable:false, a separate always-on feature surface
+ * tied to the Transcript import feature, not "clutter") are kept even when
+ * empty; every other empty track -- an unused Overlay/Graphics/Music track
+ * the project never ended up needing, or debris a past bug left behind (e.g.
+ * the auto-create-a-new-track-per-pointermove drag bug ClipTrack.tsx used to
+ * have) -- is removed.
+ *
+ * Applied once, at project LOAD time only (see projectStore.ts's
+ * loadProject), never during live editing -- a track the user just added
+ * this session and hasn't put anything on yet must survive for the rest of
+ * that session; it only disappears the next time the project is reopened, by
+ * which point "still empty" really does mean "never got used." This keeps
+ * "reopening a project never appends blank tracks" and "unused tracks
+ * eventually get cleaned up" both true without either fighting live editing
+ * or silently deleting a track mid-session out from under the user. */
+export function pruneEmptyTracks(tracks: readonly TimelineTrack[], usedIds: ReadonlySet<string>): TimelineTrack[] {
+  return tracks.filter((t) => usedIds.has(t.id) || t.isMain || !t.removable)
+}

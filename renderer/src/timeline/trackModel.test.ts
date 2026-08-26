@@ -7,6 +7,7 @@ import {
   trackOrderForNewTrack,
   findOrCreateTrack,
   sortTracksForDisplay,
+  visibleTracksForDisplay,
   trackDisplayHeight,
   resolveActiveVideoClip,
   getMainVideoTrackId,
@@ -146,6 +147,48 @@ describe('sortTracksForDisplay', () => {
       track({ id: 'V2', kind: 'video', order: 1 })
     ]
     expect(sortTracksForDisplay(tracks).map((t) => t.id)).toEqual(['V2', 'V1', 'A1', 'A2', 'C1'])
+  })
+})
+
+describe('visibleTracksForDisplay', () => {
+  it('hides an empty non-essential track (Overlay/Graphics/Music) but keeps the main video and caption tracks', () => {
+    const tracks = [
+      track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
+      track({ id: 'V2', kind: 'graphic', order: 0 }),
+      track({ id: 'A1', kind: 'audio', order: 0 }),
+      track({ id: 'C1', kind: 'caption', order: 0, removable: false })
+    ]
+    const result = visibleTracksForDisplay(tracks, { V1: true })
+    expect(result.map((t) => t.id)).toEqual(['V1', 'C1'])
+  })
+
+  it('shows any track with real content, regardless of kind or isMain', () => {
+    const tracks = [
+      track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
+      track({ id: 'V4', kind: 'video', order: 1 }),
+      track({ id: 'A2', kind: 'audio', order: 1 })
+    ]
+    const result = visibleTracksForDisplay(tracks, { V1: true, A2: true })
+    expect(result.map((t) => t.id)).toEqual(['V1', 'A2'])
+  })
+
+  it('a single-clip project stays compact: only the track holding the clip (plus caption) renders', () => {
+    const tracks = [
+      track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
+      track({ id: 'V2', kind: 'graphic', order: 0 }),
+      track({ id: 'V3', kind: 'graphic', order: 1 }),
+      track({ id: 'A1', kind: 'audio', order: 0 }),
+      track({ id: 'A2', kind: 'audio', order: 1 }),
+      track({ id: 'C1', kind: 'caption', order: 0, removable: false })
+    ]
+    const result = visibleTracksForDisplay(tracks, { V1: true, A1: true })
+    expect(result.map((t) => t.id)).toEqual(['V1', 'A1', 'C1'])
+  })
+
+  it('never removes tracks from the underlying array -- purely a display-layer filter', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'V2', kind: 'graphic', order: 0 })]
+    visibleTracksForDisplay(tracks, {})
+    expect(tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
   })
 })
 

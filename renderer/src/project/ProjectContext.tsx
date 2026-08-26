@@ -31,7 +31,24 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
   const [project, setProject] = useState<ProjectFile | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isFirstRun = useRef(true)
+  const skipNextSave = useRef(true)
+  // True for the whole span between `setProject(loaded)` and the LAST
+  // restore call below -- `restoreSequence`/`setBrandPreset`/`hydrateFromSaved`/
+  // etc. each set their own independent piece of state, and `hydrateFromSaved`
+  // in particular only happens after an awaited IPC round-trip. Each of those
+  // is its own React commit, so the autosave effect below (which depends on
+  // all of them) re-runs several times DURING loading, with only SOME of the
+  // loaded data applied so far -- e.g. `project` already the real loaded
+  // project while `sequence` is still SequenceContext's pre-load empty
+  // default. Gating the autosave effect on this ref (checked before the old
+  // "skip the first run" logic) stops any of those in-between renders from
+  // ever scheduling a save -- previously, with only a first-run guard, one of
+  // those partial-state renders could be the one whose debounced save
+  // actually fired (if the app happened to close/reload again within the
+  // 3s window before a later, more-complete render rescheduled it), silently
+  // overwriting the real saved sequence/tracks with whatever was still at
+  // its default. Confirmed happening in practice, not just theoretical.
+  const isLoadingProject = useRef(true)
 
   // Reopen the most recent project on launch (or create one), per the
   // "reopen latest project after an unexpected shutdown" requirement.
@@ -69,15 +86,23 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
         sceneGroups: loaded.sceneGroups ?? [],
         themeByMedia: loaded.theme ?? {}
       })
+      // Only NOW is every piece of loaded state actually applied -- see
+      // isLoadingProject's own doc comment for why this must be the very
+      // last thing in this callback.
+      isLoadingProject.current = false
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     if (!project) return
-    // Don't immediately re-save the project we just loaded/created.
-    if (isFirstRun.current) {
-      isFirstRun.current = false
+    // Never save while the initial load is still in progress -- see
+    // isLoadingProject's own doc comment; this effect re-runs several times
+    // during loading, each with only some of the loaded state applied.
+    if (isLoadingProject.current) return
+    // Don't immediately re-save the project we just finished loading/creating.
+    if (skipNextSave.current) {
+      skipNextSave.current = false
       return
     }
 

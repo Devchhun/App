@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import { createNewProjectFile } from '@shared/project'
 import type { ProjectFile } from '@shared/project'
 import { migrateProjectFile } from '@shared/projectMigration'
+import { pruneEmptyTracks, usedTrackIds } from '@shared/timelineTracks'
 
 function projectsDir(): string {
   return join(app.getPath('userData'), 'Projects')
@@ -47,7 +48,12 @@ export async function saveProjectAtomic(project: ProjectFile): Promise<string> {
 
 export async function loadProject(projectPath: string): Promise<ProjectFile> {
   const raw = JSON.parse(await readFile(projectPath, 'utf-8')) as ProjectFile
-  return migrateProjectFile(raw)
+  const migrated = migrateProjectFile(raw)
+  // See pruneEmptyTracks's own doc comment: this only ever REMOVES tracks
+  // that have nothing on them, never adds -- reopening a project can only
+  // shrink its track list toward what's actually in use, never grow it.
+  const usedIds = usedTrackIds(migrated.sequence.clips, migrated.scenes)
+  return { ...migrated, sequence: { ...migrated.sequence, tracks: pruneEmptyTracks(migrated.sequence.tracks, usedIds) } }
 }
 
 export async function getOrCreateStartupProject(): Promise<ProjectFile> {

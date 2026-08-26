@@ -13,7 +13,7 @@ import { GraphicsTrack } from './GraphicsTrack'
 import { ClipTrack } from './ClipTrack'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { sortTracksForDisplay, trackDisplayHeight, type OccupiedRange } from './trackModel'
+import { visibleTracksForDisplay, trackDisplayHeight, type OccupiedRange } from './trackModel'
 import { planSequentialDrop, planStackDrop, type PlannedPlacement } from './placementPlanning'
 import { DropGhostPreview } from './DropGhostPreview'
 import { normalizeRect, clipsInRect, applyBoxSelection, type ClipGeometry, type ScreenRect } from './boxSelection'
@@ -145,13 +145,19 @@ export function Timeline(): JSX.Element {
     return map
   }, [sequence.clips])
 
-  const sortedTracks = useMemo(() => sortTracksForDisplay(sequence.tracks), [sequence.tracks])
   const trackHasContent = useMemo(() => {
     const map: Record<string, boolean> = {}
     for (const id of Object.keys(scenesByTrackId)) if (scenesByTrackId[id].length > 0) map[id] = true
     for (const id of Object.keys(clipsByTrackId)) if (clipsByTrackId[id].length > 0) map[id] = true
     return map
   }, [scenesByTrackId, clipsByTrackId])
+  // Only tracks with real content (plus the main video track and the fixed
+  // caption track, which stay visible even empty -- see
+  // visibleTracksForDisplay's own doc comment) actually render as a row, so
+  // an unused Overlay/Graphics/Music track -- or debris left behind by a past
+  // bug -- doesn't clutter the Timeline. `sequence.tracks` itself is
+  // untouched: hiding a track here never deletes it or its settings.
+  const sortedTracks = useMemo(() => visibleTracksForDisplay(sequence.tracks, trackHasContent), [sequence.tracks, trackHasContent])
 
   // Cumulative row position/height per track, for the drag-drop ghost
   // preview to draw its dashed boxes against the right row (rows are plain
@@ -753,7 +759,7 @@ export function Timeline(): JSX.Element {
       />
       <div className="timeline-scroll-2d editor-scroll" ref={scrollRef}>
         <div className="timeline-header-column" style={{ width: trackHeaderWidth }}>
-          <TimelineTrackHeaders tracks={sequence.tracks} trackHasContent={trackHasContent} />
+          <TimelineTrackHeaders tracks={sortedTracks} trackHasContent={trackHasContent} />
         </div>
         <div className="timeline-content-column">
           <div

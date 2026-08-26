@@ -128,6 +128,24 @@ export function findOrCreateTrack(
   return { trackId: id, newTrack }
 }
 
+/** Which tracks the Timeline actually renders as a row -- an empty track (no
+ * clips, no scenes) is only worth showing if it's structurally required: the
+ * current main video track (isMain, so there's always an obvious place to
+ * drop the primary footage even in an audio/graphics-only project) or the
+ * one fixed caption track (removable:false, a separate always-on feature
+ * surface, not clutter). Every other empty track -- an unused
+ * Overlay/Graphics/Music track, or debris a past bug left behind -- stays in
+ * the saved sequence (so a track the user just added but hasn't used yet
+ * this session survives a save) but is hidden from view, matching a
+ * CapCut-style compact Timeline instead of always showing every track a
+ * project has ever accumulated. The empty space below whatever DOES render
+ * remains the existing drop-to-auto-create-a-track target (see
+ * ClipTrack.tsx's performMove), so hiding a track never removes the ability
+ * to add one back. */
+export function visibleTracksForDisplay(tracks: TimelineTrack[], trackHasContent: Record<string, boolean>): TimelineTrack[] {
+  return sortTracksForDisplay(tracks).filter((t) => trackHasContent[t.id] || t.isMain || !t.removable)
+}
+
 /** Display order for the Timeline's track rows: video/graphic/text render
  * with the highest-order (topmost-painting) track shown highest in the row
  * stack too, matching the existing V3-above-V2-above-V1 visual convention;

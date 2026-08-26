@@ -446,4 +446,37 @@ describe('project persistence', () => {
     expect(reopened.id).toBe(project.id)
     expect(reopened.name).toBe('Reopened Project')
   })
+
+  it('a project with a single clip loads compact (no empty Overlay/Graphics/Music/caption clutter), and reopening it repeatedly never grows the track list or reintroduces empty tracks', async () => {
+    const { saveProjectAtomic, loadProject } = await import('./projectStore')
+    const project = createNewProjectFile('Single Clip Project')
+    // createNewProjectFile's default sequence carries the full 6-track
+    // registry (V1/V2/V3/A1/A2/C1) with nothing on any of them yet -- one
+    // clip lands on V1, matching a real "just imported one video" project.
+    project.sequence = {
+      ...project.sequence,
+      clips: [{ id: 'clip-1', mediaId: 'm1', type: 'video', trackId: 'V1', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10, locked: false }],
+      duration: 15
+    }
+    const path = await saveProjectAtomic(project)
+
+    const first = await loadProject(path)
+    // V2 (Overlay), V3 (Graphics), A1 (Narration), A2 (Music) are all empty
+    // and non-essential -- pruned on load. V1 (holds the clip) and C1 (the
+    // fixed caption track) remain.
+    expect(first.sequence.tracks.map((t) => t.id)).toEqual(['V1', 'C1'])
+
+    // Reopen (load -> resave -> load) several times, simulating the user
+    // closing and reopening the app on the same project repeatedly -- the
+    // track list must stay exactly as-is, never growing and never bringing
+    // back a previously-pruned empty track.
+    let current = first
+    for (let i = 0; i < 3; i++) {
+      const resavedPath = await saveProjectAtomic(current)
+      current = await loadProject(resavedPath)
+      expect(current.sequence.tracks.map((t) => t.id)).toEqual(['V1', 'C1'])
+    }
+
+    expect(current.sequence.clips).toEqual(project.sequence.clips)
+  })
 })
