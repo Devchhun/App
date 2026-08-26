@@ -28,6 +28,7 @@ import { UiStateProvider, useUiState } from './nav/UiStateContext'
 import { Titlebar } from './nav/Titlebar'
 import { IconRail } from './nav/IconRail'
 import { TemplateBrowserPanel } from './templates/TemplateBrowserPanel'
+import { SettingsPanel } from './nav/SettingsPanel'
 import { TranscriptPreviewList } from './transcript/TranscriptPreviewList'
 import { AiSuggestionsPreviewList } from './suggestions/AiSuggestionsPreviewList'
 import { useWorkspaceLayout, ICON_RAIL_WIDTH } from './nav/useWorkspaceLayout'
@@ -82,6 +83,15 @@ function LeftColumn(): JSX.Element {
       <aside className="panel panel-import">
         <h2>Templates</h2>
         <TemplateBrowserPanel />
+      </aside>
+    )
+  }
+
+  if (leftView === 'settings') {
+    return (
+      <aside className="panel panel-import">
+        <h2>Settings</h2>
+        <SettingsPanel />
       </aside>
     )
   }

@@ -6678,6 +6678,85 @@ body {
   overflow-y: auto;
 }
 
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 2px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.settings-row-label {
+  color: var(--text-dim);
+}
+
+.settings-row-value {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-status {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.settings-status-error {
+  color: var(--danger);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-button {
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.settings-button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .brand-color-row {
   display: flex;
   gap: 10px;

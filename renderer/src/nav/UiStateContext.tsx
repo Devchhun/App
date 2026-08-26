@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 
 export type RightTab = 'ai' | 'localAi' | 'story' | 'graphics' | 'brand'
-export type LeftView = 'media' | 'transcript' | 'templates'
+export type LeftView = 'media' | 'transcript' | 'templates' | 'settings'
 
 interface UiStateContextValue {
   rightTab: RightTab

@@ -44,7 +44,11 @@ export function IconRail(): JSX.Element {
       </div>
 
       <div className="icon-rail-group icon-rail-group-bottom">
-        <button className="icon-rail-button" title="Settings (coming soon)" disabled>
+        <button
+          className={leftView === 'settings' ? 'icon-rail-button icon-rail-button-active' : 'icon-rail-button'}
+          title="Settings"
+          onClick={() => setLeftView('settings')}
+        >
           <SettingsIcon size={20} />
         </button>
         <button className="icon-rail-button" title="Help (coming soon)" disabled>

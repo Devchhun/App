@@ -77,6 +77,18 @@ function createMainWindow(): void {
   mainWindow.on('maximize', () => mainWindow?.webContents.send(WINDOW_IPC.maximizedChanged, true))
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send(WINDOW_IPC.maximizedChanged, false))
 
+  // With no Electron Menu installed, the default View > Toggle Developer
+  // Tools accelerator doesn't exist either -- without this, a user hitting a
+  // blank/broken window in a packaged build has no way to open DevTools and
+  // see what actually failed.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || !input.control || !input.shift) return
+    if (input.key.toLowerCase() === 'i') {
+      event.preventDefault()
+      mainWindow?.webContents.toggleDevTools()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
