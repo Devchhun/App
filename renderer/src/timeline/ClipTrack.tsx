@@ -139,6 +139,32 @@ export function ClipTrack({
    * 9's "target track highlight"), tracked imperatively so switching targets
    * mid-drag doesn't leave a stale highlight on the previous one. */
   const dropTargetElRef = useRef<HTMLElement | null>(null)
+  /** Cross-track dragging moves a clip's DOM node from THIS ClipTrack
+   * instance's own rendered list to a DIFFERENT track's -- React unmounts it
+   * here and mounts a fresh one there, which silently releases native
+   * pointer capture (set on that now-detached element in handlePointerDown)
+   * partway through a single continuous drag gesture. Once capture is lost,
+   * this instance's own onPointerMove/onPointerUp props (bound to the track
+   * container div) stop receiving events entirely -- but `dragState.current`
+   * never gets cleared, so the NEXT time the pointer happens to pass over
+   * this same track for any unrelated reason, it's misread as a
+   * continuation of that old, stale drag and silently repositions whatever
+   * clip `dragState.current.clipId` used to point at.
+   *
+   * Fixed by ALSO driving move/up via `window`-level listeners for the
+   * duration of a drag (added in handlePointerDown, removed in
+   * handlePointerUp) -- `window` never unmounts, so these keep firing
+   * regardless of which DOM node currently visually represents the clip.
+   * The listener functions themselves must stay REFERENTIALLY STABLE across
+   * renders (so add/removeEventListener always target the exact same
+   * function), so each is a `useRef`-memoized wrapper created exactly once,
+   * delegating to whatever the latest real handler is via a second ref kept
+   * up to date on every render (see the assignment right after
+   * handlePointerMove/handlePointerUp are defined below). */
+  const latestHandlePointerMove = useRef<(e: PointerEvent) => void>(() => {})
+  const latestHandlePointerUp = useRef<() => void>(() => {})
+  const stableWindowPointerMove = useRef((e: PointerEvent) => latestHandlePointerMove.current(e)).current
+  const stableWindowPointerUp = useRef(() => latestHandlePointerUp.current()).current
   const { beginTransaction, endTransaction } = useHistory()
   const { magnetOn, rippleOn, rippleScope, snappingOn, linkageOn, tool, trackHeightMode, showWaveforms } = useTimelineView()
 
@@ -187,11 +213,16 @@ export function ClipTrack({
         e.currentTarget.setPointerCapture(e.pointerId)
       } catch {
         // A synthetic/invalid pointerId (e.g. from automated testing) can't
-        // be captured -- move/trim still work via the track's own
-        // pointermove/pointerup listeners, just without capture-outside-bounds.
+        // be captured -- move/trim still work via the window-level listeners
+        // added just below regardless.
       }
+      // See stableWindowPointerMove/Up's own doc comment -- this is what
+      // keeps a cross-track drag working correctly instead of leaving a
+      // stale dragState behind once native pointer capture is lost.
+      window.addEventListener('pointermove', stableWindowPointerMove)
+      window.addEventListener('pointerup', stableWindowPointerUp)
     },
-    [onSelect, beginTransaction, allClips, markers, playheadTime]
+    [onSelect, beginTransaction, allClips, markers, playheadTime, stableWindowPointerMove, stableWindowPointerUp]
   )
 
   /** Blade/Hand/Range tool routing for a clip pointerdown -- Blade splits
@@ -271,7 +302,15 @@ export function ClipTrack({
     (ev: { clientX: number; clientY: number; altKey: boolean }) => {
       const drag = dragState.current
       if (!drag) return
-      const clip = clips.find((c) => c.id === drag.clipId)
+      // Looked up in `allClips` (the whole sequence), NOT this track's own
+      // `clips` prop -- once a cross-track move has already relocated this
+      // clip onto a DIFFERENT track earlier in the SAME drag gesture, it no
+      // longer appears in THIS ClipTrack instance's own `clips` list at all
+      // (that track's clips are grouped by trackId one level up, in
+      // Timeline.tsx), which would otherwise silently break further
+      // cross-track re-detection (and duration/media lookups) for the rest
+      // of that one continuous gesture.
+      const clip = allClips.find((c) => c.id === drag.clipId)
       const media = clip ? mediaById[clip.mediaId] : undefined
       const sourceDurationSeconds = media?.metadata?.durationSeconds
       const deltaSeconds = (ev.clientX - drag.startClientX) / pixelsPerSecond
@@ -353,11 +392,17 @@ export function ClipTrack({
         updateTrimTooltip(snapped * pixelsPerSecond, 2, [`${formatDuration(leftDuration)} | ${formatDuration(rightDuration)}`, `Boundary ${formatDuration(snapped)}`])
       }
     },
-    [clips, pixelsPerSecond, mediaById, onMove, onTrim, onRollEdit, applySnap, magnetOn, rippleOn, rippleScope, tracks, linkageOn, updateTrimTooltip]
+    [clips, allClips, pixelsPerSecond, mediaById, onMove, onTrim, onRollEdit, applySnap, magnetOn, rippleOn, rippleScope, tracks, linkageOn, updateTrimTooltip]
   )
 
+  // Accepts either a React.PointerEvent (the track div's own onPointerMove/
+  // onPointerUp props, for the common same-track case) or a native
+  // PointerEvent (from the window listeners handlePointerDown attaches below)
+  // -- both shapes carry the three fields this actually reads.
+  type PointerLike = { clientX: number; clientY: number; altKey: boolean }
+
   const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
+    (e: PointerLike) => {
       if (!dragState.current) return
       latestMoveRef.current = { clientX: e.clientX, clientY: e.clientY, altKey: e.altKey }
       if (rafIdRef.current === null) {
@@ -371,6 +416,11 @@ export function ClipTrack({
   )
 
   const handlePointerUp = useCallback(() => {
+    // The stable window listeners added in handlePointerDown -- always
+    // remove them here, unconditionally, whether or not a drag was actually
+    // still active by this point.
+    window.removeEventListener('pointermove', stableWindowPointerMove)
+    window.removeEventListener('pointerup', stableWindowPointerUp)
     if (rafIdRef.current !== null) {
       // A commit was still scheduled but hadn't fired yet -- flush it with
       // the latest captured pointer position before canceling, so releasing
@@ -389,7 +439,15 @@ export function ClipTrack({
       dropTargetElRef.current?.classList.remove('clip-track-drop-target')
       dropTargetElRef.current = null
     }
-  }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide])
+  }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide, stableWindowPointerMove, stableWindowPointerUp])
+
+  // Keep the stable window-listener wrappers pointed at the LATEST
+  // handlePointerMove/handlePointerUp closures on every render (see
+  // stableWindowPointerMove/Up's own doc comment above) -- a plain ref
+  // mutation during render, not an effect, since it must be current by the
+  // time any event fires and doesn't itself need to trigger a re-render.
+  latestHandlePointerMove.current = handlePointerMove
+  latestHandlePointerUp.current = handlePointerUp
 
   const rowHeight = trackDisplayHeight(track, trackHeightMode)
   // Video/image clips get a real title-bar strip (filename + duration) over

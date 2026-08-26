@@ -9,6 +9,15 @@ interface Props {
   duration: number
   pixelsPerSecond: number
   markers: Marker[]
+  /** Visible horizontal time window (project-absolute seconds, already
+   * including Timeline.tsx's own margin) -- ticks (major and minor) outside
+   * it are skipped entirely. `undefined` renders every tick across the
+   * whole `duration` (the old, uncapped behavior), which is fine for a
+   * short project but becomes thousands of DOM nodes for a long one (a
+   * 2-hour timeline at a typical zoom level generated over 7,000 minor-tick
+   * elements alone) -- Timeline.tsx always passes the real window. */
+  viewStart?: number
+  viewEnd?: number
 }
 
 /** Picks a "nice" tick interval (in seconds) so labels don't overlap at any zoom level. */
@@ -31,7 +40,7 @@ const MINOR_TICKS_PER_MAJOR = 5
  * convention used for box-select elsewhere in the Timeline. */
 const MARKER_DRAG_THRESHOLD_PX = 4
 
-export function TimeRuler({ duration, pixelsPerSecond, markers }: Props): JSX.Element {
+export function TimeRuler({ duration, pixelsPerSecond, markers, viewStart, viewEnd }: Props): JSX.Element {
   const { moveMarkerTo, updateMarkerFields, removeMarkerById } = useSequence()
   const { seekTo } = usePlayback()
   const { beginTransaction, endTransaction } = useHistory()
@@ -40,16 +49,29 @@ export function TimeRuler({ duration, pixelsPerSecond, markers }: Props): JSX.El
   const [editingMarkerId, setEditingMarkerId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
 
+  const rangeStart = Math.max(0, viewStart ?? 0)
+  const rangeEnd = Math.min(duration, viewEnd ?? duration)
+
   const interval = pickTickInterval(pixelsPerSecond)
-  const tickCount = Math.ceil(duration / interval) + 1
-  const ticks = Array.from({ length: tickCount }, (_, i) => i * interval)
-  // One shorter, unlabeled tick per minor subdivision -- skips i=0 of every
-  // major interval (that's the major tick itself, already rendered above).
+  // Only the major ticks whose time actually falls within the visible range
+  // -- indices computed directly from rangeStart/rangeEnd rather than
+  // generating the full 0..duration series and filtering it, so the array
+  // size only ever depends on how much TIME is on screen, never on the
+  // project's total duration.
+  const firstMajorIndex = Math.floor(rangeStart / interval)
+  const lastMajorIndex = Math.ceil(rangeEnd / interval)
+  const ticks: number[] = []
+  for (let i = firstMajorIndex; i <= lastMajorIndex; i++) ticks.push(i * interval)
+
+  // One shorter, unlabeled tick per minor subdivision -- skips indices that
+  // land exactly on a major tick (already rendered above).
   const minorStep = interval / MINOR_TICKS_PER_MAJOR
-  const minorTickCount = Math.ceil(duration / minorStep) + 1
-  const minorTicks = Array.from({ length: minorTickCount }, (_, i) => i)
-    .filter((i) => i % MINOR_TICKS_PER_MAJOR !== 0)
-    .map((i) => i * minorStep)
+  const firstMinorIndex = Math.floor(rangeStart / minorStep)
+  const lastMinorIndex = Math.ceil(rangeEnd / minorStep)
+  const minorTicks: number[] = []
+  for (let i = firstMinorIndex; i <= lastMinorIndex; i++) {
+    if (i % MINOR_TICKS_PER_MAJOR !== 0) minorTicks.push(i * minorStep)
+  }
 
   const timeFromClientX = (clientX: number): number => {
     const rect = rulerRef.current?.getBoundingClientRect()

@@ -125,6 +125,13 @@ export function Timeline(): JSX.Element {
    * exists/has been measured, meaning "render everything" -- a conservative
    * fallback, never a broken one. */
   const [viewportRange, setViewportRange] = useState<{ start: number; end: number } | null>(null)
+  /** IDs of every clip seen in `sequence.clips` as of the last render --
+   * lets the effect below tell "a clip was just added" apart from any other
+   * reason the array changed (move/trim/delete), without needing every
+   * different insertion call site (Add to Timeline, drag-drop from Media,
+   * template insert, paste, duplicate...) to separately remember to scroll
+   * the view afterward. */
+  const knownClipIdsRef = useRef<Set<string> | null>(null)
 
   // The currently-selected Media asset is used only to pick which media's
   // transcript/captions to show -- it must never gate whether the Timeline
@@ -835,6 +842,30 @@ export function Timeline(): JSX.Element {
     }
   }, [pixelsPerSecond, isEmpty])
 
+  // Scrolls the Timeline to center the view on a clip the moment it first
+  // appears -- covers every insertion path (Add to Timeline, drag-drop from
+  // Media, template insert, paste, duplicate) in one place, rather than
+  // requiring each call site to separately remember to do this. Skipped on
+  // the very first render after mount/project-load (knownClipIdsRef.current
+  // still null) so opening a project with existing clips doesn't yank the
+  // view to wherever its last clip happens to be.
+  useEffect(() => {
+    const currentIds = new Set(sequence.clips.map((c) => c.id))
+    const previousIds = knownClipIdsRef.current
+    knownClipIdsRef.current = currentIds
+    if (!previousIds) return
+    const newClips = sequence.clips.filter((c) => !previousIds.has(c.id))
+    if (newClips.length === 0) return
+    const scrollEl = scrollRef.current
+    if (!scrollEl) return
+    const starts = newClips.map((c) => c.startTime)
+    const ends = newClips.map((c) => c.startTime + c.duration)
+    const midpoint = (Math.min(...starts) + Math.max(...ends)) / 2
+    const contentWidthPx = scrollEl.clientWidth - trackHeaderWidth
+    scrollEl.scrollLeft = Math.max(0, midpoint * pixelsPerSecond - contentWidthPx / 2)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately excludes pixelsPerSecond/trackHeaderWidth: this should only re-run when the CLIP SET changes, not when the user separately zooms/resizes the header.
+  }, [sequence.clips])
+
   if (isEmpty) {
     return (
       <div className="timeline-root">
@@ -900,7 +931,13 @@ export function Timeline(): JSX.Element {
             onDrop={handleTimelineDrop}
             onContextMenu={handleContextMenu}
           >
-            <TimeRuler duration={effectiveDuration} pixelsPerSecond={pixelsPerSecond} markers={sequence.markers} />
+            <TimeRuler
+              duration={effectiveDuration}
+              pixelsPerSecond={pixelsPerSecond}
+              markers={sequence.markers}
+              viewStart={viewportRange?.start}
+              viewEnd={viewportRange?.end}
+            />
 
             {sortedTracks.map((track) => {
               if (track.kind === 'graphic' || track.kind === 'text') {
