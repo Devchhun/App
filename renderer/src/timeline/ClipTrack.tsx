@@ -4,7 +4,7 @@ import type { TimelineTrack, TimelineTrackKind } from '@shared/timelineTracks'
 import type { MediaItem } from '@shared/media'
 import { useHistory } from '../history/HistoryContext'
 import { useTimelineView } from './TimelineViewContext'
-import { trackDisplayHeight, getMainVideoTrackId } from './trackModel'
+import { trackDisplayHeight, getMainVideoTrackId, nextTrackId } from './trackModel'
 import { buildSnapCandidates, findSnapMatch, type SnapCandidate } from './snapping'
 import type { RippleScope } from './timelineViewPrefs'
 import { VideoFilmstrip } from './VideoFilmstrip'
@@ -55,6 +55,17 @@ interface DragState {
   snapCandidates: SnapCandidate[]
   /** 'roll' mode only -- the clip on the OTHER side of the boundary. */
   rollPartnerId?: string
+  /** Set the first time this drag gesture creates a new track (dropping in
+   * the empty area below the last track of the clip's kind) -- every
+   * subsequent pointermove that's still in that empty-space zone reuses
+   * this SAME track id instead of creating another one. Without this, a
+   * single continuous drag through that zone fires many pointermove events
+   * (browsers dispatch far more than one per visible frame), and each one
+   * independently created a brand-new track and moved the clip onto it --
+   * since each new track appends below the last, the "empty space" boundary
+   * kept receding out from under an unmoving cursor, so the clip visibly
+   * fell through track after track for as long as the drag continued. */
+  createdTrackId?: string
 }
 
 const MIN_CLIP_WIDTH_PX = 6
@@ -283,7 +294,12 @@ export function ClipTrack({
           } else if (!onRuler) {
             dropTargetElRef.current?.classList.remove('clip-track-drop-target')
             dropTargetElRef.current = null
-            onMove(drag.clipId, snapped, { createTrackKind: requiredKind, linked: linkageOn })
+            // Pre-compute the id ONCE per drag gesture (see DragState.createdTrackId's
+            // doc comment) and pass it on every call alongside createTrackKind --
+            // moveClipToNewTrack creates the track under this exact id the first
+            // time, then just moves onto it on every subsequent pointermove.
+            if (!drag.createdTrackId) drag.createdTrackId = nextTrackId(tracks, requiredKind)
+            onMove(drag.clipId, snapped, { createTrackKind: requiredKind, trackId: drag.createdTrackId, linked: linkageOn })
             return
           }
         }

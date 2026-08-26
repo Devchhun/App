@@ -812,6 +812,20 @@ describe('moveClipToNewTrack', () => {
     const sequence: ProjectSequence = { tracks, clips: [videoClip({ id: 'a', locked: true, trackId: 'V1' })], markers: [], duration: 10 }
     expect(moveClipToNewTrack(sequence, 'a', 9, 'video')).toBe(sequence)
   })
+
+  it('creates the track under an explicitTrackId, and a repeat call with the same id reuses it instead of creating another', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0 })]
+    const sequence: ProjectSequence = { tracks, clips: [videoClip({ id: 'a', trackId: 'V1', startTime: 2, duration: 4 })], markers: [], duration: 6 }
+    const first = moveClipToNewTrack(sequence, 'a', 9, 'video', true, 'V2')
+    expect(first.tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
+    expect(first.clips.find((c) => c.id === 'a')!.trackId).toBe('V2')
+
+    // Simulates a second pointermove within the same drag gesture, passing
+    // the same pre-computed id -- must not synthesize a second new track.
+    const second = moveClipToNewTrack(first, 'a', 11, 'video', true, 'V2')
+    expect(second.tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
+    expect(second.clips.find((c) => c.id === 'a')!.startTime).toBe(11)
+  })
 })
 
 describe('pickClipProperties / applyClipProperties (Paste Attributes)', () => {

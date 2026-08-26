@@ -61,15 +61,25 @@ export function ImportPanel(): JSX.Element {
   // onto the fixed V1/A1 track regardless of what was already there,
   // silently landing two overlapping clips on the SAME track instead of
   // routing the second one to a free/new track.
+  //
+  // Placement time is appended after the LATEST clip on the timeline (across
+  // every track), not the playhead -- clicking "+" repeatedly on several
+  // media items in a row (without moving the playhead in between, which
+  // nothing about this button prompts a user to do) previously landed every
+  // one of them at the same `currentTime` on separate tracks, stacking them
+  // all on top of each other instead of chaining one after another the way
+  // Timeline.tsx's own drag-and-drop default (planSequentialDrop) already
+  // does. An empty timeline still starts at the playhead (usually 0).
   const handleAddToTimeline = useCallback(
     (item: MediaItem) => {
       const isAudio = item.assetType === 'audio' || (item.kind === 'audio' && item.assetType !== 'video')
       const kind = isAudio ? 'audio' : 'video'
       const duration = item.assetType === 'image' ? DEFAULT_IMAGE_DURATION_SECONDS : (item.metadata?.durationSeconds ?? DEFAULT_IMAGE_DURATION_SECONDS)
       const occupied: OccupiedRange[] = sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
-      const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, duration, kind)
+      const appendAt = sequence.clips.length > 0 ? Math.max(...sequence.clips.map((c) => c.startTime + c.duration)) : currentTime
+      const routing = findOrCreateTrack(sequence.tracks, occupied, appendAt, duration, kind)
       if (routing.newTrack) ensureTrack(routing.newTrack)
-      insertClip(assetFromMediaItem(item), currentTime, routing.trackId)
+      insertClip(assetFromMediaItem(item), appendAt, routing.trackId)
     },
     [insertClip, currentTime, sequence.clips, sequence.tracks, ensureTrack]
   )

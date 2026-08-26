@@ -198,9 +198,14 @@ export function ensureTrack(tracks: TimelineTrack[], track: TimelineTrack): Time
   return [...tracks, track]
 }
 
-export function addTrack(tracks: TimelineTrack[], kind: TimelineTrackKind): TimelineTrack[] {
+/** `explicitId`, when given, is used verbatim instead of computing a fresh
+ * `nextTrackId` -- lets a caller that already committed to an id (e.g. a
+ * drag gesture that pre-computed the id it will reuse for every subsequent
+ * pointermove, see ClipTrack.tsx's DragState.createdTrackId) create the
+ * track under that exact id rather than risking a second, different id. */
+export function addTrack(tracks: TimelineTrack[], kind: TimelineTrackKind, explicitId?: string): TimelineTrack[] {
   const newTrack: TimelineTrack = {
-    id: nextTrackId(tracks, kind),
+    id: explicitId ?? nextTrackId(tracks, kind),
     kind,
     name: nextTrackName(tracks, kind),
     order: trackOrderForNewTrack(tracks, kind),

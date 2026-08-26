@@ -157,11 +157,29 @@ export function moveClipToTrack(sequence: ProjectSequence, clipId: string, newSt
 /** Same as moveClipToTrack, but synthesizes a brand-new track of `kind`
  * first (matching the spec's "drop in empty space below the last track
  * auto-creates a track") -- one atomic transform so the new track and the
- * clip's move land in the same undo step. A no-op for a missing/locked clip. */
-export function moveClipToNewTrack(sequence: ProjectSequence, clipId: string, newStartTime: number, kind: TimelineTrackKind, linked = true): ProjectSequence {
+ * clip's move land in the same undo step. A no-op for a missing/locked clip.
+ *
+ * `explicitTrackId`, when given AND a track with that id already exists,
+ * moves onto that existing track instead of creating another one -- this
+ * makes repeated calls with the same `explicitTrackId` idempotent, which is
+ * exactly what a single continuous drag gesture needs: the caller
+ * pre-computes one id up front and passes it on every pointermove, so the
+ * first call creates the track and every subsequent call (of which browsers
+ * fire many per gesture) just moves onto the track already created, rather
+ * than each independently synthesizing its own new track. */
+export function moveClipToNewTrack(
+  sequence: ProjectSequence,
+  clipId: string,
+  newStartTime: number,
+  kind: TimelineTrackKind,
+  linked = true,
+  explicitTrackId?: string
+): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
-  const tracks = addTrackToRegistry(sequence.tracks, kind)
+  const existing = explicitTrackId ? sequence.tracks.find((t) => t.id === explicitTrackId) : undefined
+  if (existing) return moveClipToTrack(sequence, clipId, newStartTime, existing.id, linked)
+  const tracks = addTrackToRegistry(sequence.tracks, kind, explicitTrackId)
   const newTrack = tracks[tracks.length - 1]
   return moveClipToTrack({ ...sequence, tracks }, clipId, newStartTime, newTrack.id, linked)
 }

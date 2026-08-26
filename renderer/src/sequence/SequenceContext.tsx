@@ -271,7 +271,11 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
   const moveClip = useCallback((clipId: string, newStartTime: number, options?: { magnetic?: boolean; trackId?: string; createTrackKind?: TimelineTrackKind; linked?: boolean }) => {
     const linked = options?.linked ?? true
     setSequence((prev) => {
-      if (options?.createTrackKind) return moveClipToNewTrackOp(prev, clipId, newStartTime, options.createTrackKind, linked)
+      // `trackId` alongside `createTrackKind` is the caller's pre-computed id
+      // for the track it wants created (see moveClipToNewTrack's doc comment)
+      // -- passed on every pointermove of a drag gesture so repeated calls
+      // land on the one track already created instead of each making a new one.
+      if (options?.createTrackKind) return moveClipToNewTrackOp(prev, clipId, newStartTime, options.createTrackKind, linked, options.trackId)
       if (options?.trackId) return moveClipToTrackOp(prev, clipId, newStartTime, options.trackId, linked)
       if (options?.magnetic) {
         const clip = prev.clips.find((c) => c.id === clipId)
