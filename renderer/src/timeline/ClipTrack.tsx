@@ -460,7 +460,7 @@ export function ClipTrack({
 
   return (
     <div
-      className={`timeline-track clip-track clip-track-kind-${track.kind} clip-track-tool-${tool}${track.hidden ? ' timeline-track-hidden' : ''}`}
+      className={`timeline-track clip-track clip-track-kind-${track.kind} clip-track-tool-${tool}${track.hidden ? ' timeline-track-hidden' : ''}${track.isMain ? ' timeline-track-sticky-main' : ''}`}
       style={{ width: Math.max(1, duration * pixelsPerSecond), height: rowHeight }}
       data-track-id={track.id}
       data-track-kind={track.kind}

@@ -858,11 +858,14 @@ export function Timeline(): JSX.Element {
     if (newClips.length === 0) return
     const scrollEl = scrollRef.current
     if (!scrollEl) return
-    const starts = newClips.map((c) => c.startTime)
-    const ends = newClips.map((c) => c.startTime + c.duration)
-    const midpoint = (Math.min(...starts) + Math.max(...ends)) / 2
+    // The EARLIEST new clip's own start time, not the group's midpoint -- so
+    // the clip visually begins right at the view's horizontal center and
+    // extends rightward from there, matching "row-wise centered, but the
+    // clip itself comes in from the left of that center point" rather than
+    // splitting the clip's body evenly across the center line.
+    const earliestStart = Math.min(...newClips.map((c) => c.startTime))
     const contentWidthPx = scrollEl.clientWidth - trackHeaderWidth
-    scrollEl.scrollLeft = Math.max(0, midpoint * pixelsPerSecond - contentWidthPx / 2)
+    scrollEl.scrollLeft = Math.max(0, earliestStart * pixelsPerSecond - contentWidthPx / 2)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately excludes pixelsPerSecond/trackHeaderWidth: this should only re-run when the CLIP SET changes, not when the user separately zooms/resizes the header.
   }, [sequence.clips])
 

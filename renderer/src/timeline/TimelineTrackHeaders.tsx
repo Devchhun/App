@@ -67,7 +67,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
   if (editingName) {
     return (
       <div
-        className={`timeline-header-row${track.locked ? ' timeline-header-row-locked' : ''}`}
+        className={`timeline-header-row${track.locked ? ' timeline-header-row-locked' : ''}${track.isMain ? ' timeline-header-row-sticky-main' : ''}`}
         style={{ height: trackDisplayHeight(track, trackHeightMode) }}
         ref={rowRef}
       >
@@ -95,7 +95,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
   // instead of the wider text-label-forward header this used to be.
   return (
     <div
-      className={`timeline-header-row${track.locked ? ' timeline-header-row-locked' : ''}`}
+      className={`timeline-header-row${track.locked ? ' timeline-header-row-locked' : ''}${track.isMain ? ' timeline-header-row-sticky-main' : ''}`}
       style={{ height: trackDisplayHeight(track, trackHeightMode) }}
       ref={rowRef}
       title={track.name}
@@ -105,7 +105,6 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
       <span className="timeline-header-kind-icon" title={track.kind}>
         <TrackKindIcon kind={track.kind} />
       </span>
-      <span className="timeline-header-spring" />
       {AUDIBLE_KINDS.includes(track.kind) && (
         <button
           className={track.muted ? 'timeline-header-icon timeline-header-icon-active' : 'timeline-header-icon'}

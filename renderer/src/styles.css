@@ -2667,6 +2667,36 @@ body {
   opacity: 0.65;
 }
 
+/* The main video track's header row stays pinned just below the ruler
+   spacer (top: 20px matches RULER_HEIGHT_PX / .timeline-header-spacer's own
+   height) while the rest of the track list scrolls vertically underneath
+   it -- CapCut-style "anchor" row. Works because track rows already sit in
+   plain document flow inside `.timeline-scroll-2d`'s single scroll
+   container (nothing between them and it sets its own overflow), so a
+   sticky offset here needs no other restructuring. Solid background (not
+   the row's usual transparent one) so scrolled-past rows don't show through
+   underneath it; z-index above ordinary rows but below the playhead/
+   snap-guide, which must still be visible drawing over it. */
+.timeline-header-row-sticky-main {
+  position: sticky;
+  top: 20px;
+  z-index: 3;
+  background: #101215;
+}
+
+/* Compound selector (not just the modifier class alone) so this reliably
+   wins over `.timeline-track`'s own `position: relative` regardless of
+   which rule happens to come later in this file -- two same-specificity
+   single-class rules setting the same property is a real, previously-hit
+   bug class in this stylesheet (see .clip-track-clip-video's old leftover
+   `position: relative`), not just a style preference here. */
+.timeline-track.timeline-track-sticky-main {
+  position: sticky;
+  top: 20px;
+  z-index: 3;
+  background: #0b0d10;
+}
+
 /* Cross-track drag's destination-track highlight (spec section 9) --
    applied/removed imperatively by ClipTrack.tsx during a move drag. */
 .clip-track-drop-target {
@@ -2680,7 +2710,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-dim);
+  color: rgba(244, 247, 251, 0.72);
 }
 
 .timeline-header-label {
@@ -2764,9 +2794,102 @@ body {
 }
 
 .voiceover-recorder-popover {
-  width: 220px;
+  width: 260px;
   gap: 8px;
   padding: 10px;
+}
+
+.voiceover-mode-tabs {
+  display: flex;
+  gap: 2px;
+  background: #0b0d10;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px;
+}
+
+.voiceover-mode-tab {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 6px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.voiceover-mode-tab-active {
+  color: var(--text);
+  background: var(--surface-elevated);
+}
+
+.voiceover-story-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voiceover-story-source-tabs {
+  margin-top: -2px;
+}
+
+.voiceover-story-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.voiceover-story-segment {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voiceover-story-segment-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.voiceover-story-segment-text {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.4;
+  max-height: 4.2em;
+  overflow-y: auto;
+}
+
+.voiceover-story-review {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voiceover-story-review-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.voiceover-story-review-buttons button {
+  flex: 1;
+  font-size: 10px;
+  padding: 5px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.voiceover-story-review-buttons button:not(.voiceover-recorder-record-button):not(.voiceover-recorder-cancel-button) {
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.voiceover-story-review-buttons button:not(.voiceover-recorder-record-button):not(.voiceover-recorder-cancel-button):hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .voiceover-recorder-title {
@@ -2909,7 +3032,7 @@ body {
   height: 16px;
   background: none;
   border: none;
-  color: var(--text-dim);
+  color: rgba(244, 247, 251, 0.72);
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -2925,14 +3048,6 @@ body {
 
 .timeline-header-icon-active {
   color: var(--danger);
-}
-
-/* Flex spacer pushing the action icons to the row's right edge, now that
-   there's no text label to absorb the remaining width (see
-   TimelineTrackHeaders.tsx's compact icon-only row). */
-.timeline-header-spring {
-  flex: 1;
-  min-width: 0;
 }
 
 .timeline-content {
