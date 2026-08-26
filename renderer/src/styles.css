@@ -155,6 +155,14 @@ body {
   opacity: 0.45;
 }
 
+.titlebar-update-ready {
+  color: var(--success);
+}
+
+.titlebar-update-ready:not(:disabled):hover {
+  background: rgba(52, 199, 123, 0.12);
+}
+
 .titlebar-save-status {
   color: var(--text-dim);
   font-size: 11px;

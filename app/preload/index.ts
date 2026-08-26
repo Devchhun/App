@@ -29,6 +29,8 @@ import type { GenerateNarrativeGraphResult, StoryAnalysisError } from '@shared/s
 import { EXPORT_IPC } from '@shared/export'
 import type { ExportOptions, ExportProgress, ExportCapabilities } from '@shared/export'
 import { WINDOW_IPC } from '@shared/window'
+import { UPDATER_IPC } from '@shared/updater'
+import type { UpdaterStatus } from '@shared/updater'
 
 const mediaApi = {
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke(MEDIA_IPC.pickFiles),
@@ -213,6 +215,16 @@ const windowControlsApi = {
   }
 }
 
+const updaterApi = {
+  check: (): Promise<void> => ipcRenderer.invoke(UPDATER_IPC.check),
+  quitAndInstall: (): Promise<void> => ipcRenderer.invoke(UPDATER_IPC.quitAndInstall),
+  onStatus: (callback: (status: UpdaterStatus) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: UpdaterStatus): void => callback(status)
+    ipcRenderer.on(UPDATER_IPC.status, listener)
+    return () => ipcRenderer.removeListener(UPDATER_IPC.status, listener)
+  }
+}
+
 const api = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   media: mediaApi,
@@ -222,7 +234,8 @@ const api = {
   localAi: localAiApi,
   story: storyApi,
   export: exportApi,
-  windowControls: windowControlsApi
+  windowControls: windowControlsApi,
+  updater: updaterApi
 }
 
 if (process.contextIsolated) {

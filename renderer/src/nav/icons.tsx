@@ -99,6 +99,15 @@ export function ExportIcon({ size = 16 }: IconProps): JSX.Element {
   )
 }
 
+export function UpdateIcon({ size = 16 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M4 8a6 6 0 0 1 10.5-3.9M16 4v4h-4" />
+      <path d="M16 12a6 6 0 0 1-10.5 3.9M4 16v-4h4" />
+    </svg>
+  )
+}
+
 export function MinimizeIcon({ size = 12 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">

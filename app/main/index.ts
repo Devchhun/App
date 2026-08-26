@@ -11,7 +11,7 @@ import { registerStoryIpc } from './ipc/story'
 import { registerExportIpc } from './ipc/export'
 import { registerWindowIpc } from './ipc/window'
 import { getSharedWorker } from './ai/workerProcess'
-import { initAutoUpdater } from './updater'
+import { initAutoUpdater, registerUpdaterIpc } from './updater'
 import { TRANSCRIPTION_IPC } from '@shared/transcription'
 import { WINDOW_IPC } from '@shared/window'
 
@@ -122,6 +122,7 @@ app.whenReady().then(() => {
   registerStoryIpc()
   registerExportIpc()
   registerWindowIpc(() => mainWindow)
+  registerUpdaterIpc(() => mainWindow)
 
   createMainWindow()
   initAutoUpdater(() => mainWindow)

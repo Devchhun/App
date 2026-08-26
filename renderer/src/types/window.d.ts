@@ -18,6 +18,7 @@ import type { AiSuggestion, CloudRequestPreview, GenerateSuggestionsResult, Gene
 import type { LocalAiHealth, LocalModelInfo, ModelPullProgress, GenerateScenePlanResult, LocalAiError, ScenePlanGenerationOptions } from '@shared/localAi'
 import type { GenerateNarrativeGraphResult, StoryAnalysisError } from '@shared/story'
 import type { ExportOptions, ExportProgress, ExportCapabilities } from '@shared/export'
+import type { UpdaterStatus } from '@shared/updater'
 
 export {}
 
@@ -161,6 +162,11 @@ declare global {
         close: () => Promise<void>
         isMaximized: () => Promise<boolean>
         onMaximizedChanged: (callback: (maximized: boolean) => void) => () => void
+      }
+      updater: {
+        check: () => Promise<void>
+        quitAndInstall: () => Promise<void>
+        onStatus: (callback: (status: UpdaterStatus) => void) => () => void
       }
     }
   }

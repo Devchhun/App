@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import type { UpdaterStatus } from '@shared/updater'
 import { useProject } from '../project/ProjectContext'
 import { useTranscript } from '../transcript/TranscriptContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
@@ -18,7 +19,8 @@ import {
   MaximizeIcon,
   CloseIcon,
   ShieldCheckIcon,
-  ChipIcon
+  ChipIcon,
+  UpdateIcon
 } from './icons'
 
 const ASPECT_RATIOS: BrandPreset['defaultAspectRatio'][] = ['16:9', '9:16', '1:1']
@@ -48,6 +50,65 @@ function DeviceBadges(): JSX.Element {
         </span>
       )}
     </>
+  )
+}
+
+/** The one place to trigger an update check on demand -- until now
+ * electron-updater only ever checked automatically once at launch, silently,
+ * with no click target and no feedback unless a download happened to finish
+ * (see updater.ts). Also handles the 'downloaded' terminal state itself:
+ * clicking then restarts and installs immediately instead of waiting for the
+ * user to quit normally. */
+function UpdateButton(): JSX.Element {
+  const [status, setStatus] = useState<UpdaterStatus>({ state: 'idle' })
+  const [appVersion, setAppVersion] = useState<string>('')
+
+  useEffect(() => {
+    void window.api.getAppVersion().then(setAppVersion)
+    return window.api.updater.onStatus(setStatus)
+  }, [])
+
+  const busy = status.state === 'checking' || status.state === 'downloading'
+
+  const handleClick = useCallback(() => {
+    if (status.state === 'downloaded') {
+      void window.api.updater.quitAndInstall()
+      return
+    }
+    if (busy) return
+    void window.api.updater.check()
+  }, [status.state, busy])
+
+  const title = ((): string => {
+    switch (status.state) {
+      case 'checking':
+        return 'Checking for updates…'
+      case 'available':
+        return `Update ${status.version} found — downloading…`
+      case 'downloading':
+        return `Downloading update… ${status.percent}%`
+      case 'downloaded':
+        return `Update ${status.version} ready — click to restart and install`
+      case 'not-available':
+        return `You're up to date (v${appVersion})`
+      case 'error':
+        return `Update check failed: ${status.message}`
+      case 'unsupported':
+        return 'Auto-update is only available in the installed app, not in dev mode'
+      default:
+        return appVersion ? `Check for Updates (v${appVersion})` : 'Check for Updates'
+    }
+  })()
+
+  return (
+    <button
+      className={status.state === 'downloaded' ? 'titlebar-icon-button titlebar-update-ready' : 'titlebar-icon-button'}
+      title={title}
+      disabled={busy}
+      onClick={handleClick}
+    >
+      <UpdateIcon size={16} />
+    </button>
   )
 }
 
@@ -143,6 +204,7 @@ export function Titlebar(): JSX.Element {
           <button className="titlebar-icon-button" title="Chat (coming soon)" disabled>
             <ChatIcon />
           </button>
+          <UpdateButton />
           <button className="titlebar-icon-button" title="Settings (coming soon)" disabled>
             <SettingsIcon size={16} />
           </button>
