@@ -19,6 +19,7 @@ import type { LocalAiHealth, LocalModelInfo, ModelPullProgress, GenerateScenePla
 import type { GenerateNarrativeGraphResult, StoryAnalysisError } from '@shared/story'
 import type { ExportOptions, ExportProgress, ExportCapabilities } from '@shared/export'
 import type { UpdaterStatus } from '@shared/updater'
+import type { CrashReport } from '@shared/crash'
 
 export {}
 
@@ -168,6 +169,7 @@ declare global {
         quitAndInstall: () => Promise<void>
         onStatus: (callback: (status: UpdaterStatus) => void) => () => void
       }
+      reportCrash: (report: CrashReport) => Promise<void>
     }
   }
 }

@@ -6,6 +6,7 @@ interface Props {
 
 interface State {
   error: Error | null
+  componentStack: string | null
 }
 
 /** Without this, any render-time exception in the provider tree (a corrupted
@@ -15,18 +16,27 @@ interface State {
  * indication anything went wrong. This turns that into a visible, actionable
  * screen instead of a silent black window. */
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null }
+  state: State = { error: null, componentStack: null }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { error }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('[ErrorBoundary] Unhandled render error:', error, info.componentStack)
+    this.setState({ componentStack: info.componentStack ?? null })
+    // Best-effort: the on-screen error is only visible while this window stays
+    // open with someone watching it. Persisting it to a file means a crash
+    // that isn't screenshotted in time is still diagnosable afterward.
+    void window.api?.reportCrash({
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack ?? undefined
+    })
   }
 
   render(): ReactNode {
-    const { error } = this.state
+    const { error, componentStack } = this.state
     if (!error) return this.props.children
 
     return (
@@ -67,6 +77,7 @@ export class ErrorBoundary extends Component<Props, State> {
         >
           {error.message}
           {error.stack ? `\n\n${error.stack}` : ''}
+          {componentStack ? `\n\nComponent stack:${componentStack}` : ''}
         </pre>
         <button
           onClick={() => window.location.reload()}

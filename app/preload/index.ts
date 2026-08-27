@@ -31,6 +31,8 @@ import type { ExportOptions, ExportProgress, ExportCapabilities } from '@shared/
 import { WINDOW_IPC } from '@shared/window'
 import { UPDATER_IPC } from '@shared/updater'
 import type { UpdaterStatus } from '@shared/updater'
+import { CRASH_IPC } from '@shared/crash'
+import type { CrashReport } from '@shared/crash'
 
 const mediaApi = {
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke(MEDIA_IPC.pickFiles),
@@ -235,7 +237,8 @@ const api = {
   story: storyApi,
   export: exportApi,
   windowControls: windowControlsApi,
-  updater: updaterApi
+  updater: updaterApi,
+  reportCrash: (report: CrashReport): Promise<void> => ipcRenderer.invoke(CRASH_IPC.report, report)
 }
 
 if (process.contextIsolated) {
