@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
 import { usePlayback } from '../playback/PlaybackContext'
@@ -295,7 +295,10 @@ export function Timeline(): JSX.Element {
 
   // The toolbar's "zoom to fit" now lives in the Preview panel and can't see
   // this scroll container directly, so publish its width into shared state.
-  useEffect(() => {
+  // useLayoutEffect, matching the viewport-range tracker below -- measuring
+  // a DOM element's size and feeding it into render-relevant state is the
+  // textbook case for running before paint rather than after it.
+  useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const report = (): void => setTimelineViewportWidth(el.clientWidth)
@@ -826,7 +829,24 @@ export function Timeline(): JSX.Element {
   // clip just outside the visible area is already mounted (thumbnails
   // decoding, etc.) by the time a normal-speed scroll brings it into view,
   // rather than popping in only once fully visible.
-  useEffect(() => {
+  //
+  // useLayoutEffect, not useEffect: on mount, `viewportRange` starts `null`,
+  // which TimeRuler/the clip-visibility filters treat as "show everything"
+  // (see their own `?? duration` fallbacks) -- for a long project (hundreds
+  // to thousands of seconds), that's a real, separate commit rendering every
+  // tick/clip across the FULL duration, immediately followed by this
+  // effect's first `update()` call collapsing it down to just the visible
+  // window. With `useEffect`, that collapse happens in its own post-paint
+  // commit; in development, where React additionally double-invokes effects
+  // (mount -> cleanup -> mount again) to surface exactly this kind of
+  // ordering bug, the two back-to-back large-removal commits raced and
+  // manifested as "Failed to execute 'removeChild': the node to be removed
+  // is not a child of this node" inside TimeRuler, reproducible only on
+  // long/scrolled projects and only in dev. `useLayoutEffect` runs
+  // synchronously before the browser ever paints the "everything" state, so
+  // the real viewport-clamped range is what actually commits -- no separate
+  // large-removal commit for a second invocation to race against.
+  useLayoutEffect(() => {
     const scrollEl = scrollRef.current
     if (!scrollEl) return
     let rafId: number | null = null
