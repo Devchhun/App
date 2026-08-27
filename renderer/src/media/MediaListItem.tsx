@@ -31,6 +31,7 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         e.stopPropagation()
         onAddToTimeline()
       }}
+      onDoubleClick={(e) => e.stopPropagation()}
     >
       +
     </button>

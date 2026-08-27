@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type DragEvent } from 'react'
+import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useMedia } from './MediaContext'
 import { MediaListItem } from './MediaListItem'
 import { FilterIcon, GridViewIcon, ListViewIcon } from '../nav/icons'
@@ -66,8 +66,24 @@ export function ImportPanel(): JSX.Element {
   // items vertically (separate tracks, same start time) rather than
   // chaining them forward in time; that's the deliberate tradeoff of
   // "always at the playhead," not a bug.
+  // The card's own onDoubleClick and the "+" button nested inside it (see
+  // MediaListItem.tsx) both call this -- a real double-click on the button
+  // fires two native 'click' events (each independently reaching here)
+  // *plus* a 'dblclick' that still bubbles up to the card even though the
+  // button's onClick calls stopPropagation (that only stops 'click' from
+  // bubbling, not the separate 'dblclick' event), so one double-click was
+  // silently inserting the same item three times. A "double-click to add"
+  // affordance should only ever produce one insertion, so the same item
+  // within this window is treated as one user action, not several.
+  const lastAddRef = useRef<{ id: string; at: number } | null>(null)
+
   const handleAddToTimeline = useCallback(
     (item: MediaItem) => {
+      const last = lastAddRef.current
+      const now = Date.now()
+      if (last && last.id === item.id && now - last.at < 500) return
+      lastAddRef.current = { id: item.id, at: now }
+
       const isAudio = item.assetType === 'audio' || (item.kind === 'audio' && item.assetType !== 'video')
       const kind = isAudio ? 'audio' : 'video'
       const duration = item.assetType === 'image' ? DEFAULT_IMAGE_DURATION_SECONDS : (item.metadata?.durationSeconds ?? DEFAULT_IMAGE_DURATION_SECONDS)
