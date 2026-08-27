@@ -39,6 +39,13 @@ const retryPaths = new Map<string, string>()
  * thumbnail, original) instead of re-running the whole ffmpeg pipeline,
  * since every field it needs (duration, hasAudio, paths) was already saved. */
 async function rehydrateMediaSource(source: MediaSource): Promise<MediaItem> {
+  // `pendingStage` means background processing hadn't finished (or had
+  // failed/been canceled) when this project was last saved -- originalPath
+  // plus the already-known duration/hasAudio mean it's fully usable right
+  // away regardless, so `readyToUse` is always true here; `stage`/`percent`
+  // just reflect what's left so the UI shows the right badge until the
+  // auto-resumed pipeline (see the rehydrate handler below) reports real
+  // progress of its own.
   return {
     id: source.id,
     kind: source.kind,
@@ -58,19 +65,31 @@ async function rehydrateMediaSource(source: MediaSource): Promise<MediaItem> {
       containerFormat: 'unknown',
       fileSizeBytes: 0
     },
-    stage: 'ready',
-    percent: 100,
+    stage: source.pendingStage ?? 'ready',
+    percent: source.pendingStage ? 10 : 100,
     cached: true,
-    addedAt: source.addedAt
+    addedAt: source.addedAt,
+    readyToUse: true
   }
 }
 
 export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(MEDIA_IPC.ffmpegStatus, async () => detectFfmpeg())
 
-  ipcMain.handle(MEDIA_IPC.rehydrate, async (_event, sources: MediaSource[]) => {
+  ipcMain.handle(MEDIA_IPC.rehydrate, async (event, sources: MediaSource[]) => {
     for (const source of sources) retryPaths.set(source.id, source.originalPath)
-    return Promise.all(sources.map(rehydrateMediaSource))
+    const items = await Promise.all(sources.map(rehydrateMediaSource))
+    // Automatically pick background processing back up for anything that
+    // wasn't finished (or had failed/been canceled) when this project was
+    // last saved -- "Save/Reopen must preserve the media and safely resume
+    // unfinished processing" means this happens on its own, not only if the
+    // user notices and clicks Retry. Fire-and-forget, same as a fresh
+    // import: runPipeline reports its own progress over MEDIA_IPC.progress,
+    // and every already-completed stage is skipped via the on-disk cache.
+    for (const source of sources) {
+      if (source.pendingStage) runPipeline(event.sender, source.originalPath, source.id)
+    }
+    return items
   })
 
   ipcMain.handle(MEDIA_IPC.pickFiles, async () => {

@@ -187,9 +187,9 @@ export function ImportPanel(): JSX.Element {
             }}
             onCancel={() => cancel(item.id)}
             onRetry={() => retry(item.id)}
-            onAddToTimeline={item.stage === 'ready' ? () => handleAddToTimeline(item) : undefined}
+            onAddToTimeline={item.readyToUse ? () => handleAddToTimeline(item) : undefined}
             onDragStart={
-              item.stage === 'ready'
+              item.readyToUse
                 ? (e) => {
                     const ids = selectedIds.includes(item.id) && selectedIds.length > 1 ? selectedIds : [item.id]
                     const payload: MediaDragPayload = { mediaIds: ids }

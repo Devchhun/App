@@ -12,7 +12,7 @@ interface Props {
   onSelect: (e: React.MouseEvent) => void
   onCancel: () => void
   onRetry: () => void
-  /** Undefined while the asset isn't ready to place (still importing/errored). */
+  /** Undefined while the asset isn't ready to place (still validating/probing). */
   onAddToTimeline?: () => void
   /** Undefined while the asset isn't ready to drag onto the Timeline. */
   onDragStart?: (e: React.DragEvent) => void
@@ -21,7 +21,20 @@ interface Props {
 const TERMINAL_STAGES = new Set(['ready', 'error', 'canceled'])
 
 export function MediaListItem({ item, selected, multiSelected = false, compact = false, onSelect, onCancel, onRetry, onAddToTimeline, onDragStart }: Props): JSX.Element {
-  const isProcessing = !TERMINAL_STAGES.has(item.stage)
+  const stillWorking = !TERMINAL_STAGES.has(item.stage)
+  // `readyToUse` (set once probing knows duration/hasAudio and has a
+  // playable original URL) is a separate, earlier gate than `stage ===
+  // 'ready'` (every background job finished) -- see shared/media.ts's doc
+  // comment. An item can be fully usable on the Timeline while its
+  // thumbnail/waveform/proxy are still cooking, or even after one of them
+  // fails, so the big blocking "still importing" treatment only applies
+  // before that point; everything after it is a small, non-blocking badge.
+  const blockedOnImport = !item.readyToUse && stillWorking
+  const backgroundBusy = item.readyToUse && stillWorking
+  const backgroundFailed = item.readyToUse && item.stage === 'error'
+  const backgroundCanceled = item.readyToUse && item.stage === 'canceled'
+  const showCancel = blockedOnImport || backgroundBusy
+  const showRetry = (!item.readyToUse && (item.stage === 'error' || item.stage === 'canceled')) || backgroundFailed || backgroundCanceled
 
   const addButton = onAddToTimeline && (
     <button
@@ -37,9 +50,9 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
     </button>
   )
 
-  const actions = (isProcessing || item.stage === 'error' || item.stage === 'canceled') && (
+  const actions = (showCancel || showRetry) && (
     <div className="media-card-actions">
-      {isProcessing && (
+      {showCancel && (
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -49,7 +62,7 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
           Cancel
         </button>
       )}
-      {(item.stage === 'error' || item.stage === 'canceled') && (
+      {showRetry && (
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -60,6 +73,17 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         </button>
       )}
     </div>
+  )
+
+  // Small pill shown in a thumbnail corner once the asset is already usable
+  // but a background job (thumbnail/waveform/proxy) is still running,
+  // failed, or was canceled -- never dims or covers the thumbnail itself.
+  const backgroundBadge = (backgroundBusy || backgroundFailed || backgroundCanceled) && (
+    <span className={`media-thumb-bg-badge${backgroundFailed ? ' media-thumb-bg-badge-warning' : ''}`}>
+      {backgroundBusy && `${Math.round(item.percent)}%`}
+      {backgroundFailed && '⚠ proxy failed'}
+      {backgroundCanceled && 'canceled'}
+    </span>
   )
 
   if (compact) {
@@ -79,12 +103,13 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
             <div className="media-thumb-placeholder">{item.kind === 'audio' ? '♪' : '▶'}</div>
           )}
           {addButton}
+          {backgroundBadge}
         </div>
         <div className="media-row-info">
           <div className="media-row-name">{item.fileName || 'Importing…'}</div>
-          {item.stage === 'error' && <div className="media-error">{item.errorMessage}</div>}
-          {item.stage === 'canceled' && <div className="media-error">Canceled</div>}
-          {isProcessing && (
+          {!item.readyToUse && item.stage === 'error' && <div className="media-error">{item.errorMessage}</div>}
+          {!item.readyToUse && item.stage === 'canceled' && <div className="media-error">Canceled</div>}
+          {blockedOnImport && (
             <div className="media-progress-track media-row-progress-track">
               <div className="media-progress-bar" style={{ width: `${Math.round(item.percent)}%` }} />
             </div>
@@ -115,7 +140,8 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         {selected && <span className="media-card-check">✓</span>}
         {item.metadata && <span className="media-card-duration">{formatDuration(item.metadata.durationSeconds)}</span>}
         {addButton}
-        {isProcessing && (
+        {backgroundBadge}
+        {blockedOnImport && (
           <div className="media-card-progress-overlay">
             <div className="media-progress-track">
               <div className="media-progress-bar" style={{ width: `${Math.round(item.percent)}%` }} />
@@ -127,8 +153,9 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         )}
       </div>
       <div className="media-card-name">{item.fileName || 'Importing…'}</div>
-      {item.stage === 'error' && <div className="media-error">{item.errorMessage}</div>}
-      {item.stage === 'canceled' && <div className="media-error">Canceled</div>}
+      {!item.readyToUse && item.stage === 'error' && <div className="media-error">{item.errorMessage}</div>}
+      {!item.readyToUse && item.stage === 'canceled' && <div className="media-error">Canceled</div>}
+      {backgroundFailed && <div className="media-error">Background processing failed -- using original file. {item.errorMessage}</div>}
       {actions}
     </li>
   )

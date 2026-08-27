@@ -39,8 +39,16 @@ const FRAME_STEP_SECONDS = 1 / 30
  * natural video decode timing doesn't fight this correction every frame. */
 const DRIFT_CORRECTION_THRESHOLD_SECONDS = 0.3
 
+// `readyToUse` (probing done, duration/hasAudio/originalUrl known) rather
+// than `stage === 'ready'` (every background job finished) -- Preview plays
+// the original the moment it's usable, then automatically picks up
+// `proxyUrl` on whatever later render sees it appear, with no separate
+// "switch to proxy" step to write. Clip start/duration/trim math is always
+// computed in seconds against the (unchanging) probed metadata and applied
+// identically regardless of which URL this returns, so swapping sources
+// here never touches timing.
 function mediaUrl(media: MediaItem | undefined): string | undefined {
-  if (!media || media.stage !== 'ready') return undefined
+  if (!media || !media.readyToUse) return undefined
   return media.proxyUrl ?? media.originalUrl
 }
 

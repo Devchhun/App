@@ -38,7 +38,8 @@ function blankMediaItem(id: string): MediaItem {
     stage: 'queued',
     percent: 0,
     cached: false,
-    addedAt: new Date().toISOString()
+    addedAt: new Date().toISOString(),
+    readyToUse: false
   }
 }
 

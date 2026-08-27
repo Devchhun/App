@@ -8,6 +8,7 @@ import { useSequence } from '../sequence/SequenceContext'
 import { useHistory } from '../history/HistoryContext'
 import { useStory } from '../story/StoryContext'
 import type { ProjectFile, MediaSource, Scene } from '@shared/project'
+import { pendingStageFor } from './pendingStage'
 
 interface ProjectContextValue {
   projectId: string | null
@@ -108,8 +109,14 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
 
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
+      // `readyToUse`, not `stage === 'ready'` -- an item with a still-running
+      // (or failed/canceled) background job is fully usable and must not be
+      // dropped from the save just because thumbnail/waveform/proxy haven't
+      // finished. `pendingStage` records what's left so reopening the
+      // project can pick the background work back up (see MediaSource's own
+      // doc comment and media.ts's rehydrate handler).
       const media: MediaSource[] = items
-        .filter((m) => m.stage === 'ready')
+        .filter((m) => m.readyToUse)
         .map((m) => ({
           id: m.id,
           kind: m.kind,
@@ -120,7 +127,8 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
           thumbnailPath: m.thumbnailPath,
           durationSeconds: m.metadata?.durationSeconds ?? 0,
           hasAudio: m.metadata?.hasAudio ?? false,
-          addedAt: m.addedAt
+          addedAt: m.addedAt,
+          pendingStage: pendingStageFor(m.stage)
         }))
 
       const snapshot: ProjectFile = {

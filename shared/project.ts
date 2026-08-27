@@ -337,6 +337,16 @@ export interface MediaSource {
   durationSeconds: number
   hasAudio: boolean
   addedAt: string
+  /** Set only when background processing (thumbnail/waveform/proxy) hadn't
+   * finished -- or had failed/been canceled -- at the moment this project
+   * was last saved; absent means it fully completed. `originalPath` plus
+   * `durationSeconds`/`hasAudio` are already known by the time an item is
+   * ever persisted at all (see MediaItem.readyToUse), so the media is fully
+   * usable immediately on reopen regardless of this field -- it only tells
+   * the app whether to automatically re-run the remaining pipeline stages
+   * in the background (already-completed stages are skipped via the
+   * on-disk content-hash cache, so this never redoes finished work). */
+  pendingStage?: 'thumbnail' | 'waveform' | 'proxy' | 'error' | 'canceled'
 }
 
 /** A marker on a single clip, offset-relative so it travels with the clip

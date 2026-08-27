@@ -29,7 +29,14 @@ import { formatDuration } from '../media/format'
 import type { MediaItem } from '@shared/media'
 import type { TimelineClip, Scene } from '@shared/project'
 
+// Mirrors styles.css's --timeline-ruler-height/--timeline-top-safe-zone/
+// --timeline-content-start -- kept in sync by hand since CSS custom
+// properties aren't readable from plain numeric JS geometry (trackTopById
+// below, the drag-preview ghost boxes it feeds). If the CSS values ever
+// change, these three need to change with them.
 const RULER_HEIGHT_PX = 20
+const TOP_SAFE_ZONE_PX = 60
+const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
 
 export function Timeline(): JSX.Element {
   const { items, selectedId, select: selectMediaForInspection, importPaths } = useMedia()
@@ -192,7 +199,7 @@ export function Timeline(): JSX.Element {
   // per track-list/height change rather than measured from the DOM).
   const trackTopById = useMemo(() => {
     const map: Record<string, number> = {}
-    let top = RULER_HEIGHT_PX
+    let top = CONTENT_START_PX
     for (const t of sortedTracks) {
       map[t.id] = top
       top += trackDisplayHeight(t, trackHeightMode)
@@ -952,6 +959,11 @@ export function Timeline(): JSX.Element {
               viewStart={viewportRange?.start}
               viewEnd={viewportRange?.end}
             />
+            {/* Permanent protected band between the ruler and the first track
+                row -- see --timeline-top-safe-zone. Renders no content of its
+                own; sticky (like the ruler above it) so it never scrolls away
+                and no clip/track can ever occupy it. */}
+            <div className="timeline-top-safe-zone" />
 
             {sortedTracks.map((track) => {
               if (track.kind === 'graphic' || track.kind === 'text') {

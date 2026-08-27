@@ -330,7 +330,11 @@ export function ClipTrack({
           const requiredKind = clip.type === 'audio' ? 'audio' : 'video'
           const hit = document.elementFromPoint(ev.clientX, ev.clientY) as Element | null
           const rowEl = hit?.closest('[data-track-kind]') as HTMLElement | null
-          const onRuler = !rowEl && hit?.closest('.timeline-ruler')
+          // The protected safe zone between the ruler and the first track row
+          // (see --timeline-top-safe-zone) must refuse a new-track auto-create
+          // exactly like the ruler itself -- otherwise dragging a clip up past
+          // the top track would silently spawn a new one in that gap.
+          const onRuler = !rowEl && (hit?.closest('.timeline-ruler') || hit?.closest('.timeline-top-safe-zone'))
           if (rowEl) {
             const hitKind = rowEl.getAttribute('data-track-kind')
             const hitTrackId = rowEl.getAttribute('data-track-id')

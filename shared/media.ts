@@ -64,6 +64,14 @@ export interface MediaItem {
   errorMessage?: string
   cached: boolean
   addedAt: string
+  /** True as soon as `originalUrl`/`metadata` are known (right after probing
+   * completes) -- everything after that point (thumbnail/waveform/proxy) is
+   * pure background enhancement, not a precondition for previewing the
+   * asset or adding it to the Timeline off the original file. Distinct from
+   * `stage === 'ready'`, which additionally requires every background job to
+   * have finished; UI that gates "can this be used at all" should check this
+   * instead of waiting for the terminal stage. */
+  readyToUse: boolean
 }
 
 export interface MediaProgressUpdate extends Partial<MediaItem> {

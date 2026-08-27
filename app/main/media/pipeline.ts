@@ -51,6 +51,16 @@ export async function processMediaFile(
   const metadata = await probeMedia(sourcePath)
 
   const originalUrl = registerMediaToken(sourcePath)
+  const kind = metadata.hasVideo ? 'video' : 'audio'
+  const assetType = isStillImage ? 'image' : kind
+
+  // Everything the app needs to preview this asset and place it on the
+  // Timeline (duration, hasAudio, a playable URL) is known the moment
+  // probing finishes -- thumbnail/waveform/proxy are background polish from
+  // here on, not a precondition. Marking `readyToUse` here, rather than
+  // waiting for the terminal 'ready' stage, is what lets ImportPanel/
+  // PreviewPlayer stop gating on the full pipeline completing.
+  onProgress({ mediaId, stage: 'probing', percent: 10, fileName, originalPath: filePath, originalUrl, metadata, kind, assetType, readyToUse: true })
 
   let allFromCache = true
   let thumbnailPath: string | undefined
@@ -66,9 +76,14 @@ export async function processMediaFile(
   onProgress({ mediaId, stage: 'waveform', percent: 30, fileName, originalPath: filePath })
   const waveform = metadata.hasAudio ? await generateWaveform(mediaId, sourcePath, cacheDir) : undefined
 
+  // A still image's "video" is a synthesized, trivially-simple looping
+  // frame (see stillImage.ts) -- there's no real quality/bitrate benefit to
+  // a separate lower-res proxy of that, only the cost of an extra encode
+  // delaying `ready`. The synthesized video already IS the lightweight
+  // asset; only real video footage gets a 480p proxy.
   let proxyPath: string | undefined
   let proxyUrl: string | undefined
-  if (metadata.hasVideo) {
+  if (metadata.hasVideo && !isStillImage) {
     onProgress({ mediaId, stage: 'proxy', percent: 45, fileName, originalPath: filePath })
     const proxy = await generateVideoProxy(mediaId, sourcePath, cacheDir, metadata.durationSeconds, (p) => {
       onProgress({ mediaId, stage: 'proxy', percent: 45 + p * 0.55, fileName, originalPath: filePath })
@@ -80,8 +95,8 @@ export async function processMediaFile(
 
   const item: MediaItem = {
     id: mediaId,
-    kind: metadata.hasVideo ? 'video' : 'audio',
-    assetType: isStillImage ? 'image' : metadata.hasVideo ? 'video' : 'audio',
+    kind,
+    assetType,
     fileName,
     originalPath: filePath,
     originalUrl,
@@ -94,7 +109,8 @@ export async function processMediaFile(
     stage: 'ready',
     percent: 100,
     cached: allFromCache,
-    addedAt: new Date().toISOString()
+    addedAt: new Date().toISOString(),
+    readyToUse: true
   }
 
   onProgress({ mediaId, ...item })

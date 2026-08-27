@@ -32,6 +32,18 @@
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
+
+  /* Timeline vertical layout -- kept as named variables (rather than
+     hardcoded pixel values scattered across the ruler, safe zone, sticky
+     rows, and Timeline.tsx's own trackTopById geometry) so the ruler height
+     and the protected empty band beneath it can only ever be changed in one
+     place and never drift out of sync with each other. Mirrored in
+     Timeline.tsx as RULER_HEIGHT_PX/TOP_SAFE_ZONE_PX/CONTENT_START_PX for the
+     JS-side geometry (drag-preview ghost boxes, per-track row offsets) that
+     CSS variables can't reach. */
+  --timeline-ruler-height: 20px;
+  --timeline-top-safe-zone: 60px;
+  --timeline-content-start: calc(var(--timeline-ruler-height) + var(--timeline-top-safe-zone));
 }
 
 * {
@@ -960,6 +972,27 @@ body {
   justify-content: center;
   gap: 4px;
   padding: 0 8px;
+}
+
+/* A background job (thumbnail/waveform/proxy) still running, failed, or
+   canceled AFTER the asset is already usable -- a small corner pill, never
+   the dimming full-thumbnail overlay .media-card-progress-overlay uses
+   before the asset is usable at all. */
+.media-thumb-bg-badge {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(9, 11, 20, 0.85);
+  color: var(--text-dim);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.media-thumb-bg-badge-warning {
+  color: var(--warning);
 }
 
 .media-card-name {
@@ -2617,7 +2650,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 20px;
+  /* Matches --timeline-content-start (ruler + top safe zone), not just the
+     ruler, so track header rows line up with where track content rows
+     actually start now that there's a protected gap below the ruler. */
+  height: var(--timeline-content-start);
   background: #101215;
   border-bottom: 1px solid var(--border);
 }
@@ -2679,7 +2715,7 @@ body {
    snap-guide, which must still be visible drawing over it. */
 .timeline-header-row-sticky-main {
   position: sticky;
-  top: 20px;
+  top: var(--timeline-content-start);
   z-index: 3;
   background: #101215;
 }
@@ -2692,7 +2728,7 @@ body {
    `position: relative`), not just a style preference here. */
 .timeline-track.timeline-track-sticky-main {
   position: sticky;
-  top: 20px;
+  top: var(--timeline-content-start);
   z-index: 3;
   background: #0b0d10;
 }
@@ -3061,9 +3097,23 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 20px;
+  height: var(--timeline-ruler-height);
   border-bottom: 1px solid var(--border);
   background: #0b0d10;
+}
+
+/* The permanent protected band between the ruler and the first track row --
+   sticky at the same tier as the ruler (immediately below it) so it never
+   scrolls away and no clip/track content can ever occupy it, no matter how
+   many tracks are added or how far the user scrolls vertically. Purely
+   decorative/structural: it renders no content of its own. */
+.timeline-top-safe-zone {
+  position: sticky;
+  top: var(--timeline-ruler-height);
+  z-index: 1;
+  height: var(--timeline-top-safe-zone);
+  background: #0b0d10;
+  pointer-events: none;
 }
 
 .timeline-tick {
