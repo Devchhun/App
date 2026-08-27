@@ -4,6 +4,7 @@ import { formatDuration } from '../media/format'
 import { useSequence } from '../sequence/SequenceContext'
 import { usePlayback } from '../playback/PlaybackContext'
 import { useHistory } from '../history/HistoryContext'
+import { computeRulerTicks } from './rulerTicks'
 
 interface Props {
   duration: number
@@ -19,21 +20,6 @@ interface Props {
   viewStart?: number
   viewEnd?: number
 }
-
-/** Picks a "nice" tick interval (in seconds) so labels don't overlap at any zoom level. */
-function pickTickInterval(pixelsPerSecond: number): number {
-  const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900]
-  const minPxPerTick = 70
-  for (const candidate of candidates) {
-    if (candidate * pixelsPerSecond >= minPxPerTick) return candidate
-  }
-  return candidates[candidates.length - 1]
-}
-
-/** How many minor (unlabeled, shorter) ticks render between each major
- * (labeled) tick -- purely visual, CapCut-style subdivision, no effect on
- * `pickTickInterval`'s own major-spacing math. */
-const MINOR_TICKS_PER_MAJOR = 5
 
 /** Movement past this (px) while a marker flag is held down counts as a drag
  * rather than a click-to-seek -- matches the same click-vs-drag threshold
@@ -52,26 +38,13 @@ export function TimeRuler({ duration, pixelsPerSecond, markers, viewStart, viewE
   const rangeStart = Math.max(0, viewStart ?? 0)
   const rangeEnd = Math.min(duration, viewEnd ?? duration)
 
-  const interval = pickTickInterval(pixelsPerSecond)
-  // Only the major ticks whose time actually falls within the visible range
-  // -- indices computed directly from rangeStart/rangeEnd rather than
+  // Only the ticks whose time actually falls within the visible range --
+  // indices computed directly from rangeStart/rangeEnd rather than
   // generating the full 0..duration series and filtering it, so the array
   // size only ever depends on how much TIME is on screen, never on the
-  // project's total duration.
-  const firstMajorIndex = Math.floor(rangeStart / interval)
-  const lastMajorIndex = Math.ceil(rangeEnd / interval)
-  const ticks: number[] = []
-  for (let i = firstMajorIndex; i <= lastMajorIndex; i++) ticks.push(i * interval)
-
-  // One shorter, unlabeled tick per minor subdivision -- skips indices that
-  // land exactly on a major tick (already rendered above).
-  const minorStep = interval / MINOR_TICKS_PER_MAJOR
-  const firstMinorIndex = Math.floor(rangeStart / minorStep)
-  const lastMinorIndex = Math.ceil(rangeEnd / minorStep)
-  const minorTicks: number[] = []
-  for (let i = firstMinorIndex; i <= lastMinorIndex; i++) {
-    if (i % MINOR_TICKS_PER_MAJOR !== 0) minorTicks.push(i * minorStep)
-  }
+  // project's total duration. See rulerTicks.ts for why ticks never exceed
+  // `duration` itself.
+  const { majorTicks: ticks, minorTicks } = computeRulerTicks(duration, pixelsPerSecond, rangeStart, rangeEnd)
 
   const timeFromClientX = (clientX: number): number => {
     const rect = rulerRef.current?.getBoundingClientRect()

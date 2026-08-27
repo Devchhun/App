@@ -3405,11 +3405,22 @@ body {
   z-index: 3;
 }
 
+/* The playhead's own current-time readout sits at the playhead's x position,
+   which is exactly a ruler tick's x position whenever the playhead is at or
+   near that tick's time -- a very common case (scrubbing to a round number,
+   just navigating normally). Both used transparent backgrounds, so the two
+   labels rendered on top of each other, looking like garbled/doubled text.
+   A solid pill (CapCut-style) makes the playhead's readout the one thing
+   visible at that position, cleanly hiding the redundant ruler tick behind
+   it instead of overlapping it. */
 .timeline-playhead-badge {
   position: absolute;
-  top: 9px;
+  top: 4px;
   left: 4px;
-  color: var(--text-dim);
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
   font-size: 8px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
