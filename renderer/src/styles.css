@@ -3407,12 +3407,15 @@ body {
 
 /* The playhead's own current-time readout sits at the playhead's x position,
    which is exactly a ruler tick's x position whenever the playhead is at or
-   near that tick's time -- a very common case (scrubbing to a round number,
-   just navigating normally). Both used transparent backgrounds, so the two
-   labels rendered on top of each other, looking like garbled/doubled text.
-   A solid pill (CapCut-style) makes the playhead's readout the one thing
-   visible at that position, cleanly hiding the redundant ruler tick behind
-   it instead of overlapping it. */
+   near that tick's time -- a very common case (time 0, the default/reset
+   playhead position, is ALWAYS a tick; scrubbing to a round number is
+   another). A solid pill (CapCut-style) keeps the readout itself legible,
+   but by default it still sits close enough to the line to land on top of
+   that tick's own label. Timeline.tsx picks the -left-edge/-right-edge
+   modifier based on the playhead's actual on-screen position so the badge
+   moves clear instead of covering anything -- see its own doc comment for
+   the edge-proximity logic. The default (no modifier) offset is fine
+   everywhere else, since ruler ticks are always >=70px apart. */
 .timeline-playhead-badge {
   position: absolute;
   top: 4px;
@@ -3426,6 +3429,21 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* Near the visible left edge (most commonly time 0): push clear of that
+   tick's own label width instead of sitting on top of it. */
+.timeline-playhead-badge-left-edge {
+  left: 28px;
+}
+
+/* Near the visible right edge: flip to the line's left side entirely, via
+   `left` + a full-width transform (rather than `right`, which would measure
+   from the edge of `.timeline-playhead`'s own ~2px-wide box, not usefully)
+   -- keeps the badge on screen and off of whatever tick sits there. */
+.timeline-playhead-badge-right-edge {
+  left: -6px;
+  transform: translateX(-100%);
 }
 
 /* AI Suggestions (Phase E) */

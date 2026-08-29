@@ -16,7 +16,10 @@ interface Props {
    * whole `duration` (the old, uncapped behavior), which is fine for a
    * short project but becomes thousands of DOM nodes for a long one (a
    * 2-hour timeline at a typical zoom level generated over 7,000 minor-tick
-   * elements alone) -- Timeline.tsx always passes the real window. */
+   * elements alone) -- Timeline.tsx always passes a real, bounded window
+   * (see its own UNMEASURED_VIEWPORT_FALLBACK_SECONDS), never literally
+   * `undefined`; the fallback here exists only for this component in
+   * isolation (e.g. tests). */
   viewStart?: number
   viewEnd?: number
 }

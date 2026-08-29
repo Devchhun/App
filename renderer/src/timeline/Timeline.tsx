@@ -8,6 +8,7 @@ import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
 import { useTimelineShortcuts } from './useTimelineShortcuts'
 import { useUiState } from '../nav/UiStateContext'
 import { TimeRuler } from './TimeRuler'
+import { playheadBadgeEdge } from './playheadBadgePosition'
 import { TimelineToolbar } from './TimelineToolbar'
 import { CaptionsTrack } from './CaptionsTrack'
 import { GraphicsTrack } from './GraphicsTrack'
@@ -37,6 +38,21 @@ import type { TimelineClip, Scene } from '@shared/project'
 const RULER_HEIGHT_PX = 20
 const TOP_SAFE_ZONE_PX = 60
 const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
+
+// `viewportRange` starts `null` until the viewport-tracking effect below
+// measures the scroll container -- see that effect's own doc comment for why
+// it's a `useLayoutEffect` (to keep that gap from ever reaching a real
+// paint). React 18 StrictMode still double-invokes that layout effect itself
+// (mount -> simulated cleanup -> mount again) as part of its dev-only bug
+// -detection, and on a long project (confirmed from ~2000s+) that extra
+// churn right at mount was enough to occasionally still surface as
+// TimeRuler's "Failed to execute 'removeChild'" -- reproducible only with a
+// long/scrolled project, only in dev, exactly matching the failure this file
+// already has one fix for above. Capping the "not measured yet" fallback
+// here means the unmeasured render is never more than a couple of ticks
+// away from the real one regardless of project length, instead of jumping
+// from "every tick across the whole project" down to a handful.
+const UNMEASURED_VIEWPORT_FALLBACK_SECONDS = 300
 
 export function Timeline(): JSX.Element {
   const { items, selectedId, select: selectMediaForInspection, importPaths } = useMedia()
@@ -941,6 +957,27 @@ export function Timeline(): JSX.Element {
     )
   }
 
+  // The playhead's own time readout sits right next to the playhead line by
+  // default (to its right) -- fine almost everywhere, since ruler ticks are
+  // always >=70px apart (see rulerTicks.ts's minPxPerTick) and the playhead
+  // is rarely exactly on one. It IS exactly on one very often at time 0
+  // (every project's default/reset playhead position, and where "00:00"'s
+  // own tick sits), where the badge would otherwise sit right on top of that
+  // tick's label. Reading the scroll container's own current geometry
+  // (rather than viewportRange, which pads 400px past each visible edge for
+  // pre-mounting -- see the culling effect above) so "near an edge" means
+  // the edge actually on screen right now: near the left edge, push the
+  // badge further right, clear of a typical tick label's width; near the
+  // right edge, flip it to the left entirely so it can never clip off-screen
+  // or sit on top of whatever tick is there. The playhead LINE itself
+  // (`.timeline-playhead`'s own `left`) is untouched either way.
+  const playheadBadgeEdgeClass = ((): string => {
+    const scrollEl = scrollRef.current
+    if (!scrollEl) return ''
+    const edge = playheadBadgeEdge(currentTime * pixelsPerSecond, scrollEl.scrollLeft, scrollEl.scrollLeft + scrollEl.clientWidth)
+    return edge ? ` timeline-playhead-badge-${edge}-edge` : ''
+  })()
+
   return (
     <div className="timeline-root">
       <TimelineToolbar onZoom={zoomAroundPlayhead} />
@@ -976,8 +1013,8 @@ export function Timeline(): JSX.Element {
               duration={effectiveDuration}
               pixelsPerSecond={pixelsPerSecond}
               markers={sequence.markers}
-              viewStart={viewportRange?.start}
-              viewEnd={viewportRange?.end}
+              viewStart={viewportRange?.start ?? 0}
+              viewEnd={viewportRange?.end ?? Math.min(effectiveDuration, UNMEASURED_VIEWPORT_FALLBACK_SECONDS)}
             />
             {/* Permanent protected band between the ruler and the first track
                 row -- see --timeline-top-safe-zone. Renders no content of its
@@ -1056,7 +1093,7 @@ export function Timeline(): JSX.Element {
 
             <div className="timeline-playhead" style={{ left: currentTime * pixelsPerSecond }}>
               <div className="timeline-playhead-handle" title="Drag to scrub" />
-              <span className="timeline-playhead-badge">{formatDuration(currentTime)}</span>
+              <span className={`timeline-playhead-badge${playheadBadgeEdgeClass}`}>{formatDuration(currentTime)}</span>
             </div>
 
             {skimmerOn && <div ref={skimmerRef} className="timeline-skimmer" style={{ display: 'none' }} />}
