@@ -51,7 +51,7 @@ export function TrackHeaderMenu({ track, hasContent, solo, onToggleSolo, onAddAb
   return (
     <div className="track-menu-root" ref={rootRef}>
       <button className="timeline-header-icon" title="Track options" onClick={() => setOpen((v) => !v)}>
-        <MenuDotsIcon />
+        <MenuDotsIcon size={16} />
       </button>
       {open && (
         <div className="track-menu-popover track-menu-popover-right">

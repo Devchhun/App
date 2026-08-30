@@ -1047,7 +1047,7 @@ export function Timeline(): JSX.Element {
       />
       <div className="timeline-scroll-2d editor-scroll" ref={scrollRef}>
         <div className="timeline-header-column" style={{ width: trackHeaderWidth }}>
-          <TimelineTrackHeaders tracks={sortedTracks} trackHasContent={trackHasContent} />
+          <TimelineTrackHeaders tracks={sortedTracks} trackHasContent={trackHasContent} topSpacerHeight={topSpacerHeight} />
         </div>
         <div className="timeline-content-column">
           <div

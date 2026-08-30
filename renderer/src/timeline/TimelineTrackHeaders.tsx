@@ -17,15 +17,15 @@ const VISUAL_KINDS: readonly TimelineTrackKind[] = ['video', 'graphic', 'text', 
 function TrackKindIcon({ kind }: { kind: TimelineTrackKind }): JSX.Element {
   switch (kind) {
     case 'video':
-      return <VideoTrackIcon />
+      return <VideoTrackIcon size={16} />
     case 'audio':
-      return <AudioTrackIcon />
+      return <AudioTrackIcon size={16} />
     case 'graphic':
-      return <GraphicTrackIcon />
+      return <GraphicTrackIcon size={16} />
     case 'text':
-      return <TextTrackIcon />
+      return <TextTrackIcon size={16} />
     case 'caption':
-      return <CaptionTrackIcon />
+      return <CaptionTrackIcon size={16} />
   }
 }
 
@@ -34,6 +34,14 @@ interface Props {
   /** Which tracks currently have any clips/scenes on them -- gates the
    * "confirm before deleting a non-empty track" behavior in the "..." menu. */
   trackHasContent: Record<string, boolean>
+  /** Matches Timeline.tsx's own computeTrackCentering result exactly -- the
+   * header column and the content column are separate sibling elements (see
+   * Timeline.tsx's `.timeline-header-column` / `.timeline-content-column`),
+   * each scrolling together but laid out independently, so without this the
+   * header rows would stack right after the ruler while the actual track
+   * rows they're supposed to label sit lower, centered around the main
+   * track -- every row would point at the wrong track. */
+  topSpacerHeight: number
 }
 
 /** One row shape for every track kind, parameterized by `track.kind` for
@@ -114,7 +122,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
             toggleTrackFlag(track.id, 'muted')
           }}
         >
-          <VolumeIcon size={13} muted={track.muted} />
+          <VolumeIcon size={16} muted={track.muted} />
         </button>
       )}
       {VISUAL_KINDS.includes(track.kind) && (
@@ -126,7 +134,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
             toggleTrackFlag(track.id, 'hidden')
           }}
         >
-          <EyeIcon open={!track.hidden} />
+          <EyeIcon open={!track.hidden} size={16} />
         </button>
       )}
       <button
@@ -137,7 +145,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
           toggleTrackFlag(track.id, 'locked')
         }}
       >
-        <LockIcon locked={track.locked} />
+        <LockIcon locked={track.locked} size={16} />
       </button>
       {track.removable && (
         <TrackHeaderMenu
@@ -158,10 +166,11 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
   )
 }
 
-export function TimelineTrackHeaders({ tracks, trackHasContent }: Props): JSX.Element {
+export function TimelineTrackHeaders({ tracks, trackHasContent, topSpacerHeight }: Props): JSX.Element {
   return (
     <div className="timeline-headers">
       <div className="timeline-header-spacer" />
+      <div className="timeline-tracks-spacer" style={{ height: topSpacerHeight }} />
       {sortTracksForDisplay(tracks).map((track) => (
         <UnifiedTrackHeader key={track.id} track={track} hasContent={trackHasContent[track.id] ?? false} />
       ))}

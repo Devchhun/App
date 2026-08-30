@@ -3071,8 +3071,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   background: none;
   border: none;
   color: rgba(244, 247, 251, 0.72);
