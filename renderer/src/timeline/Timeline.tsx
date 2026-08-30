@@ -53,6 +53,13 @@ const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
 // the ancestor scroll container takes over from there, same as always.
 const TOP_SPACER_RATIO = 46
 const BOTTOM_SPACER_RATIO = 54
+/** Caps the ratio-computed top spacer so a tall Timeline panel doesn't
+ * stretch the ruler-to-first-row gap indefinitely -- past this, the
+ * playhead's own time readout (which sits just under the ruler, not at the
+ * main track's position) would end up stranded alone in a cavernous empty
+ * strip far from any track instead of reading as "a bit of breathing room."
+ * See computeTrackCentering's own doc comment. */
+const MAX_TOP_SPACER_PX = 90
 
 // `viewportRange` starts `null` until the viewport-tracking effect below
 // measures the scroll container -- see that effect's own doc comment for why
@@ -246,7 +253,7 @@ export function Timeline(): JSX.Element {
   // center down and main away from the target).
   const usableTrackAreaHeight = Math.max(0, timelineViewportHeight - CONTENT_START_PX)
   const { topSpacerHeight, bottomSpacerHeight } = useMemo(
-    () => computeTrackCentering(sortedTracks, trackHeightById, usableTrackAreaHeight, TOP_SPACER_RATIO, BOTTOM_SPACER_RATIO),
+    () => computeTrackCentering(sortedTracks, trackHeightById, usableTrackAreaHeight, TOP_SPACER_RATIO, BOTTOM_SPACER_RATIO, MAX_TOP_SPACER_PX),
     [sortedTracks, trackHeightById, usableTrackAreaHeight]
   )
 
