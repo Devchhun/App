@@ -107,6 +107,19 @@ export function PreviewPlayer(): JSX.Element {
   // nothing to advance through and the scrub bar would cap at 0.
   const sceneMaxEnd = allScenes.reduce((max, s) => Math.max(max, s.endTime), 0)
   const duration = Math.max(sequence.duration, sceneMaxEnd > 0 ? sceneMaxEnd + 5 : 0)
+  // The scrub bar's own range/max still uses the padded `duration` above
+  // (sequence.duration bakes in a +5s trailing buffer -- see
+  // computeSequenceDuration -- so there's always a little room to drop a
+  // next clip right after the last one) -- but an actual SEEK (scrub,
+  // Timeline ruler click, skip-to-end) has no reason to land in that dead
+  // buffer zone since nothing plays there. Clamping seeks to the real last
+  // clip/scene end instead keeps the playhead exactly where content stops,
+  // while the Timeline ruler is free to visually extend further for layout
+  // (see Timeline.tsx's own ruler-width stretch).
+  const contentEndTime = Math.max(
+    sequence.clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0),
+    sceneMaxEnd
+  )
   // Hidden tracks never render in Preview (locked tracks still do -- locked
   // only protects against editing, it isn't a visibility toggle). Filtered
   // here rather than inside findActiveClips itself, which other call sites
@@ -195,13 +208,13 @@ export function PreviewPlayer(): JSX.Element {
 
   const applyProjectTime = useCallback(
     (time: number, playing: boolean) => {
-      const clamped = Math.max(0, Math.min(duration, time))
+      const clamped = Math.max(0, Math.min(contentEndTime, time))
       setCurrentTime(clamped)
       reportTime(clamped)
       if (previewMode === 'project') syncVideoToTime(clamped, playing)
       return clamped
     },
-    [duration, reportTime, previewMode, syncVideoToTime]
+    [contentEndTime, reportTime, previewMode, syncVideoToTime]
   )
 
   // Explicit seeks (scrub bar, skip buttons, frame step, Timeline click,

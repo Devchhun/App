@@ -878,6 +878,14 @@ export function Timeline(): JSX.Element {
   }
 
   const contentWidth = Math.max(1, effectiveDuration * pixelsPerSecond)
+  // The ruler alone (not the track rows -- see TimeRuler's own `duration`
+  // width/tick-cap prop) visually fills at least the full visible viewport
+  // width, continuing its ticks into the empty space past the actual
+  // content instead of leaving it a dead blank strip once effectiveDuration
+  // is narrower than the panel. Playhead seeking still can't reach that
+  // extra space -- see PreviewPlayer.tsx's applyProjectTime, which clamps to
+  // the real last clip/scene end, not this stretched value.
+  const rulerVisualDuration = Math.max(effectiveDuration, timelineViewportWidth / pixelsPerSecond)
 
   // Attached as a real native listener rather than JSX onWheel -- see
   // handleWheel's own doc comment for why. `isEmpty` has to be a dependency:
@@ -1064,7 +1072,7 @@ export function Timeline(): JSX.Element {
             onContextMenu={handleContextMenu}
           >
             <TimeRuler
-              duration={effectiveDuration}
+              duration={rulerVisualDuration}
               pixelsPerSecond={pixelsPerSecond}
               markers={sequence.markers}
               viewStart={viewportRange?.start ?? 0}
