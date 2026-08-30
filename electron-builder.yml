@@ -31,7 +31,15 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: ${productName}-${version}-setup.${ext}
+  # No spaces (${productName} is "Creative AI Editor") -- electron-builder's
+  # own generated latest.yml sanitizes spaces in the artifact filename to
+  # hyphens, but GitHub's release-asset upload sanitizes them to PERIODS
+  # instead, so the two disagreed on the actual filename. auto-updater then
+  # fetches a correct latest.yml pointing at a URL that 404s on GitHub -- it
+  # detects an update is available but can never download it. Hyphenating
+  # this outright means there are no spaces for either side to sanitize
+  # differently in the first place.
+  artifactName: Creative-AI-Editor-${version}-setup.${ext}
 nsis:
   oneClick: false
   perMachine: false
