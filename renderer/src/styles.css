@@ -6096,6 +6096,34 @@ body {
   z-index: 4;
 }
 
+/* Gap-Aware Ripple Insert's live drop preview (requirement 9) -- outlines
+   the clip being dragged, on the SAME track's collision it's about to
+   resolve: green when it fits cleanly into an existing gap (nothing else
+   will move), amber/blue when it doesn't and a ripple push is about to
+   happen. `!important` on the outline color only, so it wins over the
+   plain selected-state outline (both can be true -- you can drag a
+   selected clip) without fighting its own box-shadow/opacity. */
+.clip-track-clip-fits-gap {
+  outline: 2px solid #4ade80 !important;
+  outline-offset: -1px;
+}
+
+.clip-track-clip-will-ripple {
+  outline: 2px solid #5b8cff !important;
+  outline-offset: -1px;
+}
+
+/* The clip(s) that WILL be pushed right if the drag is dropped where it
+   currently is -- a distinct blue background tint (not the same green/blue
+   outline as the dragged clip itself, which marks the thing moving, not
+   the things being displaced) so the two roles read as visually separate
+   at a glance. */
+.clip-track-clip-ripple-target {
+  background: color-mix(in srgb, #5b8cff 22%, transparent) !important;
+  outline: 1.5px dashed #5b8cff !important;
+  outline-offset: -1px;
+}
+
 /* Title-bar strip (filename + duration) over the filmstrip body -- video/
    image clips only, matching the reference editor's clip design. A darker
    band than the clip body so it reads as a header even on a light thumbnail. */

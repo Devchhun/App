@@ -293,6 +293,54 @@ describe('11. Moving a clip preserves its duration', () => {
   })
 })
 
+describe('Gap-Aware Ripple Insert (moveClip same-track collision handling)', () => {
+  it('snaps into an existing gap without moving anything else', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'a', startTime: 0, duration: 5 }),
+      videoClip({ id: 'moving', startTime: 30, duration: 3 }),
+      videoClip({ id: 'b', startTime: 15, duration: 5 })
+    ])
+    const moved = moveClip(sequence, 'moving', 8) // gap [5,15) fits a 3s clip at 8
+    expect(moved.clips.find((c) => c.id === 'moving')!.startTime).toBe(8)
+    expect(moved.clips.find((c) => c.id === 'a')!.startTime).toBe(0)
+    expect(moved.clips.find((c) => c.id === 'b')!.startTime).toBe(15)
+  })
+
+  it('ripple-pushes the overlapping clip and everything after it, never overlapping', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'a', startTime: 0, duration: 5 }),
+      videoClip({ id: 'moving', startTime: 30, duration: 4 }),
+      videoClip({ id: 'b', startTime: 6, duration: 5 }), // only a 1s gap after 'a' -- too small for the 4s moving clip
+      videoClip({ id: 'c', startTime: 11, duration: 5 })
+    ])
+    const moved = moveClip(sequence, 'moving', 5)
+    expect(moved.clips.find((c) => c.id === 'moving')!.startTime).toBe(5)
+    expect(moved.clips.find((c) => c.id === 'b')!.startTime).toBe(9) // pushed to right after moving's new end
+    expect(moved.clips.find((c) => c.id === 'c')!.startTime).toBe(14) // pushed right behind b
+    expect(moved.clips.find((c) => c.id === 'a')!.startTime).toBe(0) // untouched, entirely before the insertion point
+  })
+
+  it('never routes to a different track or auto-creates one to dodge a collision', () => {
+    const sequence = seqOf([videoClip({ id: 'a', startTime: 0, duration: 10 }), videoClip({ id: 'moving', trackId: 'V1', startTime: 30, duration: 4 })])
+    const moved = moveClip(sequence, 'moving', 3) // fully overlaps 'a'
+    expect(moved.clips.find((c) => c.id === 'moving')!.trackId).toBe('V1')
+    expect(moved.tracks).toEqual(sequence.tracks) // no new track synthesized
+  })
+
+  it('pushes a ripple-displaced clip\'s own linked partner on another track to stay in sync', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'a', startTime: 0, duration: 5 }),
+      videoClip({ id: 'moving', startTime: 30, duration: 4 }),
+      videoClip({ id: 'b', startTime: 2, duration: 5, linkedClipId: 'b-audio' }), // overlaps the moving clip's target position
+      { id: 'b-audio', mediaId: 'm1', type: 'audio', trackId: 'A1', startTime: 2, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, linkedClipId: 'b' } as TimelineClip
+    ])
+    const moved = moveClip(sequence, 'moving', 0)
+    const newBStart = moved.clips.find((c) => c.id === 'b')!.startTime
+    expect(newBStart).toBeGreaterThan(2) // b got pushed
+    expect(moved.clips.find((c) => c.id === 'b-audio')!.startTime).toBe(newBStart) // its audio partner followed by the same delta
+  })
+})
+
 describe('12. Dragging beyond Timeline end extends sequence duration', () => {
   it('computeSequenceDuration is always max(clip end) + 5', () => {
     const sequence = seqOf([videoClip({ startTime: 0, duration: 10 })])
@@ -666,14 +714,19 @@ describe('selectedWithLinkedClips', () => {
 
 describe('Linkage toggle gating (spec section 3) -- move/trim/delete/duplicate only cascade to the linked partner when `linked` is true', () => {
   it('moveClip: linked=false leaves the partner in place', () => {
-    const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a', startTime: 0 }), videoClip({ id: 'a', type: 'audio', linkedClipId: 'v', startTime: 0 })])
+    // Realistic linked pair: video on V1, its own audio on A1 -- a linked
+    // pair sharing one track (as this test previously had it, unrealistically)
+    // would now also trigger Gap-Aware Ripple Insert's same-track collision
+    // handling, which is a deliberately separate concern from the linked
+    // cascade this test is actually about.
+    const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a', startTime: 0 }), videoClip({ id: 'a', type: 'audio', trackId: 'A1', linkedClipId: 'v', startTime: 0 })])
     const result = moveClip(sequence, 'v', 5, false)
     expect(result.clips.find((c) => c.id === 'v')!.startTime).toBe(5)
     expect(result.clips.find((c) => c.id === 'a')!.startTime).toBe(0)
   })
 
   it('moveClip: linked=true (default) still cascades, matching prior behavior', () => {
-    const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a', startTime: 0 }), videoClip({ id: 'a', type: 'audio', linkedClipId: 'v', startTime: 0 })])
+    const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a', startTime: 0 }), videoClip({ id: 'a', type: 'audio', trackId: 'A1', linkedClipId: 'v', startTime: 0 })])
     const result = moveClip(sequence, 'v', 5)
     expect(result.clips.find((c) => c.id === 'a')!.startTime).toBe(5)
   })

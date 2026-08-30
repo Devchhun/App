@@ -11,6 +11,7 @@ import { computeSequenceDuration } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import { addTrack as addTrackToRegistry } from '../timeline/trackModel'
 import { closeGap } from '../timeline/reflow'
+import { planRippleInsert, extendRippleInsertWithLinkedPartners } from '../timeline/rippleCollision'
 
 export { computeSequenceDuration }
 
@@ -116,7 +117,18 @@ export function insertClip(
  * delta so they stay in sync -- but ONLY when `linked` is true (default),
  * gated by the Timeline's Linkage toggle at the call site (see
  * SequenceContext.moveClip). A no-op (same reference back) for a missing
- * or locked clip. */
+ * or locked clip.
+ *
+ * Gap-Aware Ripple Insert: landing on an occupied spot on the clip's OWN
+ * track never silently overlaps or hops to a different track -- it either
+ * snaps cleanly into an existing gap big enough for it (nothing else moves)
+ * or ripple-pushes the clip(s) in the way, and everything after them, to
+ * the right (see rippleCollision.ts's planRippleInsert). Each pushed clip's
+ * own linked partner (if any) moves the same delta to stay in sync, even on
+ * a different track -- the one case this DOES touch another track, per the
+ * "unless linked media requires it" carve-out. Cross-track moves go through
+ * moveClipToTrack instead, which has its own (currently collision-free)
+ * placement policy. */
 export function moveClip(sequence: ProjectSequence, clipId: string, newStartTime: number, linked = true): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
@@ -126,9 +138,14 @@ export function moveClip(sequence: ProjectSequence, clipId: string, newStartTime
   if (delta === 0) return sequence
 
   const linkedId = linked ? target.linkedClipId : undefined
+  const excludeIds = new Set([clipId, ...(linkedId ? [linkedId] : [])])
+  const ripplePlan = planRippleInsert(sequence.clips, target.trackId, clampedStart, target.duration, excludeIds)
+  const pushes = extendRippleInsertWithLinkedPartners(sequence.clips, ripplePlan.pushes)
+
   const clips = sequence.clips.map((c) => {
     if (c.id === clipId) return { ...c, startTime: clampedStart }
     if (linkedId && c.id === linkedId && !c.locked) return { ...c, startTime: Math.max(0, c.startTime + delta) }
+    if (pushes.has(c.id)) return { ...c, startTime: pushes.get(c.id)! }
     return c
   })
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }

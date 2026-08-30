@@ -6,6 +6,7 @@ import { useHistory } from '../history/HistoryContext'
 import { useTimelineView } from './TimelineViewContext'
 import { trackDisplayHeight, getMainVideoTrackId, nextTrackId } from './trackModel'
 import { buildSnapCandidates, findSnapMatch, type SnapCandidate } from './snapping'
+import { planRippleInsert, extendRippleInsertWithLinkedPartners } from './rippleCollision'
 import type { RippleScope } from './timelineViewPrefs'
 import { VideoFilmstrip } from './VideoFilmstrip'
 import { WaveformTrack } from './WaveformTrack'
@@ -152,6 +153,15 @@ export function ClipTrack({
    * 9's "target track highlight"), tracked imperatively so switching targets
    * mid-drag doesn't leave a stale highlight on the previous one. */
   const dropTargetElRef = useRef<HTMLElement | null>(null)
+  /** Gap-Aware Ripple Insert's live drop preview (requirement 9): every DOM
+   * element currently wearing the "will be pushed" highlight, tracked
+   * imperatively (same reasoning as dropTargetElRef -- this changes on
+   * every pointermove of a drag, far too often for React state) so the
+   * previous set can always be cleared before applying the next one,
+   * including elements on OTHER tracks (a ripple-displaced clip's linked
+   * partner), which is why this is queried via document.querySelector
+   * rather than scoped to this ClipTrack instance's own subtree. */
+  const ripplePreviewElsRef = useRef<HTMLElement[]>([])
   /** Cross-track dragging moves a clip's DOM node from THIS ClipTrack
    * instance's own rendered list to a DIFFERENT track's -- React unmounts it
    * here and mounts a fresh one there, which silently releases native
@@ -379,7 +389,31 @@ export function ClipTrack({
         }
 
         const isMain = clip ? clip.trackId === getMainVideoTrackId(tracks) : false
-        onMove(drag.clipId, snapped, { magnetic: magnetOn && isMain, linked: linkageOn })
+        const magnetic = magnetOn && isMain
+        // Gap-Aware Ripple Insert's live drop preview (requirement 9) --
+        // magnet mode has its own always-gapless placement, so there's no
+        // fit-vs-ripple distinction to preview there. Computed from the same
+        // planRippleInsert the actual commit below (via moveClip) uses, so
+        // the preview can never show something the drop doesn't actually do.
+        if (clip && !magnetic) {
+          ripplePreviewElsRef.current.forEach((el) => el.classList.remove('clip-track-clip-ripple-target'))
+          ripplePreviewElsRef.current = []
+          const linkedId = linkageOn ? clip.linkedClipId : undefined
+          const excludeIds = new Set([clip.id, ...(linkedId ? [linkedId] : [])])
+          const plan = planRippleInsert(allClips, clip.trackId, snapped, clip.duration, excludeIds)
+          const pushedIds = extendRippleInsertWithLinkedPartners(allClips, plan.pushes)
+          const draggedEl = document.querySelector<HTMLElement>(`[data-clip-id="${clip.id}"]`)
+          draggedEl?.classList.toggle('clip-track-clip-fits-gap', plan.fits)
+          draggedEl?.classList.toggle('clip-track-clip-will-ripple', !plan.fits)
+          for (const pushedId of pushedIds.keys()) {
+            const el = document.querySelector<HTMLElement>(`[data-clip-id="${pushedId}"]`)
+            if (el) {
+              el.classList.add('clip-track-clip-ripple-target')
+              ripplePreviewElsRef.current.push(el)
+            }
+          }
+        }
+        onMove(drag.clipId, snapped, { magnetic, linked: linkageOn })
       } else if (drag.mode === 'trim-left') {
         const raw = drag.originalStartTime + deltaSeconds
         const snapped = applySnap(raw, ev.altKey, drag.snapCandidates)
@@ -450,6 +484,7 @@ export function ClipTrack({
       if (latestMoveRef.current) performMove(latestMoveRef.current)
     }
     if (dragState.current) {
+      const draggedClipId = dragState.current.clipId
       dragState.current = null
       endTransaction()
       hideTrimTooltip()
@@ -457,6 +492,9 @@ export function ClipTrack({
       onDraggingChange(null)
       dropTargetElRef.current?.classList.remove('clip-track-drop-target')
       dropTargetElRef.current = null
+      document.querySelector(`[data-clip-id="${draggedClipId}"]`)?.classList.remove('clip-track-clip-fits-gap', 'clip-track-clip-will-ripple')
+      ripplePreviewElsRef.current.forEach((el) => el.classList.remove('clip-track-clip-ripple-target'))
+      ripplePreviewElsRef.current = []
     }
   }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide, onDraggingChange, stableWindowPointerMove, stableWindowPointerUp])
 
