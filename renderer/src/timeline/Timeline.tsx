@@ -896,7 +896,16 @@ export function Timeline(): JSX.Element {
   // is narrower than the panel. Playhead seeking still can't reach that
   // extra space -- see PreviewPlayer.tsx's applyProjectTime, which clamps to
   // the real last clip/scene end, not this stretched value.
-  const rulerVisualDuration = Math.max(effectiveDuration, timelineViewportWidth / pixelsPerSecond)
+  //
+  // `timelineViewportWidth` is `.timeline-scroll-2d`'s FULL clientWidth --
+  // but the ruler itself lives inside `.timeline-content`, which only
+  // starts after `.timeline-header-column` (the track-header strip on the
+  // left, `trackHeaderWidth` wide). Sizing the ruler off the full viewport
+  // width without subtracting that column made it exactly trackHeaderWidth
+  // pixels too wide, pushing its rightmost tick(s) off the edge of the
+  // window entirely -- not clipped by the Timeline's own scrollbar, past
+  // the window itself, with no way to scroll to them.
+  const rulerVisualDuration = Math.max(effectiveDuration, Math.max(0, timelineViewportWidth - trackHeaderWidth) / pixelsPerSecond)
 
   // Attached as a real native listener rather than JSX onWheel -- see
   // handleWheel's own doc comment for why. `isEmpty` has to be a dependency:
