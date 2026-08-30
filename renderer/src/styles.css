@@ -3398,8 +3398,9 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 1px;
+  width: 2px;
   background: #ffb84d;
+  box-shadow: 0 0 4px rgba(255, 184, 77, 0.7);
   pointer-events: none;
   z-index: 6;
 }
@@ -6081,6 +6082,18 @@ body {
 .clip-track-clip-disabled {
   opacity: 0.4;
   background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.35) 0, rgba(0, 0, 0, 0.35) 4px, transparent 4px, transparent 8px);
+}
+
+/* Actively being moved (ClipTrack.tsx's draggingClipId, set for the whole
+   duration of a move drag) -- a lift/shadow plus a grabbing cursor so the
+   clip you're repositioning reads as clearly "picked up," matching a
+   grabbed-card feel instead of just silently following the pointer with no
+   visual distinction from its resting state. */
+.clip-track-clip-dragging {
+  opacity: 0.85;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  cursor: grabbing;
+  z-index: 4;
 }
 
 /* Title-bar strip (filename + duration) over the filmstrip body -- video/

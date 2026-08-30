@@ -153,6 +153,10 @@ export function Timeline(): JSX.Element {
    * timelineViewportWidth, since nothing outside Timeline.tsx needs it. Used
    * to size the main-track centering layout below. */
   const [timelineViewportHeight, setTimelineViewportHeight] = useState(0)
+  /** Which clip a ClipTrack instance is currently move-dragging, if any --
+   * see ClipTrack.tsx's own doc comment on its draggingClipId prop for why
+   * this lives here (lifted state) rather than an imperative DOM class. */
+  const [draggingClipId, setDraggingClipId] = useState<string | null>(null)
   const [dragPlacements, setDragPlacements] = useState<PlannedPlacement[] | null>(null)
   /** "Replace Media" (clip context menu) -- picking a file starts a real
    * import (proxy/thumbnail/duration all need generating same as any other
@@ -1155,6 +1159,8 @@ export function Timeline(): JSX.Element {
                     onBladeSplit={handleBladeSplit}
                     onRollEdit={rollEditClips}
                     onSnapGuide={updateSnapGuide}
+                    draggingClipId={draggingClipId}
+                    onDraggingChange={setDraggingClipId}
                   />
                   {track.kind === 'audio' && clips.length === 0 && (
                     <span className="timeline-track-empty-label">No audio on this track</span>

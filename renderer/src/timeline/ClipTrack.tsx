@@ -47,6 +47,17 @@ interface Props {
    * pointermove and once more on pointerup to always clear it when the drag
    * ends. */
   onSnapGuide: (time: number | null) => void
+  /** Which clip (if any) is currently being moved -- lifted to Timeline.tsx
+   * (rather than an imperative classList toggle, this component's usual
+   * pattern for drag-frequency visuals) specifically because cross-track
+   * dragging unmounts a clip's DOM node from this track and mounts a fresh
+   * one on the destination track's own ClipTrack instance mid-gesture; an
+   * imperative class on the original element would simply vanish when that
+   * happens. Only changes twice per drag (start/end), not per pointermove,
+   * so this is nowhere near the per-pixel-state cost the rest of this file
+   * deliberately avoids. */
+  draggingClipId: string | null
+  onDraggingChange: (clipId: string | null) => void
 }
 
 type DragMode = 'move' | 'trim-left' | 'trim-right' | 'roll'
@@ -119,7 +130,9 @@ export function ClipTrack({
   onTrim,
   onBladeSplit,
   onRollEdit,
-  onSnapGuide
+  onSnapGuide,
+  draggingClipId,
+  onDraggingChange
 }: Props): JSX.Element {
   const trackLocked = track.locked
   const dragState = useRef<DragState | null>(null)
@@ -208,6 +221,7 @@ export function ClipTrack({
         excludeClipIds: new Set([clip.id])
       })
       dragState.current = { clipId: clip.id, mode, startClientX: e.clientX, originalStartTime: clip.startTime, originalDuration: clip.duration, snapCandidates, rollPartnerId }
+      if (mode === 'move') onDraggingChange(clip.id)
       beginTransaction()
       try {
         e.currentTarget.setPointerCapture(e.pointerId)
@@ -222,7 +236,7 @@ export function ClipTrack({
       window.addEventListener('pointermove', stableWindowPointerMove)
       window.addEventListener('pointerup', stableWindowPointerUp)
     },
-    [onSelect, beginTransaction, allClips, markers, playheadTime, stableWindowPointerMove, stableWindowPointerUp]
+    [onSelect, beginTransaction, allClips, markers, playheadTime, stableWindowPointerMove, stableWindowPointerUp, onDraggingChange]
   )
 
   /** Blade/Hand/Range tool routing for a clip pointerdown -- Blade splits
@@ -440,10 +454,11 @@ export function ClipTrack({
       endTransaction()
       hideTrimTooltip()
       onSnapGuide(null)
+      onDraggingChange(null)
       dropTargetElRef.current?.classList.remove('clip-track-drop-target')
       dropTargetElRef.current = null
     }
-  }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide, stableWindowPointerMove, stableWindowPointerUp])
+  }, [endTransaction, hideTrimTooltip, performMove, onSnapGuide, onDraggingChange, stableWindowPointerMove, stableWindowPointerUp])
 
   // Keep the stable window-listener wrappers pointed at the LATEST
   // handlePointerMove/handlePointerUp closures on every render (see
@@ -475,6 +490,7 @@ export function ClipTrack({
         const media = mediaById[clip.mediaId]
         const locked = clip.locked || trackLocked
         const selected = selectedClipIds.includes(clip.id)
+        const dragging = draggingClipId === clip.id
         const widthPx = Math.max(MIN_CLIP_WIDTH_PX, clip.duration * pixelsPerSecond)
         const isAudio = clip.type === 'audio'
         const bodyHeightPx = Math.max(0, rowHeight - (isAudio ? 0 : titleBarHeightPx) - 6)
@@ -483,7 +499,7 @@ export function ClipTrack({
           <div
             key={clip.id}
             data-clip-id={clip.id}
-            className={`clip-track-clip ${clipTypeClass(clip)}${selected ? ' clip-track-clip-selected' : ''}${locked ? ' clip-track-clip-locked' : ''}${clip.enabled === false ? ' clip-track-clip-disabled' : ''}`}
+            className={`clip-track-clip ${clipTypeClass(clip)}${selected ? ' clip-track-clip-selected' : ''}${locked ? ' clip-track-clip-locked' : ''}${clip.enabled === false ? ' clip-track-clip-disabled' : ''}${dragging ? ' clip-track-clip-dragging' : ''}`}
             style={{ left: clip.startTime * pixelsPerSecond, width: widthPx }}
             onPointerDown={(e) => {
               if (handleToolPointerDown(e, clip)) return
