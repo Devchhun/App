@@ -517,7 +517,12 @@ body {
      as an inline style on this element -- flex-shrink:0 so the flex column
      above it (Titlebar+Workspace) never squeezes it, min-height:0 so the
      inner .timeline-scroll-2d is actually allowed to be the scrolling
-     element instead of this panel growing past its own height. */
+     element instead of this panel growing past its own height. Overrides
+     `.panel`'s own heavy rounded-card treatment (border-radius: --radius-lg,
+     16px padding) -- a flatter professional editing surface (CapCut-style)
+     reading as one continuous strip across the full window width, not a
+     card floating inside it, with the reduced padding giving the track
+     centering above meaningfully more usable height to work with. */
   position: relative;
   flex-shrink: 0;
   min-height: 0;
@@ -525,6 +530,8 @@ body {
   flex-direction: column;
   gap: 8px;
   margin: 0 8px 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
 }
 
 .panel-tabs {
@@ -2498,11 +2505,19 @@ body {
   min-height: 0;
 }
 
+/* One thin continuous flat row (CapCut-style) -- editing tools left,
+   recording/snap/zoom controls right, directly on the toolbar's own
+   background. No per-group boxing: `.timeline-tool-group` used to carry its
+   own background/border/border-radius, rendering as two separate boxed
+   pills that visually split the toolbar in two instead of reading as one
+   continuous row. */
 .timeline-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
   color: var(--text-dim);
   flex-wrap: wrap;
@@ -2512,10 +2527,6 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 2px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   flex-wrap: wrap;
 }
 
@@ -2587,11 +2598,7 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px;
   color: var(--text-muted);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
 }
 
 .timeline-zoom-slider {
@@ -3113,6 +3120,20 @@ body {
   z-index: 1;
   height: var(--timeline-top-safe-zone);
   background: #0b0d10;
+  pointer-events: none;
+}
+
+/* CapCut-style main-track centering -- see trackCentering.ts's own doc
+   comment for the full explanation. The two spacer children get an explicit
+   pixel `height` set inline from that same computation (not flex-grow --
+   the main track's own center, not the whole group's, is what's anchored,
+   which flex-grow's simple ratio split can't express once a below-track
+   like linked audio exists); `min-height` here is set inline to the track
+   area's actual on-screen budget. Once there are enough tracks to exceed
+   that budget both spacer heights compute to 0 and this behaves like a
+   plain stack -- the ancestor `.timeline-scroll-2d` handles vertical
+   scrolling same as it always has. */
+.timeline-tracks-spacer {
   pointer-events: none;
 }
 

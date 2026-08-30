@@ -142,19 +142,20 @@ export function isInViewport(startTime: number, duration: number, viewStart: num
 /** Which tracks the Timeline actually renders as a row -- an empty track (no
  * clips, no scenes) is only worth showing if it's structurally required: the
  * current main video track (isMain, so there's always an obvious place to
- * drop the primary footage even in an audio/graphics-only project) or the
- * one fixed caption track (removable:false, a separate always-on feature
- * surface, not clutter). Every other empty track -- an unused
- * Overlay/Graphics/Music track, or debris a past bug left behind -- stays in
- * the saved sequence (so a track the user just added but hasn't used yet
- * this session survives a save) but is hidden from view, matching a
+ * drop the primary footage even in an audio/graphics-only project, and so
+ * the Timeline has an anchor to center around before anything else exists --
+ * see Timeline.tsx's vertical-centering layout). Every other empty track --
+ * the fixed caption track before anything's been transcribed/captioned, an
+ * unused Overlay/Graphics/Music track, or debris a past bug left behind --
+ * stays in the saved sequence (so a track the user just added but hasn't
+ * used yet this session survives a save) but is hidden from view, matching a
  * CapCut-style compact Timeline instead of always showing every track a
  * project has ever accumulated. The empty space below whatever DOES render
  * remains the existing drop-to-auto-create-a-track target (see
  * ClipTrack.tsx's performMove), so hiding a track never removes the ability
  * to add one back. */
 export function visibleTracksForDisplay(tracks: TimelineTrack[], trackHasContent: Record<string, boolean>): TimelineTrack[] {
-  return sortTracksForDisplay(tracks).filter((t) => trackHasContent[t.id] || t.isMain || !t.removable)
+  return sortTracksForDisplay(tracks).filter((t) => trackHasContent[t.id] || t.isMain)
 }
 
 /** Display order for the Timeline's track rows: video/graphic/text render

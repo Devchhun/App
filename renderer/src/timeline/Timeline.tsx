@@ -9,6 +9,7 @@ import { useTimelineShortcuts } from './useTimelineShortcuts'
 import { useUiState } from '../nav/UiStateContext'
 import { TimeRuler } from './TimeRuler'
 import { playheadBadgeEdge } from './playheadBadgePosition'
+import { computeTrackCentering } from './trackCentering'
 import { TimelineToolbar } from './TimelineToolbar'
 import { CaptionsTrack } from './CaptionsTrack'
 import { GraphicsTrack } from './GraphicsTrack'
@@ -38,6 +39,20 @@ import type { TimelineClip, Scene } from '@shared/project'
 const RULER_HEIGHT_PX = 20
 const TOP_SAFE_ZONE_PX = 60
 const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
+
+// CapCut-style main-track anchoring (not a fixed gap below the ruler): the
+// main video track's own vertical center is targeted at
+// TOP_SPACER_RATIO/(TOP_SPACER_RATIO+BOTTOM_SPACER_RATIO) of the usable
+// track-area height -- ~46%, a bit above true center ("leaning slightly
+// upward" per the reference design) -- via two spacer rows placed directly
+// above/below the track group, each given an explicit computed height (see
+// trackCentering.ts). As overlay tracks are added above main or
+// audio/caption tracks below it, both spacers shrink to make room for them
+// while keeping main itself anchored; once either spacer would need to go
+// negative, it clamps to 0 and the track area grows past its budget --
+// the ancestor scroll container takes over from there, same as always.
+const TOP_SPACER_RATIO = 46
+const BOTTOM_SPACER_RATIO = 54
 
 // `viewportRange` starts `null` until the viewport-tracking effect below
 // measures the scroll container -- see that effect's own doc comment for why
@@ -133,6 +148,11 @@ export function Timeline(): JSX.Element {
   const snapGuideRef = useRef<HTMLDivElement>(null)
   const rangeStartTimeRef = useRef<number | null>(null)
   const headerResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  /** The track area's own visible height (`.timeline-scroll-2d`'s
+   * clientHeight) -- purely local to this component, unlike
+   * timelineViewportWidth, since nothing outside Timeline.tsx needs it. Used
+   * to size the main-track centering layout below. */
+  const [timelineViewportHeight, setTimelineViewportHeight] = useState(0)
   const [dragPlacements, setDragPlacements] = useState<PlannedPlacement[] | null>(null)
   /** "Replace Media" (clip context menu) -- picking a file starts a real
    * import (proxy/thumbnail/duration all need generating same as any other
@@ -209,24 +229,41 @@ export function Timeline(): JSX.Element {
   // untouched: hiding a track here never deletes it or its settings.
   const sortedTracks = useMemo(() => visibleTracksForDisplay(sequence.tracks, trackHasContent), [sequence.tracks, trackHasContent])
 
-  // Cumulative row position/height per track, for the drag-drop ghost
-  // preview to draw its dashed boxes against the right row (rows are plain
-  // document flow, not individually positioned, so this is computed once
-  // per track-list/height change rather than measured from the DOM).
-  const trackTopById = useMemo(() => {
-    const map: Record<string, number> = {}
-    let top = CONTENT_START_PX
-    for (const t of sortedTracks) {
-      map[t.id] = top
-      top += trackDisplayHeight(t, trackHeightMode)
-    }
-    return map
-  }, [sortedTracks, trackHeightMode])
   const trackHeightById = useMemo(() => {
     const map: Record<string, number> = {}
     for (const t of sortedTracks) map[t.id] = trackDisplayHeight(t, trackHeightMode)
     return map
   }, [sortedTracks, trackHeightMode])
+
+  // The main track's own vertical center (not the whole track group's) is
+  // what's anchored at TOP_SPACER_RATIO's target -- see computeTrackCentering's
+  // own doc comment for why that distinction matters (a linked audio track
+  // below main, or any other below-track, would otherwise pull the group
+  // center down and main away from the target).
+  const usableTrackAreaHeight = Math.max(0, timelineViewportHeight - CONTENT_START_PX)
+  const { topSpacerHeight, bottomSpacerHeight } = useMemo(
+    () => computeTrackCentering(sortedTracks, trackHeightById, usableTrackAreaHeight, TOP_SPACER_RATIO, BOTTOM_SPACER_RATIO),
+    [sortedTracks, trackHeightById, usableTrackAreaHeight]
+  )
+
+  // Cumulative row position/height per track, for the drag-drop ghost
+  // preview to draw its dashed boxes against the right row (rows are plain
+  // document flow within .timeline-tracks-area, not individually
+  // positioned, so this is computed once per track-list/height change
+  // rather than measured from the DOM). Starts after the top spacer's own
+  // height, not directly at CONTENT_START_PX -- must stay in exact agreement
+  // with the spacer's actual rendered height (set inline from the same
+  // topSpacerHeight value below) or the ghost preview would draw against
+  // the wrong row.
+  const trackTopById = useMemo(() => {
+    const map: Record<string, number> = {}
+    let top = CONTENT_START_PX + topSpacerHeight
+    for (const t of sortedTracks) {
+      map[t.id] = top
+      top += trackHeightById[t.id]
+    }
+    return map
+  }, [sortedTracks, trackHeightById, topSpacerHeight])
 
   const occupiedRanges: OccupiedRange[] = useMemo(
     () => sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration })),
@@ -309,20 +346,38 @@ export function Timeline(): JSX.Element {
     return seg?.id ?? null
   }, [segments, currentTime])
 
+  const isEmpty = sequence.clips.length === 0 && allScenes.length === 0
+
   // The toolbar's "zoom to fit" now lives in the Preview panel and can't see
   // this scroll container directly, so publish its width into shared state.
   // useLayoutEffect, matching the viewport-range tracker below -- measuring
   // a DOM element's size and feeding it into render-relevant state is the
-  // textbook case for running before paint rather than after it.
+  // textbook case for running before paint rather than after it. Also
+  // measures height here (not its own effect) purely to share one
+  // ResizeObserver -- `clientHeight` is the track area's own vertical
+  // budget for the main-track centering layout below (it already excludes
+  // the horizontal scrollbar's own thickness, same as clientWidth already
+  // excluding the vertical one). `isEmpty` has to be a dependency, same
+  // reason as the wheel-listener and viewport-range effects below:
+  // `.timeline-scroll-2d` (and therefore scrollRef.current) doesn't exist in
+  // the empty-Timeline early return, so the very first time a project goes
+  // from empty to having its first clip, this effect must re-run to find
+  // the now-real element -- otherwise the empty-state mount already ran
+  // this with nothing to observe, and neither viewport dimension is ever
+  // measured for the rest of the session (the main-track centering layout
+  // below would then always measure a 0px-tall track area).
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const report = (): void => setTimelineViewportWidth(el.clientWidth)
+    const report = (): void => {
+      setTimelineViewportWidth(el.clientWidth)
+      setTimelineViewportHeight(el.clientHeight)
+    }
     report()
     const observer = new ResizeObserver(report)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [setTimelineViewportWidth])
+  }, [setTimelineViewportWidth, isEmpty])
 
   // Selecting a scene whose time range the playhead isn't currently inside
   // seeks to it -- a scene only ever renders in Preview while the playhead is
@@ -823,7 +878,6 @@ export function Timeline(): JSX.Element {
   }
 
   const contentWidth = Math.max(1, effectiveDuration * pixelsPerSecond)
-  const isEmpty = sequence.clips.length === 0 && allScenes.length === 0
 
   // Attached as a real native listener rather than JSX onWheel -- see
   // handleWheel's own doc comment for why. `isEmpty` has to be a dependency:
@@ -1022,7 +1076,17 @@ export function Timeline(): JSX.Element {
                 and no clip/track can ever occupy it. */}
             <div className="timeline-top-safe-zone" />
 
-            {sortedTracks.map((track) => {
+            {/* CapCut-style main-track centering (spec: "dynamic centering,
+                not a fixed ruler gap") -- see TOP_SPACER_RATIO's own doc
+                comment. minHeight is the track area's actual on-screen
+                budget (viewport height minus ruler+safe-zone); the two
+                spacers split whatever of that the track rows themselves
+                don't use, so this collapses to ordinary stacked rows (and
+                the ancestor scroll container takes over) once there are
+                enough tracks to not fit. */}
+            <div className="timeline-tracks-area" style={{ minHeight: usableTrackAreaHeight }}>
+              <div className="timeline-tracks-spacer" style={{ height: topSpacerHeight }} />
+              {sortedTracks.map((track) => {
               if (track.kind === 'graphic' || track.kind === 'text') {
                 const trackScenes = scenesByTrackId[track.id] ?? []
                 const visibleScenes = viewportRange
@@ -1090,6 +1154,8 @@ export function Timeline(): JSX.Element {
                 </div>
               )
             })}
+              <div className="timeline-tracks-spacer" style={{ height: bottomSpacerHeight }} />
+            </div>
 
             <div className="timeline-playhead" style={{ left: currentTime * pixelsPerSecond }}>
               <div className="timeline-playhead-handle" title="Drag to scrub" />

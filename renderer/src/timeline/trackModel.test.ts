@@ -152,7 +152,7 @@ describe('sortTracksForDisplay', () => {
 })
 
 describe('visibleTracksForDisplay', () => {
-  it('hides an empty non-essential track (Overlay/Graphics/Music) but keeps the main video and caption tracks', () => {
+  it('hides every empty non-main track (Overlay/Graphics/Music, and the caption track before anything is captioned) but keeps the main video track', () => {
     const tracks = [
       track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
       track({ id: 'V2', kind: 'graphic', order: 0 }),
@@ -160,7 +160,7 @@ describe('visibleTracksForDisplay', () => {
       track({ id: 'C1', kind: 'caption', order: 0, removable: false })
     ]
     const result = visibleTracksForDisplay(tracks, { V1: true })
-    expect(result.map((t) => t.id)).toEqual(['V1', 'C1'])
+    expect(result.map((t) => t.id)).toEqual(['V1'])
   })
 
   it('shows any track with real content, regardless of kind or isMain', () => {
@@ -173,7 +173,7 @@ describe('visibleTracksForDisplay', () => {
     expect(result.map((t) => t.id)).toEqual(['V1', 'A2'])
   })
 
-  it('a single-clip project stays compact: only the track holding the clip (plus caption) renders', () => {
+  it('a single-clip project stays compact: only the tracks holding real content render', () => {
     const tracks = [
       track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
       track({ id: 'V2', kind: 'graphic', order: 0 }),
@@ -183,7 +183,13 @@ describe('visibleTracksForDisplay', () => {
       track({ id: 'C1', kind: 'caption', order: 0, removable: false })
     ]
     const result = visibleTracksForDisplay(tracks, { V1: true, A1: true })
-    expect(result.map((t) => t.id)).toEqual(['V1', 'A1', 'C1'])
+    expect(result.map((t) => t.id)).toEqual(['V1', 'A1'])
+  })
+
+  it('shows the caption track once it actually has content', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'C1', kind: 'caption', order: 0, removable: false })]
+    const result = visibleTracksForDisplay(tracks, { V1: true, C1: true })
+    expect(result.map((t) => t.id)).toEqual(['V1', 'C1'])
   })
 
   it('never removes tracks from the underlying array -- purely a display-layer filter', () => {
