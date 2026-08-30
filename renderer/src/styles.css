@@ -41,7 +41,7 @@
      Timeline.tsx as RULER_HEIGHT_PX/TOP_SAFE_ZONE_PX/CONTENT_START_PX for the
      JS-side geometry (drag-preview ghost boxes, per-track row offsets) that
      CSS variables can't reach. */
-  --timeline-ruler-height: 20px;
+  --timeline-ruler-height: 26px;
   --timeline-top-safe-zone: 60px;
   --timeline-content-start: calc(var(--timeline-ruler-height) + var(--timeline-top-safe-zone));
 }
@@ -3137,9 +3137,25 @@ body {
   pointer-events: none;
 }
 
+/* Positioning wrapper only -- spans the ruler's FULL height so its two
+   children can be anchored independently: the label from the true top of
+   the ruler, the tick mark from the true bottom. Previously this div itself
+   was the bottom-anchored 8px tick mark with the label nested inside it, so
+   the label's "top: 2px" was measured from 8px above the ruler's bottom
+   edge, not from its top -- at this font size that pushed the label's lower
+   half past the ruler's own height, into the sticky top-safe-zone directly
+   below it, which then painted its solid background over it (visible as the
+   label being "cut in half" by black). */
 .timeline-tick {
   position: absolute;
+  top: 0;
+  height: 100%;
+}
+
+.timeline-tick-line {
+  position: absolute;
   bottom: 0;
+  left: 0;
   height: 8px;
   border-left: 1px solid var(--border-strong);
 }
@@ -3157,6 +3173,7 @@ body {
   top: 2px;
   left: 4px;
   font-size: 9px;
+  line-height: 1.4;
   color: var(--text-dim);
   white-space: nowrap;
 }
@@ -3178,7 +3195,7 @@ body {
 
 .timeline-marker-editor {
   position: absolute;
-  top: 22px;
+  top: 28px;
   display: flex;
   align-items: center;
   gap: 2px;

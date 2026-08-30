@@ -102,6 +102,7 @@ export function TimeRuler({ duration, pixelsPerSecond, markers, viewStart, viewE
       {ticks.map((t) => (
         <div key={t} className="timeline-tick" style={{ left: t * pixelsPerSecond }}>
           <span className="timeline-tick-label">{formatDuration(t)}</span>
+          <div className="timeline-tick-line" />
         </div>
       ))}
 

@@ -36,7 +36,7 @@ import type { TimelineClip, Scene } from '@shared/project'
 // properties aren't readable from plain numeric JS geometry (trackTopById
 // below, the drag-preview ghost boxes it feeds). If the CSS values ever
 // change, these three need to change with them.
-const RULER_HEIGHT_PX = 20
+const RULER_HEIGHT_PX = 26
 const TOP_SAFE_ZONE_PX = 60
 const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
 
