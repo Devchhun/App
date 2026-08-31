@@ -274,4 +274,67 @@ describe('migrateProjectFile', () => {
       expect(twice).toEqual(once)
     })
   })
+
+  // Save/Reopen resilience: a project file saved with a dangling
+  // linkedClipId (its partner clip missing from `sequence.clips` entirely --
+  // from a bug predating this check, manual file editing, or anything else)
+  // must never be allowed to survive a load. loadProject (projectStore.ts)
+  // always runs every loaded file through this function, current-schema or
+  // not, so this is the one place that guarantees it.
+  describe('dangling linkedClipId cleanup (runs on every load, independent of schema version)', () => {
+    it('clears a linkedClipId whose target clip is missing entirely', () => {
+      const project: ProjectFile = createNewProjectFile('Project')
+      project.sequence.clips = [
+        {
+          id: 'v',
+          mediaId: 'm1',
+          type: 'video',
+          trackId: 'V1',
+          startTime: 0,
+          duration: 5,
+          sourceIn: 0,
+          sourceOut: 5,
+          locked: false,
+          linkedClipId: 'does-not-exist'
+        }
+      ]
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.sequence.clips[0].linkedClipId).toBeUndefined()
+    })
+
+    it('leaves a VALID linkedClipId (its target really is in `clips`) completely untouched', () => {
+      const project: ProjectFile = createNewProjectFile('Project')
+      project.sequence.clips = [
+        { id: 'v', mediaId: 'm1', type: 'video', trackId: 'V1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, linkedClipId: 'a' },
+        { id: 'a', mediaId: 'm1', type: 'audio', trackId: 'A1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, linkedClipId: 'v' }
+      ]
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.sequence.clips.find((c) => c.id === 'v')!.linkedClipId).toBe('a')
+      expect(migrated.sequence.clips.find((c) => c.id === 'a')!.linkedClipId).toBe('v')
+    })
+
+    it('recomputes sequence.duration after clearing a dangling link\'s clip is otherwise already absent', () => {
+      const project: ProjectFile = createNewProjectFile('Project')
+      project.sequence.clips = [
+        { id: 'v', mediaId: 'm1', type: 'video', trackId: 'V1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, linkedClipId: 'does-not-exist' }
+      ]
+      project.sequence.duration = 999 // stale/incorrect on-disk value, as if from before the bug was fixed
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.sequence.duration).toBe(10) // 0 + 5 + the 5s trailing headroom
+    })
+
+    it('is idempotent -- migrating an already-clean project changes nothing', () => {
+      const project: ProjectFile = createNewProjectFile('Project')
+      project.sequence.clips = [{ id: 'v', mediaId: 'm1', type: 'video', trackId: 'V1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: false }]
+      const once = migrateProjectFile(project)
+      const twice = migrateProjectFile(once)
+      expect(twice).toEqual(once)
+    })
+  })
 })

@@ -470,6 +470,41 @@ export function computeSequenceDuration(clips: TimelineClip[]): number {
   return Math.max(...clips.map((clip) => clip.startTime + clip.duration)) + 5
 }
 
+/** Clears `linkedClipId` on any clip whose linked partner no longer exists in
+ * `clips` -- a video/audio pair's own extracted-audio relationship (see
+ * TimelineClip.linkedClipId's doc comment), left dangling whenever one half
+ * of the pair is removed (Delete Track, plain Delete, Ripple Delete) without
+ * also clearing the survivor's own reference to it. A stale reference isn't
+ * just inert data: it keeps showing the 🔗 "linked" badge on a clip that
+ * isn't actually linked to anything anymore (ClipTrack.tsx renders the badge
+ * purely off `linkedClipId` truthiness), and would resurrect a lookup of a
+ * clip that doesn't exist if anything ever tried to follow it.
+ *
+ * Every clip-removing operation (deleteClips, deleteTimeRange, removeTrack,
+ * rippleDelete) already pipes its own result through this before returning,
+ * so the fix is baked into the SAME sequence snapshot as the deletion --
+ * one Undo step restores both the removed clip(s) AND the original linkage
+ * together; Redo re-applies both the removal and the cleared link together.
+ * Also run unconditionally during project-file migration (see
+ * projectMigration.ts) as a load-time safety net, independent of any
+ * particular schema version, so a project saved before this fix existed (or
+ * ever corrupted by some other bug) can never load with a dangling link.
+ *
+ * Returns the SAME array reference when nothing needed clearing, so callers
+ * can cheaply tell "did anything change" without a deep comparison. */
+export function sanitizeLinkedClips(clips: TimelineClip[]): TimelineClip[] {
+  const ids = new Set(clips.map((c) => c.id))
+  let changed = false
+  const result = clips.map((c) => {
+    if (c.linkedClipId && !ids.has(c.linkedClipId)) {
+      changed = true
+      return { ...c, linkedClipId: undefined }
+    }
+    return c
+  })
+  return changed ? result : clips
+}
+
 export interface ProjectFile {
   /** 1: original schema. 2: SceneContentTransform's xPercent/yPercent became
    * the box's normalized CENTER instead of its top-left corner. 3: added

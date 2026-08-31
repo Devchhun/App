@@ -528,6 +528,16 @@ describe('deleteTimeRange (Range tool -- Delete Range / Ripple Delete Range)', (
     expect(result.clips).toHaveLength(0)
   })
 
+  it('clears a surviving clip\'s stale linkedClipId when its partner falls inside the deleted range', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'v', trackId: 'V1', startTime: 5, duration: 5, linkedClipId: 'a' }), // [5,10) -- inside the range, deleted
+      videoClip({ id: 'a', trackId: 'A1', type: 'audio', startTime: 50, duration: 5, linkedClipId: 'v' }) // outside the range, survives
+    ])
+    const result = deleteTimeRange(sequence, { start: 0, end: 20 })
+    expect(result.clips.map((c) => c.id)).toEqual(['a'])
+    expect(result.clips[0].linkedClipId).toBeUndefined()
+  })
+
   it('trims a clip that straddles the range start (keeps the part before the range)', () => {
     const sequence = seqOf([videoClip({ id: 'a', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10 })])
     const result = deleteTimeRange(sequence, { start: 4, end: 20 })
@@ -770,6 +780,16 @@ describe('Linkage toggle gating (spec section 3) -- move/trim/delete/duplicate o
     expect(result.clips.map((c) => c.id)).toEqual(['a'])
   })
 
+  // Regression coverage for the stale-link cleanup requirement: a locked
+  // partner survives its now-deleted target above, but was left with a
+  // linkedClipId pointing at a clip that no longer exists -- still showing
+  // the 🔗 "linked" badge for a partner that isn't there anymore.
+  it('deleteClips (Plain Delete): clears the surviving locked partner\'s now-stale linkedClipId', () => {
+    const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a' }), videoClip({ id: 'a', type: 'audio', linkedClipId: 'v', locked: true })])
+    const result = deleteClips(sequence, ['v'], true)
+    expect(result.clips.find((c) => c.id === 'a')!.linkedClipId).toBeUndefined()
+  })
+
   it('duplicateClips: linked=true also duplicates the partner and keeps the copies linked to each other', () => {
     const sequence = seqOf([videoClip({ id: 'v', linkedClipId: 'a', startTime: 0, duration: 5 }), videoClip({ id: 'a', type: 'audio', linkedClipId: 'v', startTime: 0, duration: 5 })])
     const { sequence: result, newClipIds } = duplicateClips(sequence, ['v'], undefined, true)
@@ -910,6 +930,25 @@ describe('removeTrack', () => {
     }
     const result = removeTrack(sequence, 'A1')
     expect(result.clips.map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('clears the surviving clip\'s stale linkedClipId when its partner was on the removed track', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 })]
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [
+        videoClip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'a' }),
+        videoClip({ id: 'a', trackId: 'A1', type: 'audio', startTime: 0, duration: 5, linkedClipId: 'v' })
+      ],
+      markers: [],
+      duration: 10
+    }
+    const result = removeTrack(sequence, 'A1')
+    const survivor = result.clips.find((c) => c.id === 'v')!
+    // Without this, the surviving video clip would still show the 🔗
+    // "linked" badge (ClipTrack.tsx renders it purely off `linkedClipId`
+    // truthiness) for a partner that no longer exists anywhere.
+    expect(survivor.linkedClipId).toBeUndefined()
   })
 
   it('is a no-op (same sequence reference) for a non-removable track, e.g. the main video track', () => {

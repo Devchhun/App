@@ -7,7 +7,7 @@
 // SequenceContext.tsx only wires these into React state + undo/redo
 // transactions, it doesn't reimplement any of this math.
 import type { ProjectSequence, TimelineClip, Marker } from '@shared/project'
-import { computeSequenceDuration } from '@shared/project'
+import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry } from '../timeline/trackModel'
 import { closeGap } from '../timeline/reflow'
@@ -217,7 +217,10 @@ export function moveClipToNewTrack(
 export function removeTrack(sequence: ProjectSequence, trackId: string): ProjectSequence {
   const tracks = removeTrackFromRegistry(sequence.tracks, trackId)
   if (tracks === sequence.tracks) return sequence
-  const clips = sequence.clips.filter((c) => c.trackId !== trackId)
+  // A surviving clip whose linkedClipId pointed at one of the just-removed
+  // clips would otherwise keep a dangling reference (and its 🔗 badge) --
+  // see sanitizeLinkedClips's own doc comment.
+  const clips = sanitizeLinkedClips(sequence.clips.filter((c) => c.trackId !== trackId))
   return { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) }
 }
 
@@ -373,7 +376,13 @@ export function deleteClips(sequence: ProjectSequence, clipIds: string[], linked
       if (idSet.has(c.id) && c.linkedClipId) idSet.add(c.linkedClipId)
     }
   }
-  const clips = sequence.clips.filter((c) => !(idSet.has(c.id) && !c.locked))
+  // A LOCKED partner is deliberately never added to the removal set above
+  // (see this function's own filter just below), so it can survive its
+  // now-deleted target -- still with a `linkedClipId` pointing at a clip
+  // that no longer exists. sanitizeLinkedClips clears that dangling
+  // reference (and the 🔗 badge it would otherwise keep showing) in this
+  // same returned snapshot, so Undo still restores the original pairing.
+  const clips = sanitizeLinkedClips(sequence.clips.filter((c) => !(idSet.has(c.id) && !c.locked)))
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
 
@@ -413,6 +422,7 @@ export function deleteTimeRange(sequence: ProjectSequence, range: TimeRange, rip
     }
   }
 
+  clips = sanitizeLinkedClips(clips)
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
 

@@ -6,7 +6,7 @@
 // itself moved (matching sequenceOps.ts's existing per-clip lock guards).
 import type { ProjectSequence, TimelineClip } from '@shared/project'
 import type { TimelineTrack } from '@shared/timelineTracks'
-import { computeSequenceDuration } from '@shared/project'
+import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
 import { applyTrim, type TrimEdge } from '../sequence/sequenceOps'
 import { shiftClipsFrom, closeGap } from './reflow'
 import type { RippleScope } from './timelineViewPrefs'
@@ -86,6 +86,12 @@ export function rippleDelete(sequence: ProjectSequence, clipIds: string[], scope
       clips = closeGap(clips, tid, target.startTime, target.startTime + target.duration)
     }
   }
+
+  // A LOCKED partner is deliberately never added to `idSet` above, so it can
+  // survive its now-deleted target -- still pointing at a clip that no
+  // longer exists. Clears that dangling reference (and its 🔗 badge) in this
+  // same returned snapshot -- see sanitizeLinkedClips's own doc comment.
+  clips = sanitizeLinkedClips(clips)
 
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }

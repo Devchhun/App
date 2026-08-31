@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { createHistoryState, recordChange, beginTransaction, endTransaction, undoStep, redoStep } from './historyReducer'
 import { reflowContentTransform } from '../scenes/contentTransformReflow'
+import { deleteClips } from '../sequence/sequenceOps'
 import type { SceneContentTransform } from '@shared/templates'
+import type { ProjectSequence } from '@shared/project'
 
 describe('historyReducer', () => {
   it('basic undo/redo round-trips through recorded states', () => {
@@ -377,5 +379,44 @@ describe('historyReducer', () => {
     const redo = redoStep(step.state, step.value)!
     expect(redo.value.scene.hospitalResponseConfig?.patientCondition).toBe('stable')
     expect(redo.value.scene.hospitalResponseConfig?.treatmentStageCount).toBe(2)
+  })
+
+  // Stale-link cleanup regression coverage: deleting a clip whose linked
+  // partner is LOCKED (so the partner survives) also clears the survivor's
+  // now-dangling linkedClipId -- see sequenceOps.deleteClips and
+  // shared/project.sanitizeLinkedClips. Both the deletion and the link
+  // cleanup happen inside deleteClips's own single return value, so they're
+  // necessarily one recorded change here too, matching how a real
+  // deleteSelected() call produces exactly one setSequence -- there's no
+  // separate wiring for Undo/Redo to get right beyond that.
+  it('Delete: Undo restores the deleted partner AND the original linkage (badge included); Redo removes it and clears the stale link again', () => {
+    const before: ProjectSequence = {
+      tracks: [],
+      clips: [
+        { id: 'v', mediaId: 'm1', type: 'video', trackId: 'V1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, linkedClipId: 'a' },
+        // Locked -- survives the delete below, but is left pointing at a
+        // clip that's about to not exist anymore.
+        { id: 'a', mediaId: 'm1', type: 'audio', trackId: 'A1', startTime: 0, duration: 5, sourceIn: 0, sourceOut: 5, locked: true, linkedClipId: 'v' }
+      ],
+      markers: [],
+      duration: 10
+    }
+    let state = createHistoryState<ProjectSequence>()
+    state = recordChange(state, before, 100)
+    // The real production Delete path (deleteClips with linked=true, exactly
+    // what deleteSelected() calls with no options) -- not hand-rolled.
+    const after = deleteClips(before, ['v'], true)
+    expect(after.clips.map((c) => c.id)).toEqual(['a']) // sanity: 'v' really is gone
+    expect(after.clips[0].linkedClipId).toBeUndefined() // sanity: stale link really is cleared
+
+    const undo = undoStep(state, after)!
+    expect(undo.value).toEqual(before)
+    expect(undo.value.clips.find((c) => c.id === 'v')).toBeDefined() // the deleted clip is back
+    expect(undo.value.clips.find((c) => c.id === 'a')!.linkedClipId).toBe('v') // original linkage restored (and with it, the 🔗 badge)
+
+    const redo = redoStep(undo.state, undo.value)!
+    expect(redo.value).toEqual(after)
+    expect(redo.value.clips.find((c) => c.id === 'v')).toBeUndefined() // removed again
+    expect(redo.value.clips.find((c) => c.id === 'a')!.linkedClipId).toBeUndefined() // stale link cleared again
   })
 })

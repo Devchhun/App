@@ -3,7 +3,7 @@
 // Electron. Kept separate from project.ts so it's obvious this is a one-way
 // upgrade path, not part of the current schema's shape.
 import type { ProjectFile, Scene, TimelineClip } from './project'
-import { computeSequenceDuration } from './project'
+import { computeSequenceDuration, sanitizeLinkedClips } from './project'
 import { createDefaultTracks } from './timelineTracks'
 
 /** schemaVersion 1 -> 2: `SceneContentTransform.xPercent/yPercent` changed
@@ -205,6 +205,18 @@ export function migrateProjectFile(project: ProjectFile): ProjectFile {
 
   if (result.schemaVersion < 7 || !result.narrativeGraph || !result.entityBible || !result.visualPlan || !result.sceneGroups || !result.theme) {
     result = migrateToStoryVisualization(result)
+  }
+
+  // Data-integrity safety net, independent of any particular schema version
+  // -- a dangling linkedClipId (its partner clip no longer exists, whether
+  // from a bug predating this check, manual file editing, or anything else)
+  // must never be allowed to survive a load. Runs on every project, old or
+  // current-schema, every time. See sanitizeLinkedClips's own doc comment
+  // for what a dangling reference actually breaks (a stale 🔗 "linked"
+  // badge on a clip that isn't linked to anything anymore).
+  const sanitizedClips = sanitizeLinkedClips(result.sequence.clips)
+  if (sanitizedClips !== result.sequence.clips) {
+    result = { ...result, sequence: { ...result.sequence, clips: sanitizedClips, duration: computeSequenceDuration(sanitizedClips) } }
   }
 
   return result

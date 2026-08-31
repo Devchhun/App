@@ -50,6 +50,16 @@ describe('computeExportDurationSeconds', () => {
   it('is 0 for an empty sequence', () => {
     expect(computeExportDurationSeconds([])).toBe(0)
   })
+
+  it('ignores a deleted clip entirely -- duration reflects only what survives', () => {
+    // Simulates the state right after removing a track/clip: the deleted
+    // clip is gone from the array (this function never sees it at all), and
+    // the survivor was left with a stale linkedClipId pointing at it, since
+    // this test predates sanitizeLinkedClips ever running. Duration must
+    // come out exactly as if that dangling reference weren't there.
+    const clips = [clip({ id: 'survivor', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'deleted-id' })]
+    expect(computeExportDurationSeconds(clips)).toBe(5)
+  })
 })
 
 describe('activeExportClips', () => {
@@ -64,6 +74,17 @@ describe('activeExportClips', () => {
     }
     const { videoClips } = activeExportClips(sequence)
     expect(videoClips.map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('a surviving clip\'s stale linkedClipId (pointing at an already-deleted clip) is simply absent from the output, not a broken reference to chase', () => {
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'deleted-audio-id' })],
+      markers: [],
+      duration: 10
+    }
+    const { videoClips } = activeExportClips(sequence)
+    expect(videoClips.map((c) => c.id)).toEqual(['v'])
   })
 
   it('excludes disabled clips', () => {

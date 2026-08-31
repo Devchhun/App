@@ -106,6 +106,17 @@ describe('rippleDelete', () => {
     const result = rippleDelete(seq(tracks, [v, a]), ['v'], 'current')
     expect(result.clips.find((c) => c.id === 'a-audio')).toBeDefined()
   })
+
+  // The locked partner above survives, but was left pointing at a target
+  // that's now gone -- still showing the 🔗 "linked" badge (ClipTrack.tsx
+  // renders it purely off `linkedClipId` truthiness) for a partner that
+  // doesn't exist anymore.
+  it('clears the surviving locked partner\'s now-stale linkedClipId', () => {
+    const v = clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'a-audio' })
+    const a = clip({ id: 'a-audio', trackId: 'A1', startTime: 0, duration: 5, type: 'audio', linkedClipId: 'v', locked: true })
+    const result = rippleDelete(seq(tracks, [v, a]), ['v'], 'current')
+    expect(result.clips.find((c) => c.id === 'a-audio')!.linkedClipId).toBeUndefined()
+  })
 })
 
 describe('rippleTrim', () => {
