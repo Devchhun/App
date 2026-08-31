@@ -154,6 +154,17 @@ export function Timeline(): JSX.Element {
   const skimmerRef = useRef<HTMLDivElement>(null)
   const snapGuideRef = useRef<HTMLDivElement>(null)
   const rangeStartTimeRef = useRef<number | null>(null)
+  /** Batches box-select/range-select's setState calls to at most once per
+   * animation frame -- mirrors ClipTrack.tsx's own rafIdRef/latestMoveRef
+   * pattern for the identical class of problem (see its doc comment). Unlike
+   * clip-drag, this path had NO throttling at all: every raw native
+   * mousemove (browsers can dispatch far more of these than the display
+   * refresh rate) called setBoxRect/setRangeSelection directly, forcing a
+   * full Timeline re-render -- re-mapping every track's every clip -- on
+   * each one. That's what made drag-to-select feel janky on any project with
+   * more than a handful of clips. */
+  const pointerMoveRafIdRef = useRef<number | null>(null)
+  const latestPointerMoveRef = useRef<{ clientX: number; clientY: number } | null>(null)
   const headerResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   /** The track area's own visible height (`.timeline-scroll-2d`'s
    * clientHeight) -- purely local to this component, unlike
@@ -776,15 +787,28 @@ export function Timeline(): JSX.Element {
       scrollEl.scrollTop = start.scrollTop - (e.clientY - start.clientY)
       return
     }
+    if (draggingRef.current === 'scrub') {
+      seekFromClientX(e.clientX)
+      return
+    }
+    if (draggingRef.current === 'range' || draggingRef.current === 'maybe-box' || draggingRef.current === 'box') {
+      latestPointerMoveRef.current = { clientX: e.clientX, clientY: e.clientY }
+      if (pointerMoveRafIdRef.current === null) {
+        pointerMoveRafIdRef.current = requestAnimationFrame(() => {
+          pointerMoveRafIdRef.current = null
+          const latest = latestPointerMoveRef.current
+          if (latest) commitPointerMove(latest)
+        })
+      }
+    }
+  }
+
+  const commitPointerMove = (e: { clientX: number; clientY: number }): void => {
     if (draggingRef.current === 'range') {
       const startTime = rangeStartTimeRef.current
       if (startTime === null) return
       const t = dropTimeFromClientX(e.clientX)
       setRangeSelection({ start: Math.min(startTime, t), end: Math.max(startTime, t) })
-      return
-    }
-    if (draggingRef.current === 'scrub') {
-      seekFromClientX(e.clientX)
       return
     }
     if (draggingRef.current === 'maybe-box' || draggingRef.current === 'box') {
@@ -809,6 +833,15 @@ export function Timeline(): JSX.Element {
   }
 
   const stopDragging = (e: React.MouseEvent): void => {
+    // A commit may still be scheduled for next frame -- flush it now so
+    // `rangeSelection` (read directly, just below) and the box-select commit
+    // are never a stale frame behind the pointer's actual last position.
+    // Same reasoning as ClipTrack.tsx's own pointerup flush.
+    if (pointerMoveRafIdRef.current !== null) {
+      cancelAnimationFrame(pointerMoveRafIdRef.current)
+      pointerMoveRafIdRef.current = null
+      if (latestPointerMoveRef.current) commitPointerMove(latestPointerMoveRef.current)
+    }
     if (draggingRef.current === 'pan') {
       draggingRef.current = false
       panStartRef.current = null
@@ -838,6 +871,10 @@ export function Timeline(): JSX.Element {
   // Leaving the Timeline area mid-drag cancels rather than commits -- an
   // outside-the-content mouseup isn't visible to this element's own onMouseUp.
   const cancelDragging = (): void => {
+    if (pointerMoveRafIdRef.current !== null) {
+      cancelAnimationFrame(pointerMoveRafIdRef.current)
+      pointerMoveRafIdRef.current = null
+    }
     draggingRef.current = false
     boxStartRef.current = null
     setBoxRect(null)
