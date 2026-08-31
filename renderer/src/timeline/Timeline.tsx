@@ -469,10 +469,15 @@ export function Timeline(): JSX.Element {
       const otherCompatibleTracks = sequence.tracks.filter((t) => t.kind === (clip.type === 'audio' ? 'audio' : 'video') && t.id !== clip.trackId)
 
       return [
-        { label: 'Cut', onClick: () => cutSelected({ linked: linkageOn }) },
+        // Cut/Duplicate/Delete always take a linked partner along -- a
+        // linked pair is one logical clip for a structural operation like
+        // these (remove/clone), not a movement-coupling choice, so none of
+        // them are gated by the ambient Linkage toggle (see the Delete
+        // item's own comment below for the full reasoning).
+        { label: 'Cut', onClick: () => cutSelected() },
         { label: 'Copy', onClick: () => copySelected() },
         { label: 'Paste', onClick: () => pasteAtTime(currentTime), disabled: !hasClipboardContent() },
-        { label: 'Duplicate', onClick: () => duplicateSelected({ linked: linkageOn }) },
+        { label: 'Duplicate', onClick: () => duplicateSelected() },
         { separator: true, label: '' },
         { label: 'Split at Playhead', onClick: () => splitSelected(currentTime, { linked: linkageOn }), disabled: !canSplitClip(clip, currentTime) },
         { label: 'Trim Start to Playhead', onClick: () => trimClip(clip.id, 'left', currentTime, sourceDurationSeconds, { linked: linkageOn }), disabled: !canTrimToPlayhead },
@@ -483,7 +488,13 @@ export function Timeline(): JSX.Element {
           disabled: !canTrimToPlayhead
         },
         { separator: true, label: '' },
-        { label: 'Delete', onClick: () => deleteSelected({ linked: linkageOn }) },
+        // Not gated by Linkage -- see the comment above the Cut item.
+        // Leaving this on the ambient toggle previously orphaned a clip's
+        // linked partner on the Timeline whenever Linkage happened to be
+        // off, reported as "an item remains after deleting everything".
+        // unlinkSelected (below) is the real, explicit way to detach a pair
+        // before deleting only one side of it.
+        { label: 'Delete', onClick: () => deleteSelected() },
         { label: 'Ripple Delete', onClick: () => deleteSelected({ rippleScope: 'current' }) },
         { separator: true, label: '' },
         { label: clip.enabled === false ? 'Enable' : 'Disable', onClick: () => setSelectedEnabled(clip.enabled === false) },

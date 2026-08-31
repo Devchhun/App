@@ -91,13 +91,18 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
       if (e.ctrlKey || e.metaKey) {
         if (e.key.toLowerCase() === 'd' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
-          duplicateSelected({ linked: linkageOn })
+          // Always takes the linked partner along -- a linked pair is one
+          // logical clip for a structural operation like this (create/
+          // remove/clone), not a movement-coupling choice, so this must NOT
+          // be gated by the ambient Linkage toggle (see deleteSelected's own
+          // fix, just below, for the full reasoning).
+          duplicateSelected()
         } else if (e.key.toLowerCase() === 'c' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
           copySelected()
         } else if (e.key.toLowerCase() === 'x' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
-          cutSelected({ linked: linkageOn })
+          cutSelected()
         } else if (e.key.toLowerCase() === 'v' && e.shiftKey) {
           e.preventDefault()
           pasteAttributesToSelected()
@@ -122,7 +127,15 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
         // Shift+Delete = Ripple Delete (spec section 9) using the current
         // Ripple-scope setting regardless of whether the Ripple toggle itself
         // is on -- an explicit command, not gated by the ambient toggle.
-        deleteSelected(e.shiftKey ? { rippleScope } : { linked: linkageOn })
+        // Same reasoning applies to the plain-Delete branch's own linked
+        // partner: Linkage governs whether a DRAG moves the pair together,
+        // not whether deleting one half of it also removes the other. Gating
+        // deletion on that toggle left a clip's linked audio (or video)
+        // silently orphaned on the Timeline whenever Linkage happened to be
+        // off -- reported as "an item remains after deleting everything".
+        // deleteSelected already defaults to linked: true; unlinkSelected is
+        // the real, explicit way to detach a pair before deleting only one.
+        deleteSelected(e.shiftKey ? { rippleScope } : undefined)
       } else if (e.key.toLowerCase() === 's' && selectedTimelineClipIds.length > 0) {
         e.preventDefault()
         // Alt is a per-action override that forces an UNlinked split

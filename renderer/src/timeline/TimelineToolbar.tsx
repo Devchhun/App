@@ -167,7 +167,12 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
 
   const handleDelete = (): void => {
     if (selectedClip) {
-      deleteSelected({ linked: linkageOn })
+      // Not gated by Linkage (a movement-coupling toggle) -- a linked pair
+      // is one logical clip for deletion, so this always takes the linked
+      // partner along too (deleteSelected's own default). Previously this
+      // left a clip's linked partner silently orphaned on the Timeline
+      // whenever Linkage happened to be off.
+      deleteSelected()
     } else if (selectedScene) {
       deleteScene(selectedScene.mediaId, selectedScene.id)
     }
