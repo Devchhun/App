@@ -12,14 +12,19 @@ import type { TimelineTrack } from '@shared/timelineTracks'
  * main up away from the target -- this keeps main's own position stable
  * regardless of what surrounds it, as long as it all still fits.
  *
- * `maxTopSpacerPx` caps how tall the gap between the ruler and the first
- * track row can get -- without it, a percentage-of-usable-height target
- * grows the gap without bound on a tall Timeline panel, leaving the
- * playhead's own time readout (which sits just under the ruler, not at the
- * main track's position) stranded alone in a cavernous empty strip far from
- * any track. Capping the TOP gap only (never the bottom one) keeps the ruler
- * a reasonable, constant distance from row 1 regardless of panel height,
- * while a tall panel still shows more room below for additional tracks.
+ * Purely proportional to `usableHeight`, with no fixed-pixel ceiling on
+ * either spacer -- a Timeline panel on a large monitor and one on a laptop
+ * both land the main track at the same target FRACTION of their own usable
+ * height, which is what "vertically centered" actually means. (An earlier
+ * version capped the top spacer at a fixed pixel value to keep a tall panel
+ * from stretching the ruler-to-first-row gap; that cap itself became the
+ * bug it was working around -- past the cap, ALL of the panel's extra
+ * height spilled into the bottom spacer instead of splitting proportionally,
+ * so the main track drifted up toward the ruler on any panel tall enough to
+ * hit it, which is exactly "not centered" on a large monitor. The caller is
+ * responsible for re-measuring `usableHeight` from the real viewport
+ * (ResizeObserver) so this always recomputes from the actual space
+ * available, on any monitor size or OS display-scaling factor.)
  *
  * Both spacer heights are clamped to >=0: once the tracks above/below main
  * are tall enough on their own to exceed the target region, the
@@ -31,8 +36,7 @@ export function computeTrackCentering(
   trackHeightById: Record<string, number>,
   usableHeight: number,
   topRatio: number,
-  bottomRatio: number,
-  maxTopSpacerPx: number
+  bottomRatio: number
 ): { topSpacerHeight: number; bottomSpacerHeight: number } {
   const mainIndex = sortedTracks.findIndex((t) => t.isMain)
   if (mainIndex === -1) {
@@ -41,7 +45,7 @@ export function computeTrackCentering(
     // evenly by the same ratio as a reasonable fallback.
     const totalHeight = sortedTracks.reduce((sum, t) => sum + trackHeightById[t.id], 0)
     const freeSpace = Math.max(0, usableHeight - totalHeight)
-    const topSpacerHeight = Math.min(maxTopSpacerPx, (freeSpace * topRatio) / (topRatio + bottomRatio))
+    const topSpacerHeight = (freeSpace * topRatio) / (topRatio + bottomRatio)
     return { topSpacerHeight, bottomSpacerHeight: freeSpace - topSpacerHeight }
   }
 
@@ -50,7 +54,7 @@ export function computeTrackCentering(
   const belowHeight = sortedTracks.slice(mainIndex + 1).reduce((sum, t) => sum + trackHeightById[t.id], 0)
 
   const topFraction = topRatio / (topRatio + bottomRatio)
-  const topSpacerHeight = Math.min(maxTopSpacerPx, Math.max(0, topFraction * usableHeight - mainHeight / 2 - overlaysHeight))
+  const topSpacerHeight = Math.max(0, topFraction * usableHeight - mainHeight / 2 - overlaysHeight)
   const bottomSpacerHeight = Math.max(0, usableHeight - topSpacerHeight - overlaysHeight - mainHeight - belowHeight)
 
   return { topSpacerHeight, bottomSpacerHeight }
