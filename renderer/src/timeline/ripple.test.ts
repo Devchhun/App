@@ -85,6 +85,27 @@ describe('rippleDelete', () => {
     expect(result.clips.find((c) => c.id === 'v-next')!.startTime).toBe(0)
     expect(result.clips.find((c) => c.id === 'a-next')!.startTime).toBe(0)
   })
+
+  // Regression coverage: only the VIDEO half was ever passed in `clipIds`
+  // here (matching what a real "select one clip, Shift+Delete" actually
+  // sends) -- rippleDelete used to delete only the explicit target and
+  // leave its linked partner sitting exactly where it was, stranded amid
+  // whatever shifted around it. `scope: 'current'` deliberately does NOT
+  // include the partner's own track in the ripple-shift scope; that's
+  // independent of whether the partner clip itself gets removed.
+  it('removes the linked partner even when only the target clip id is given, regardless of scope', () => {
+    const v = clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'a-audio' })
+    const a = clip({ id: 'a-audio', trackId: 'A1', startTime: 0, duration: 5, type: 'audio', linkedClipId: 'v' })
+    const result = rippleDelete(seq(tracks, [v, a]), ['v'], 'current')
+    expect(result.clips.find((c) => c.id === 'a-audio')).toBeUndefined()
+  })
+
+  it('never removes a locked linked partner, even though its target was deleted', () => {
+    const v = clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'a-audio' })
+    const a = clip({ id: 'a-audio', trackId: 'A1', startTime: 0, duration: 5, type: 'audio', linkedClipId: 'v', locked: true })
+    const result = rippleDelete(seq(tracks, [v, a]), ['v'], 'current')
+    expect(result.clips.find((c) => c.id === 'a-audio')).toBeDefined()
+  })
 })
 
 describe('rippleTrim', () => {

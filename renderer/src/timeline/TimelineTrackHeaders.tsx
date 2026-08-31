@@ -1,6 +1,8 @@
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { TimelineTrack } from '@shared/timelineTracks'
 import { useSequence } from '../sequence/SequenceContext'
+import { useScenes } from '../scenes/SceneContext'
+import { useHistory } from '../history/HistoryContext'
 import { useTimelineView } from './TimelineViewContext'
 import { sortTracksForDisplay, trackDisplayHeight } from './trackModel'
 import { TrackHeaderMenu } from './TrackHeaderMenu'
@@ -52,6 +54,8 @@ interface Props {
  * deleted/duplicated (see shared/timelineTracks.ts's `removable`). */
 function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasContent: boolean }): JSX.Element {
   const { toggleTrackFlag, addTrackAt, duplicateTrack, renameTrack, removeTrack, reorderTrack } = useSequence()
+  const { scenesByMedia, deleteScene } = useScenes()
+  const { beginTransaction, endTransaction } = useHistory()
   const { trackHeightMode } = useTimelineView()
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState(track.name)
@@ -66,6 +70,24 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
     const trigger = rowRef.current?.querySelector<HTMLButtonElement>('[title="Track options"]')
     trigger?.click()
   }
+
+  // "Delete Track"'s own confirmation dialog (TrackHeaderMenu.tsx) already
+  // promises "clips/scenes on it that will be removed too" -- removeTrack
+  // itself now sweeps up clips (SequenceContext.tsx), but Scenes live in a
+  // wholly separate context/state tree (keyed by mediaId, not trackId), so
+  // that removal can't reach them. Swept here instead, and wrapped in one
+  // transaction so deleting a track with scenes on it is still a single
+  // Undo step, not one per scene plus a separate one for the track.
+  const handleDeleteTrack = useCallback(() => {
+    beginTransaction()
+    for (const [mediaId, scenes] of Object.entries(scenesByMedia)) {
+      for (const scene of scenes) {
+        if (scene.track === track.id) deleteScene(mediaId, scene.id)
+      }
+    }
+    removeTrack(track.id)
+    endTransaction()
+  }, [scenesByMedia, deleteScene, removeTrack, track.id, beginTransaction, endTransaction])
 
   const commitRename = (): void => {
     setEditingName(false)
@@ -157,7 +179,7 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
           onAddBelow={() => addTrackAt(track.kind, track.id, 'below')}
           onDuplicate={() => duplicateTrack(track.id)}
           onRename={() => setEditingName(true)}
-          onDelete={() => removeTrack(track.id)}
+          onDelete={handleDeleteTrack}
           onMoveUp={() => reorderTrack(track.id, 'up')}
           onMoveDown={() => reorderTrack(track.id, 'down')}
         />

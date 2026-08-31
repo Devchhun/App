@@ -9,7 +9,7 @@
 import type { ProjectSequence, TimelineClip, Marker } from '@shared/project'
 import { computeSequenceDuration } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
-import { addTrack as addTrackToRegistry } from '../timeline/trackModel'
+import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry } from '../timeline/trackModel'
 import { closeGap } from '../timeline/reflow'
 import { planRippleInsert, extendRippleInsertWithLinkedPartners } from '../timeline/rippleCollision'
 
@@ -199,6 +199,26 @@ export function moveClipToNewTrack(
   const tracks = addTrackToRegistry(sequence.tracks, kind, explicitTrackId)
   const newTrack = tracks[tracks.length - 1]
   return moveClipToTrack({ ...sequence, tracks }, clipId, newStartTime, newTrack.id, linked)
+}
+
+/** Removes a track and every clip that was on it. A clip whose linked
+ * partner lives on a DIFFERENT track (the common case -- a video and its
+ * own extracted/embedded audio) is untouched unless ITS track is the one
+ * being removed too. A no-op if `trackId` doesn't exist or isn't removable
+ * (see trackModel.removeTrack). Left in `sequence.clips` with a trackId no
+ * longer in `sequence.tracks`, a removed track's clips would be permanently
+ * invisible: unrenderable (nothing groups clips by a track id that no
+ * longer exists), unselectable through any normal UI action, yet still
+ * counted toward duration/export -- exactly what "Delete Track"'s own
+ * confirmation dialog already promises removing but previously didn't.
+ * Scenes (graphic/text track content) live in a separate context/state
+ * tree keyed by mediaId, not trackId, so they can't be swept up here -- see
+ * TimelineTrackHeaders.tsx's delete handler for that half. */
+export function removeTrack(sequence: ProjectSequence, trackId: string): ProjectSequence {
+  const tracks = removeTrackFromRegistry(sequence.tracks, trackId)
+  if (tracks === sequence.tracks) return sequence
+  const clips = sequence.clips.filter((c) => c.trackId !== trackId)
+  return { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) }
 }
 
 export type TrimEdge = 'left' | 'right'

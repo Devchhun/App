@@ -27,6 +27,7 @@ import {
   moveClipsToTrack,
   moveClipToTrack,
   moveClipToNewTrack,
+  removeTrack,
   pickClipProperties,
   applyClipProperties,
   resetClipProperties,
@@ -879,6 +880,60 @@ describe('moveClipToNewTrack', () => {
     const second = moveClipToNewTrack(first, 'a', 11, 'video', true, 'V2')
     expect(second.tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
     expect(second.clips.find((c) => c.id === 'a')!.startTime).toBe(11)
+  })
+})
+
+describe('removeTrack', () => {
+  it('removes every clip that was on the deleted track along with it', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'V2', kind: 'video', order: 1 })]
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 5 }), videoClip({ id: 'b', trackId: 'V2', startTime: 0, duration: 5 })],
+      markers: [],
+      duration: 10
+    }
+    const result = removeTrack(sequence, 'V2')
+    expect(result.tracks.map((t) => t.id)).toEqual(['V1'])
+    // Without this, clip 'b' would remain in `clips` with a trackId that no
+    // longer exists in `tracks` -- unrenderable and unselectable through any
+    // normal UI action, yet still counted toward duration/export.
+    expect(result.clips.map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('leaves clips on OTHER tracks untouched', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 })]
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 5 }), videoClip({ id: 'b', trackId: 'A1', startTime: 0, duration: 5, type: 'audio' })],
+      markers: [],
+      duration: 10
+    }
+    const result = removeTrack(sequence, 'A1')
+    expect(result.clips.map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('is a no-op (same sequence reference) for a non-removable track, e.g. the main video track', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true, removable: false })]
+    const sequence: ProjectSequence = { tracks, clips: [videoClip({ id: 'a', trackId: 'V1' })], markers: [], duration: 10 }
+    expect(removeTrack(sequence, 'V1')).toBe(sequence)
+  })
+
+  it('is a no-op for an unknown track id', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true })]
+    const sequence: ProjectSequence = { tracks, clips: [], markers: [], duration: 0 }
+    expect(removeTrack(sequence, 'does-not-exist')).toBe(sequence)
+  })
+
+  it('recomputes duration from the surviving clips', () => {
+    const tracks: TimelineTrack[] = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'V2', kind: 'video', order: 1 })]
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 5 }), videoClip({ id: 'b', trackId: 'V2', startTime: 50, duration: 5 })],
+      markers: [],
+      duration: 60
+    }
+    const result = removeTrack(sequence, 'V2')
+    expect(result.duration).toBe(computeSequenceDuration([sequence.clips[0]]))
   })
 })
 

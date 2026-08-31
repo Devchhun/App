@@ -11,6 +11,7 @@ import {
   splitClip as splitClipOp,
   deleteClips as deleteClipsOp,
   deleteTimeRange as deleteTimeRangeOp,
+  removeTrack as removeTrackWithClipsOp,
   type TimeRange,
   duplicateClips as duplicateClipsOp,
   setClipsLocked as setClipsLockedOp,
@@ -44,7 +45,6 @@ import {
   addTrackAt as addTrackAtOp,
   duplicateTrack as duplicateTrackOp,
   renameTrack as renameTrackOp,
-  removeTrack as removeTrackOp,
   reorderTrack as reorderTrackOp,
   moveTrackToIndex as moveTrackToIndexOp,
   setTrackHeight as setTrackHeightOp,
@@ -533,7 +533,7 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
   }, [])
 
   const removeTrack = useCallback((trackId: string) => {
-    setSequence((prev) => ({ ...prev, tracks: removeTrackOp(prev.tracks, trackId) }))
+    setSequence((prev) => removeTrackWithClipsOp(prev, trackId))
   }, [])
 
   const reorderTrack = useCallback((trackId: string, direction: 'up' | 'down') => {

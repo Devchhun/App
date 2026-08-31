@@ -63,6 +63,19 @@ export function rippleDelete(sequence: ProjectSequence, clipIds: string[], scope
   const targets = sequence.clips.filter((c) => idSet.has(c.id) && !c.locked)
   if (targets.length === 0) return sequence
 
+  // A linked pair is one logical clip for deletion (same reasoning as
+  // sequenceOps.deleteClips's own `linked` default, and independent of
+  // `scope` -- scope governs which TRACKS' later clips shift to close a
+  // gap, not which clips get deleted). Without this, Ripple Delete removed
+  // only the explicitly selected clip and left its linked partner sitting
+  // exactly where it was, with everything around it shifted -- a stray
+  // clip stranded in what looks like empty space, easy to miss entirely.
+  for (const target of targets) {
+    if (!target.linkedClipId) continue
+    const partner = sequence.clips.find((c) => c.id === target.linkedClipId)
+    if (partner && !partner.locked) idSet.add(partner.id)
+  }
+
   const originalClips = sequence.clips
   let clips = sequence.clips.filter((c) => !idSet.has(c.id) || c.locked)
 
