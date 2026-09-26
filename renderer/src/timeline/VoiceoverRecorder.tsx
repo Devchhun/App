@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MicrophoneIcon } from '../nav/icons'
+import { useUiState } from '../nav/UiStateContext'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackTime, usePlaybackControls } from '../playback/PlaybackContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useTimelineView } from './TimelineViewContext'
 import { assetFromMediaItem } from '../media/assetFromMediaItem'
 import { findOrCreateTrack, type OccupiedRange } from './trackModel'
 import { isPastRecordingBound } from './recordingBounds'
 import { formatDuration } from '../media/format'
+import { useNarration } from '../narration/NarrationContext'
 
 type Mode = 'quick' | 'story'
 type Phase = 'idle' | 'countdown' | 'recording' | 'reviewing'
@@ -48,9 +50,11 @@ const COUNTDOWN_SECONDS = 3
 export function VoiceoverRecorder(): JSX.Element {
   const { items, importPaths, selectedId } = useMedia()
   const { transcripts } = useTranscript()
-  const { currentTime, setPlaying, seekTo } = usePlayback()
+  const { currentTime } = usePlaybackTime()
+  const { isPlaying, setPlaying, seekTo } = usePlaybackControls()
   const { sequence, ensureTrack, insertClip } = useSequence()
   const { rangeSelection } = useTimelineView()
+  const { enterStoryNarration, exitStoryNarration, active: narrationActive } = useNarration()
 
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode>('quick')
@@ -59,6 +63,7 @@ export function VoiceoverRecorder(): JSX.Element {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
+  const { setRecordingFocus } = useUiState()
   const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS)
   const [elapsed, setElapsed] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -366,18 +371,54 @@ export function VoiceoverRecorder(): JSX.Element {
 
   const canSwitchMode = phase === 'idle'
 
+  const focusWanted = phase === 'countdown' || phase === 'recording'
+  useEffect(() => {
+    setRecordingFocus(focusWanted)
+  }, [focusWanted, setRecordingFocus])
+  useEffect(() => () => setRecordingFocus(false), [setRecordingFocus])
+
+  // Escape always gets out of recording focus: cancel a countdown, or stop a
+  // take in progress. Without a keyboard way out, the only exit is the Stop
+  // button, and focus mode is exactly the state where the rest of the UI is
+  // deliberately unclickable -- one mis-scrolled Timeline and there'd be no
+  // obvious way back.
+  useEffect(() => {
+    if (!focusWanted) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      if (phase === 'countdown') handleCancelCountdown()
+      else if (phase === 'recording') handleStopClick()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
+
   return (
     <div className="track-menu-root" ref={rootRef}>
       <button
-        className={open ? 'timeline-tool-button timeline-tool-button-active' : 'timeline-tool-button'}
-        title="Record Voiceover"
+        className={open || narrationActive ? 'timeline-tool-button timeline-tool-button-active' : 'timeline-tool-button'}
+        title={narrationActive ? 'Story Narration is active' : 'Record Voiceover'}
         aria-label="Record Voiceover"
         onClick={() => setOpen((v) => (v && phase !== 'idle' ? v : !v))}
       >
         <MicrophoneIcon />
       </button>
       {open && (
-        <div className="track-menu-popover voiceover-recorder-popover">
+        <div
+          className="track-menu-popover voiceover-recorder-popover"
+          onKeyDown={(e) => {
+            // Space still plays/pauses the Preview while this popover is
+            // open -- without this, a keydown landing on (or bubbling
+            // through) the popover's own device <select> never reached
+            // useTimelineShortcuts.ts's window-level listener the way it
+            // does everywhere else in the app.
+            if (e.key === ' ') {
+              e.preventDefault()
+              setPlaying(!isPlaying)
+            }
+          }}
+        >
           <div className="voiceover-recorder-title">Record Voiceover</div>
 
           {canSwitchMode && (
@@ -385,8 +426,28 @@ export function VoiceoverRecorder(): JSX.Element {
               <button className={mode === 'quick' ? 'voiceover-mode-tab voiceover-mode-tab-active' : 'voiceover-mode-tab'} onClick={() => setMode('quick')}>
                 Quick Record
               </button>
-              <button className={mode === 'story' ? 'voiceover-mode-tab voiceover-mode-tab-active' : 'voiceover-mode-tab'} onClick={() => setMode('story')}>
-                Story Narration
+              {/* Story Narration now opens the dedicated full-panel workspace
+                  (NarrationContext/App.tsx's left+right panel takeover)
+                  instead of this popover's own in-popover story mode -- this
+                  button closes the popover rather than switching `mode`, so
+                  `mode` never becomes 'story' anymore and the JSX below
+                  keyed on it is intentionally unreachable, left in place
+                  rather than touched, since Quick Record's own code path
+                  (mode === 'quick') must stay byte-for-byte as-is. Acts as a
+                  toggle -- clicking it again while already active EXITS the
+                  workspace (this was the only entry point; there was no way
+                  back out at all before this, and `active` persists with the
+                  project, so a saved-while-active project reopened straight
+                  into the workspace with no visible way to leave it). */}
+              <button
+                className={narrationActive ? 'voiceover-mode-tab voiceover-mode-tab-active' : 'voiceover-mode-tab'}
+                onClick={() => {
+                  setOpen(false)
+                  if (narrationActive) exitStoryNarration()
+                  else enterStoryNarration()
+                }}
+              >
+                {narrationActive ? 'Exit Story Narration' : 'Story Narration'}
               </button>
             </div>
           )}

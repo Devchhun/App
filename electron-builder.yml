@@ -23,6 +23,19 @@ extraResources:
     to: python-runtime
     filter:
       - '**/*'
+  # htdemucs_ft vocal-separation weights for "Remove Vocal" (see
+  # app/main/media/vocalRemoval.ts). ~400MB; the alternative was every user
+  # downloading them from the Demucs release server on first use.
+  - from: resources/demucs-models
+    to: demucs-models
+    filter:
+      - '**/*'
+  # Kuanimation drawing runtime + references for the AI Animation tab (see
+  # app/main/animation/kuanimationService.ts). ~340KB; example audio left out.
+  - from: resources/kuanimation
+    to: kuanimation
+    filter:
+      - '**/*'
   - from: build/icon.ico
     to: icon.ico
 win:

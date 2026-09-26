@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { ProjectSequence, Marker } from '@shared/project'
+import type { ProjectSequence, Marker, TimelineClip } from '@shared/project'
 import { createEmptySequence } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import {
   insertClip as insertClipOp,
   moveClip as moveClipOp,
+  moveClipSet as moveClipSetOp,
   moveClipToTrack as moveClipToTrackOp,
   moveClipToNewTrack as moveClipToNewTrackOp,
   trimClip as trimClipOp,
@@ -12,6 +13,8 @@ import {
   deleteClips as deleteClipsOp,
   deleteTimeRange as deleteTimeRangeOp,
   removeTrack as removeTrackWithClipsOp,
+  acceptNarrationTake as acceptNarrationTakeOp,
+  acceptDubbingClip as acceptDubbingClipOp,
   type TimeRange,
   duplicateClips as duplicateClipsOp,
   setClipsLocked as setClipsLockedOp,
@@ -20,6 +23,7 @@ import {
   applyClipProperties as applyClipPropertiesOp,
   resetClipProperties as resetClipPropertiesOp,
   replaceClipMedia as replaceClipMediaOp,
+  setClipStartTimes as setClipStartTimesOp,
   type ClipPropertyPatch,
   linkClips as linkClipsOp,
   unlinkClips as unlinkClipsOp,
@@ -34,9 +38,13 @@ import {
   moveMarker as moveMarkerOp,
   updateMarker as updateMarkerOp,
   removeMarker as removeMarkerOp,
+  addOrUpdateKeyframe as addOrUpdateKeyframeOp,
+  moveKeyframe as moveKeyframeOp,
+  removeKeyframe as removeKeyframeOp,
   type InsertableAsset,
   type TrimEdge
 } from './sequenceOps'
+import type { KeyframeableProperty, KeyframeEasing } from '@shared/keyframes'
 import { updateClipSelection, clearClipSelection as clearClipSelectionOp, type ClickModifiers } from './sequenceSelection'
 import type { PlannedPlacement } from '../timeline/placementPlanning'
 import type { TimelineTrack } from '@shared/timelineTracks'
@@ -51,14 +59,17 @@ import {
   toggleTrackFlag as toggleTrackFlagOp,
   collapseAll as collapseAllOp,
   ensureTrack as ensureTrackOp,
+  ensureNarrationTrack as ensureNarrationTrackOp,
+  ensureDubbingTrack as ensureDubbingTrackOp,
   getMainVideoTrackId,
   findOrCreateTrack,
   type TrackFlag
 } from '../timeline/trackModel'
-import { moveClipMagnetic } from '../timeline/magnet'
+import { insertClipMagnetic, moveClipMagnetic } from '../timeline/magnet'
 import { rippleTrim as rippleTrimOp, rippleDelete as rippleDeleteOp, type RippleScope } from '../timeline/ripple'
 import { copyToClipboard, pasteClipsAt, getClipboard } from './clipClipboard'
 import { rollEdit as rollEditOp } from '../timeline/rollEdit'
+import { useMedia } from '../media/MediaContext'
 import { removeGap as removeGapOp, removeAllGapsOnTrack as removeAllGapsOnTrackOp, insertGapAt as insertGapAtOp, type Gap } from '../timeline/gapOps'
 
 interface SequenceContextValue {
@@ -72,7 +83,9 @@ interface SequenceContextValue {
 
   /** Video/image/audio insertion rules (see sequenceOps.buildInsertedClips).
    * Returns the id(s) of the newly-inserted clip(s) and selects them. */
-  insertClip: (asset: InsertableAsset, atTime: number, trackId: string) => void
+  insertClip: (asset: InsertableAsset, atTime: number, trackId: string, overrides?: Partial<Pick<TimelineClip, 'muted'>>) => void
+  /** Bulk, exact re-timing with no ripple -- see sequenceOps.setClipStartTimes. */
+  setClipStartTimes: (updates: { clipId: string; startTime: number }[]) => void
   /** Bulk-inserts every planned placement (see placementPlanning.ts) as one
    * history entry -- merges in any newly-created tracks first, then inserts
    * each clip at its planned track/time, selecting all of them. Used by
@@ -92,6 +105,7 @@ interface SequenceContextValue {
    * -- pass the Linkage toggle's current value; the default of true exists
    * only so a call site that genuinely doesn't care keeps today's behavior. */
   moveClip: (clipId: string, newStartTime: number, options?: { magnetic?: boolean; trackId?: string; createTrackKind?: TimelineTrackKind; linked?: boolean }) => void
+  moveClipSet: (clipId: string, selectedClipIds: string[], newStartTime: number, linked: boolean) => void
   /** `rippleScope` present (any RippleScope) routes right-edge trims through
    * ripple.ts's rippleTrim (pushing/pulling later clips); left-edge trims
    * and a missing/undefined scope use the ordinary trim. `linked` (default
@@ -107,6 +121,10 @@ interface SequenceContextValue {
    * the gap each deleted clip leaves), across the given scope's tracks.
    * `linked` (default true) also deletes each target's linked partner. */
   deleteSelected: (options?: { rippleScope?: RippleScope; linked?: boolean }) => void
+  /** Deletes specific clips by id, regardless of selection -- for callers
+   * that own a clip through some other record (AI Dubber's per-subtitle
+   * generatedClipId) rather than through the Timeline's own selection. */
+  deleteClipsById: (clipIds: string[], options?: { linked?: boolean }) => void
   /** `linked` (default true) also duplicates each target's linked partner,
    * keeping the two copies linked to each other. */
   duplicateSelected: (options?: { linked?: boolean }) => void
@@ -153,6 +171,15 @@ interface SequenceContextValue {
   /** "Reset Attributes" (clip context menu) -- clears every ClipPropertyPatch
    * field on the given clips back to its un-adjusted default. */
   resetClipProperties: (clipIds: string[]) => void
+  /** Keyframe Animation (see shared/keyframes.ts) -- adds a new keyframe for
+   * `property` at `time` (seconds, relative to the clip's own start), or
+   * overwrites one already sitting at that exact time. A no-op for a locked
+   * clip. */
+  addOrUpdateKeyframe: (clipId: string, property: KeyframeableProperty, time: number, value: number, easing?: KeyframeEasing) => void
+  /** Repositions one existing keyframe in time (dragging its diamond marker). */
+  moveKeyframe: (clipId: string, property: KeyframeableProperty, keyframeId: string, newTime: number) => void
+  /** Deletes one keyframe ("Delete Keyframe" on its marker's context menu). */
+  removeKeyframe: (clipId: string, property: KeyframeableProperty, keyframeId: string) => void
   /** "Replace Media" (clip context menu) -- swaps which media asset a clip
    * points at (already-imported `newMediaId`), resetting sourceIn/duration to
    * fit the replacement's own length. */
@@ -188,9 +215,12 @@ interface SequenceContextValue {
   /** Delete a marker (marker context menu / delete key while a marker is selected). */
   removeMarkerById: (markerId: string) => void
 
-  /** Gap interaction (spec section 12) -- see timeline/gapOps.ts. */
-  removeGap: (trackId: string, gap: Gap) => void
-  removeAllGapsOnTrack: (trackId: string) => void
+  /** Gap interaction (spec section 12) -- see timeline/gapOps.ts. `linked`
+   * (on by default) also closes the same window on any track holding a
+   * linked partner of a clip being shifted, gated by the Timeline's own
+   * Linkage toggle at the call site (matching every other mutator here). */
+  removeGap: (trackId: string, gap: Gap, linked?: boolean) => void
+  removeAllGapsOnTrack: (trackId: string, linked?: boolean) => void
   insertGapAt: (trackId: string, atTime: number, gapDuration: number) => void
 
   /** Bulk-replaces the whole sequence -- used by undo/redo (HistoryContext)
@@ -216,11 +246,32 @@ interface SequenceContextValue {
    * it isn't already present -- the second half of routing an insertion
    * that needed a brand-new track (see trackModel.ts's ensureTrack). */
   ensureTrack: (track: TimelineTrack) => void
+  /** Story Narration Workspace: ensures VO1 exists (idempotent), as one
+   * setSequence call -- see trackModel.ensureNarrationTrack. */
+  prepareNarrationTracks: () => void
+  /** Story Narration Workspace's "Accept & Next" -- inserts the accepted
+   * take at the exact SRT start timestamp, replacing `previousClipId` (if
+   * given) so a segment never ends up with two accepted clips. `clipId` is
+   * generated by the CALLER (NarrationContext) rather than here, so it's
+   * known synchronously without needing a return value out of this
+   * setSequence call -- the same reason every other mutator here returns
+   * void. See sequenceOps.acceptNarrationTake. */
+  acceptNarrationTake: (trackId: string, startTime: number, asset: InsertableAsset, clipId: string, previousClipId?: string) => void
+  /** AI Dubber: ensures DUB1 exists (idempotent), as one setSequence call --
+   * see trackModel.ensureDubbingTrack. */
+  prepareDubbingTrack: () => void
+  /** AI Dubber's "Generate Dubbing" -- inserts a generated clip at a
+   * subtitle's exact start timestamp, replacing `previousClipId` (if given)
+   * so a subtitle never ends up with two generated clips. `clipId` is
+   * generated by the CALLER (AiDubberContext), same reasoning as
+   * acceptNarrationTake above. See sequenceOps.acceptDubbingClip. */
+  acceptDubbingClip: (trackId: string, startTime: number, asset: InsertableAsset, clipId: string, previousClipId?: string) => void
 }
 
 const SequenceContext = createContext<SequenceContextValue | null>(null)
 
 export function SequenceProvider({ children }: { children: ReactNode }): JSX.Element {
+  const { items: mediaItems } = useMedia()
   const [sequence, setSequence] = useState<ProjectSequence>(createEmptySequence())
   const [selectedTimelineClipIds, setSelectedTimelineClipIds] = useState<string[]>([])
 
@@ -245,10 +296,13 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSelectedTimelineClipIds((prev) => clearClipSelectionOp(prev))
   }, [])
 
-  const insertClip = useCallback((asset: InsertableAsset, atTime: number, trackId: string) => {
+  const insertClip = useCallback((asset: InsertableAsset, atTime: number, trackId: string, overrides?: Partial<Pick<TimelineClip, 'muted'>>) => {
     setSequence((prev) => {
       const before = prev.clips.map((c) => c.id)
-      const next = insertClipOp(prev, asset, atTime, trackId)
+      const mainTrackId = getMainVideoTrackId(prev.tracks)
+      const next = trackId === mainTrackId && (asset.type === 'video' || asset.type === 'image')
+        ? insertClipMagnetic(prev, asset, atTime, undefined, overrides)
+        : insertClipOp(prev, asset, atTime, trackId, undefined, overrides)
       const newIds = next.clips.map((c) => c.id).filter((id) => !before.includes(id))
       setSelectedTimelineClipIds(newIds)
       return next
@@ -266,10 +320,12 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
         const asset: InsertableAsset = {
           mediaId: placement.asset.mediaId,
           type: placement.asset.type,
-          sourceDurationSeconds: placement.asset.sourceDurationSeconds,
-          hasAudio: placement.asset.hasAudio
+          sourceDurationSeconds: placement.asset.sourceDurationSeconds
         }
-        next = insertClipOp(next, asset, placement.startTime, placement.trackId)
+        const mainTrackId = getMainVideoTrackId(next.tracks)
+        next = placement.trackId === mainTrackId && (asset.type === 'video' || asset.type === 'image')
+          ? insertClipMagnetic(next, asset, placement.startTime)
+          : insertClipOp(next, asset, placement.startTime, placement.trackId)
       }
       const newIds = next.clips.map((c) => c.id).filter((id) => !before.includes(id))
       setSelectedTimelineClipIds(newIds)
@@ -285,28 +341,37 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       // -- passed on every pointermove of a drag gesture so repeated calls
       // land on the one track already created instead of each making a new one.
       if (options?.createTrackKind) return moveClipToNewTrackOp(prev, clipId, newStartTime, options.createTrackKind, linked, options.trackId)
+      const mainTrackId = getMainVideoTrackId(prev.tracks)
+      // Main Track is permanently magnetic. This covers both reordering a
+      // clip already on it and dropping a video/image in from another lane.
+      if (options?.trackId === mainTrackId) return moveClipMagnetic(prev, clipId, newStartTime, linked)
       if (options?.trackId) return moveClipToTrackOp(prev, clipId, newStartTime, options.trackId, linked)
-      if (options?.magnetic) {
-        const clip = prev.clips.find((c) => c.id === clipId)
-        if (clip && clip.trackId === getMainVideoTrackId(prev.tracks)) {
-          return moveClipMagnetic(prev, clipId, newStartTime, linked)
-        }
+      const clip = prev.clips.find((c) => c.id === clipId)
+      if (clip && clip.trackId === mainTrackId) {
+        return moveClipMagnetic(prev, clipId, newStartTime, linked)
       }
       return moveClipOp(prev, clipId, newStartTime, linked)
     })
+  }, [])
+
+  const moveClipSet = useCallback((clipId: string, selectedClipIds: string[], newStartTime: number, linked: boolean) => {
+    setSequence((prev) => moveClipSetOp(prev, clipId, selectedClipIds, newStartTime, linked))
   }, [])
 
   const trimClip = useCallback(
     (clipId: string, edge: TrimEdge, pointerTime: number, sourceDurationSeconds?: number, options?: { rippleScope?: RippleScope; linked?: boolean }) => {
       const linked = options?.linked ?? true
       setSequence((prev) => {
+        const partnerId = linked ? prev.clips.find((c) => c.id === clipId)?.linkedClipId : undefined
+        const partner = partnerId ? prev.clips.find((c) => c.id === partnerId) : undefined
+        const partnerDuration = partner ? mediaItems.find((item) => item.id === partner.mediaId)?.metadata?.durationSeconds : undefined
         if (options?.rippleScope && edge === 'right') {
-          return rippleTrimOp(prev, clipId, edge, pointerTime, options.rippleScope, sourceDurationSeconds)
+          return rippleTrimOp(prev, clipId, edge, pointerTime, options.rippleScope, sourceDurationSeconds, linked, partnerDuration)
         }
-        return trimClipOp(prev, clipId, edge, pointerTime, sourceDurationSeconds, linked)
+        return trimClipOp(prev, clipId, edge, pointerTime, sourceDurationSeconds, linked, partnerDuration)
       })
     },
-    []
+    [mediaItems]
   )
 
   const splitSelected = useCallback(
@@ -330,6 +395,15 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     },
     [selectedTimelineClipIds]
   )
+
+  const deleteClipsById = useCallback((clipIds: string[], options?: { linked?: boolean }) => {
+    if (clipIds.length === 0) return
+    const idSet = new Set(clipIds)
+    setSequence((prev) => deleteClipsOp(prev, clipIds, options?.linked ?? true))
+    // Anything just deleted must leave the selection too, or the Timeline
+    // keeps a selection pointing at clips that no longer exist.
+    setSelectedTimelineClipIds((prev) => prev.filter((id) => !idSet.has(id)))
+  }, [])
 
   const duplicateSelected = useCallback(
     (options?: { linked?: boolean }) => {
@@ -416,12 +490,12 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSequence((prev) => removeMarkerOp(prev, markerId))
   }, [])
 
-  const removeGap = useCallback((trackId: string, gap: Gap) => {
-    setSequence((prev) => removeGapOp(prev, trackId, gap.start, gap.end))
+  const removeGap = useCallback((trackId: string, gap: Gap, linked = true) => {
+    setSequence((prev) => removeGapOp(prev, trackId, gap.start, gap.end, linked))
   }, [])
 
-  const removeAllGapsOnTrack = useCallback((trackId: string) => {
-    setSequence((prev) => removeAllGapsOnTrackOp(prev, trackId))
+  const removeAllGapsOnTrack = useCallback((trackId: string, linked = true) => {
+    setSequence((prev) => removeAllGapsOnTrackOp(prev, trackId, linked))
   }, [])
 
   const insertGapAt = useCallback((trackId: string, atTime: number, gapDuration: number) => {
@@ -480,6 +554,18 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSequence((prev) => resetClipPropertiesOp(prev, clipIds))
   }, [])
 
+  const addOrUpdateKeyframe = useCallback((clipId: string, property: KeyframeableProperty, time: number, value: number, easing?: KeyframeEasing) => {
+    setSequence((prev) => addOrUpdateKeyframeOp(prev, clipId, property, time, value, easing))
+  }, [])
+
+  const moveKeyframe = useCallback((clipId: string, property: KeyframeableProperty, keyframeId: string, newTime: number) => {
+    setSequence((prev) => moveKeyframeOp(prev, clipId, property, keyframeId, newTime))
+  }, [])
+
+  const removeKeyframe = useCallback((clipId: string, property: KeyframeableProperty, keyframeId: string) => {
+    setSequence((prev) => removeKeyframeOp(prev, clipId, property, keyframeId))
+  }, [])
+
   const replaceClipMedia = useCallback((clipId: string, newMediaId: string, newSourceDurationSeconds: number) => {
     setSequence((prev) => replaceClipMediaOp(prev, clipId, newMediaId, newSourceDurationSeconds))
   }, [])
@@ -504,6 +590,10 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     })
   }, [])
 
+  const setClipStartTimes = useCallback((updates: { clipId: string; startTime: number }[]) => {
+    setSequence((prev) => setClipStartTimesOp(prev, updates))
+  }, [])
+
   const toggleClipMute = useCallback((clipId: string) => {
     setSequence((prev) => {
       const clip = prev.clips.find((c) => c.id === clipId)
@@ -518,6 +608,30 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
 
   const addTrack = useCallback((kind: TimelineTrackKind) => {
     setSequence((prev) => ({ ...prev, tracks: addTrackOp(prev.tracks, kind) }))
+  }, [])
+
+  // Story Narration Workspace: ensures VO1 exists as part of one setSequence
+  // call -- V1/A1/C1 already always exist (createDefaultTracks), so this is
+  // the one track genuinely missing until the workspace is first prepared.
+  // A single setSequence call is exactly one Undo entry, matching
+  // insertPlannedClips's own "bundle several ensureTrack calls into one
+  // updater" precedent just below.
+  const prepareNarrationTracks = useCallback(() => {
+    setSequence((prev) => ({ ...prev, tracks: ensureNarrationTrackOp(prev.tracks) }))
+  }, [])
+
+  const acceptNarrationTake = useCallback((trackId: string, startTime: number, asset: InsertableAsset, clipId: string, previousClipId?: string) => {
+    setSequence((prev) => acceptNarrationTakeOp(prev, trackId, startTime, asset, previousClipId, () => clipId).sequence)
+  }, [])
+
+  // AI Dubber: mirrors prepareNarrationTracks/acceptNarrationTake exactly --
+  // see their own doc comments above for the full reasoning.
+  const prepareDubbingTrack = useCallback(() => {
+    setSequence((prev) => ({ ...prev, tracks: ensureDubbingTrackOp(prev.tracks) }))
+  }, [])
+
+  const acceptDubbingClip = useCallback((trackId: string, startTime: number, asset: InsertableAsset, clipId: string, previousClipId?: string) => {
+    setSequence((prev) => acceptDubbingClipOp(prev, trackId, startTime, asset, previousClipId, () => clipId).sequence)
   }, [])
 
   const addTrackAt = useCallback((kind: TimelineTrackKind, referenceTrackId: string, position: 'above' | 'below') => {
@@ -570,12 +684,15 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       insertClip,
       insertPlannedClips,
       moveClip,
+      moveClipSet,
       trimClip,
       splitSelected,
       deleteSelected,
+      deleteClipsById,
       duplicateSelected,
       toggleClipLock,
       toggleClipMute,
+      setClipStartTimes,
       linkSelected,
       unlinkSelected,
       relinkSelectedAudio,
@@ -588,6 +705,9 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       hasClipboardContent,
       updateClipProperties,
       resetClipProperties,
+      addOrUpdateKeyframe,
+      moveKeyframe,
+      removeKeyframe,
       replaceClipMedia,
       splitClipAt,
       rollEditClips,
@@ -614,7 +734,11 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       setTrackHeight,
       toggleTrackFlag,
       collapseAllTracks,
-      ensureTrack
+      ensureTrack,
+      prepareNarrationTracks,
+      acceptNarrationTake,
+      prepareDubbingTrack,
+      acceptDubbingClip
     }),
     [
       sequence,
@@ -625,12 +749,15 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       insertClip,
       insertPlannedClips,
       moveClip,
+      moveClipSet,
       trimClip,
       splitSelected,
       deleteSelected,
+      deleteClipsById,
       duplicateSelected,
       toggleClipLock,
       toggleClipMute,
+      setClipStartTimes,
       linkSelected,
       unlinkSelected,
       relinkSelectedAudio,
@@ -643,6 +770,9 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       hasClipboardContent,
       updateClipProperties,
       resetClipProperties,
+      addOrUpdateKeyframe,
+      moveKeyframe,
+      removeKeyframe,
       replaceClipMedia,
       splitClipAt,
       rollEditClips,
@@ -669,7 +799,11 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       setTrackHeight,
       toggleTrackFlag,
       collapseAllTracks,
-      ensureTrack
+      ensureTrack,
+      prepareNarrationTracks,
+      acceptNarrationTake,
+      prepareDubbingTrack,
+      acceptDubbingClip
     ]
   )
 

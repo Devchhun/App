@@ -1,20 +1,23 @@
 {
   "name": "creative-ai-editor",
-  "version": "0.1.2",
+  "version": "0.1.13",
   "description": "AI motion-graphics editor for Khmer/English narrated video",
   "private": true,
   "author": "",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev --watch",
     "build": "electron-vite build",
+    "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p renderer/tsconfig.json",
     "test": "vitest run",
-    "dist:win": "electron-vite build && electron-builder --win"
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:admin": "electron-builder --win --config electron-builder.yml --projectDir admin-panel"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@google/genai": "^2.24.0",
     "electron-updater": "^6.8.9",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",

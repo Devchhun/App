@@ -6,6 +6,7 @@ import { useHistory } from '../history/HistoryContext'
 import { useTimelineView } from './TimelineViewContext'
 import { trackDisplayHeight } from './trackModel'
 import { buildSnapCandidates, findSnapMatch, type SnapCandidate } from './snapping'
+import { GraphicTrackIcon, TextTrackIcon } from '../nav/icons'
 
 interface Props {
   track: TimelineTrack
@@ -17,10 +18,24 @@ interface Props {
   markers: Marker[]
   playheadTime: number
   duration: number
+  /** Purely visual floor on this row's own DOM width (background + bottom
+   * divider), independent of `duration` -- `duration` still gates real
+   * retime/drag-clamp math above (a scene can't be dragged past it), but the
+   * row's own div is only ever as wide as `duration * pixelsPerSecond`,
+   * which stops short of the visible viewport on a short project. The
+   * ruler already visually extends past its own content the same way (see
+   * Timeline.tsx's `rulerVisualDuration`) while real seeking still can't
+   * reach that space either -- this is the same treatment applied to every
+   * track row, so a track's own divider line doesn't just stop partway
+   * across the panel while the ruler and header column's rows both
+   * continue to the edge. */
+  visualMinWidthPx?: number
   pixelsPerSecond: number
   selectedSceneId: string | null
+  /** Box-select can hold several; all of them draw selected. */
+  selectedSceneIds?: string[]
   onSelect: (sceneId: string) => void
-  onRetime: (sceneId: string, startTime: number, endTime: number) => void
+  onRetime: (sceneId: string, startTime: number, endTime: number, options?: { resolveCollisions?: boolean }) => void
   /** See ClipTrack.tsx's identical prop -- imperatively shows/hides the
    * shared Timeline-wide snap-guide line. */
   onSnapGuide: (time: number | null) => void
@@ -35,12 +50,17 @@ interface DragState {
   originalStart: number
   originalEnd: number
   snapCandidates: SnapCandidate[]
+  /** A move is only drawn (CSS translate) while the pointer is down and
+   * committed on release -- same as ClipTrack's ghost -- so neighbours
+   * aren't ripple-pushed live under the cursor. */
+  pendingStart?: number
+  pendingEnd?: number
 }
 
 const MIN_SCENE_DURATION = 0.2
 const SNAP_THRESHOLD_PX = 8
 
-export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, playheadTime, duration, pixelsPerSecond, selectedSceneId, onSelect, onRetime, onSnapGuide }: Props): JSX.Element {
+export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, playheadTime, duration, visualMinWidthPx, pixelsPerSecond, selectedSceneId, selectedSceneIds, onSelect, onRetime, onSnapGuide }: Props): JSX.Element {
   const trackLocked = track.locked
   const dragState = useRef<DragState | null>(null)
   /** Same rAF-throttled commit pattern as ClipTrack.tsx -- see its comment.
@@ -63,6 +83,9 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
       if (e.button === 1 || e.button === 2) return
       if (tool !== 'select') return
       e.stopPropagation()
+      // Cancels the compatibility mousedown too (the Timeline's box-select
+      // listens to that) -- see CaptionsTrack.tsx / ClipTrack.tsx.
+      e.preventDefault()
       onSelect(scene.id)
       const snapCandidates = buildSnapCandidates({
         clips: allClips,
@@ -111,6 +134,19 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
           nextStart -= nextEnd - duration
           nextEnd = duration
         }
+        drag.pendingStart = nextStart
+        drag.pendingEnd = nextEnd
+        const el = document.querySelector<HTMLElement>(`.timeline-track-graphics [data-scene-id="${drag.sceneId}"]`)
+        if (el) {
+          const offsetPx = (nextStart - drag.originalStart) * pixelsPerSecond
+          el.style.transform = offsetPx ? `translateX(${offsetPx}px)` : ''
+          el.classList.toggle('graphics-clip-ghosting', offsetPx !== 0)
+          el.closest('.timeline-track')?.classList.toggle('timeline-track-drag-host', offsetPx !== 0)
+        }
+        // Keep every neighbour still while this scene floats over it. The
+        // existing collision/ripple logic is deliberately deferred until
+        // pointerup, when resolveCollisions is committed once.
+        return
       } else if (drag.mode === 'resize-left') {
         const raw = applySnap(drag.originalStart + deltaSeconds, ev.altKey, drag.snapCandidates)
         nextStart = Math.min(drag.originalEnd - MIN_SCENE_DURATION, Math.max(0, raw))
@@ -121,7 +157,7 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
 
       onRetime(drag.sceneId, nextStart, nextEnd)
     },
-    [pixelsPerSecond, duration, onRetime, applySnap]
+    [pixelsPerSecond, duration, onRetime, applySnap, scenes]
   )
 
   const handlePointerMove = useCallback(
@@ -148,16 +184,30 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
       if (latestMoveRef.current) performMove(latestMoveRef.current)
     }
     if (dragState.current) {
+      const drag = dragState.current
       dragState.current = null
+      const el = document.querySelector<HTMLElement>(`.timeline-track-graphics [data-scene-id="${drag.sceneId}"]`)
+      if (el) {
+        el.style.transform = ''
+        el.classList.remove('graphics-clip-ghosting')
+        el.closest('.timeline-track')?.classList.remove('timeline-track-drag-host')
+      }
+      if (drag.mode === 'move') {
+        if (drag.pendingStart !== undefined && drag.pendingEnd !== undefined) onRetime(drag.sceneId, drag.pendingStart, drag.pendingEnd, { resolveCollisions: true })
+      } else {
+        // A resize that grew into a neighbour makes room on release.
+        const scene = scenes.find((sc) => sc.id === drag.sceneId)
+        if (scene) onRetime(drag.sceneId, scene.startTime, scene.endTime, { resolveCollisions: true })
+      }
       endTransaction()
       onSnapGuide(null)
     }
-  }, [endTransaction, performMove, onSnapGuide])
+  }, [endTransaction, performMove, onSnapGuide, onRetime, scenes])
 
   return (
     <div
       className={`timeline-track timeline-track-graphics${track.hidden ? ' timeline-track-hidden' : ''}`}
-      style={{ width: Math.max(1, duration * pixelsPerSecond), height: trackDisplayHeight(track, trackHeightMode) }}
+      style={{ width: Math.max(1, duration * pixelsPerSecond, visualMinWidthPx ?? 0), height: trackDisplayHeight(track, trackHeightMode) }}
       data-track-id={track.id}
       data-track-kind={track.kind}
       onPointerMove={handlePointerMove}
@@ -165,10 +215,12 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
     >
       {scenes.map((scene) => {
         const locked = scene.locked || trackLocked
+        const isTextItem = track.kind === 'text' || scene.templateId === 'lower-third'
         return (
           <div
             key={scene.id}
-            className={`graphics-clip graphics-clip-${scene.templateId}${scene.id === selectedSceneId ? ' graphics-clip-selected' : ''}${
+            data-scene-id={scene.id}
+            className={`graphics-clip graphics-clip-${scene.templateId}${scene.id === selectedSceneId || selectedSceneIds?.includes(scene.id) ? ' graphics-clip-selected' : ''}${
               locked ? ' graphics-clip-locked' : ''
             }`}
             style={{ left: scene.startTime * pixelsPerSecond, width: Math.max(4, (scene.endTime - scene.startTime) * pixelsPerSecond) }}
@@ -176,6 +228,7 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
               if (e.button === 1 || tool !== 'select') return
               if (locked) {
                 e.stopPropagation()
+                e.preventDefault()
                 onSelect(scene.id)
                 return
               }
@@ -186,7 +239,9 @@ export function GraphicsTrack({ track, scenes, allClips, allScenes, markers, pla
             {!locked && (
               <div className="graphics-clip-handle graphics-clip-handle-left" onPointerDown={(e) => handlePointerDown(e, scene, 'resize-left')} />
             )}
-            <span className="graphics-clip-fx">fx</span>
+            <span className="graphics-clip-fx" title={isTextItem ? 'Text' : 'Graphic'}>
+              {isTextItem ? <TextTrackIcon size={12} /> : <GraphicTrackIcon size={12} />}
+            </span>
             <span className="graphics-clip-text">{scene.visualText}</span>
             {!locked && (
               <div className="graphics-clip-handle graphics-clip-handle-right" onPointerDown={(e) => handlePointerDown(e, scene, 'resize-right')} />

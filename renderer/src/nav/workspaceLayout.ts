@@ -4,17 +4,32 @@
 // place that actually touches `localStorage` or component state.
 
 export const LEFT_PANEL_MIN = 340
-export const LEFT_PANEL_MAX = 520
-// Targets ~440-520px on a 1920-2560px display (was previously 400 -- the
-// Preview column absorbing all the extra width on a large monitor was the
-// original problem; Templates/Properties get that width instead, not the
-// Preview getting more empty gutter around it).
+// Raised from 520 -- a fixed pixel ceiling meant a big/wide monitor got
+// EXACTLY the same side-panel width as a laptop, so 100% of the extra room
+// a bigger screen provides went to the Player's `1fr` track alone,
+// reproducing "Preview absorbs all the extra width" (the exact problem
+// LEFT_PANEL_DEFAULT was bumped once before to fix) on any screen large
+// enough. See defaultPanelWidthsForWindow below for the actual scaling;
+// this MAX is now just the outer ceiling on how far that's allowed to go.
+export const LEFT_PANEL_MAX = 680
+// Used only when window size isn't known yet (SSR-less here, but kept as
+// the pure fallback parseStoredPanelWidths/clampLeftWidth use for
+// corrupt/missing storage) -- see defaultPanelWidthsForWindow for the real,
+// window-size-aware default every live session actually gets.
 export const LEFT_PANEL_DEFAULT = 460
 
 export const RIGHT_PANEL_MIN = 320
-export const RIGHT_PANEL_MAX = 460
-// Targets ~380-440px on a 1920-2560px display.
+// Same reasoning as LEFT_PANEL_MAX above.
+export const RIGHT_PANEL_MAX = 600
 export const RIGHT_PANEL_DEFAULT = 400
+
+// Targets the same ~460/~400px this app has always used on a "typical"
+// ~1920px-wide window (0.24 * 1920 ≈ 461, 0.21 * 1920 ≈ 403 -- matching the
+// old fixed defaults almost exactly there), but SCALES from that point
+// instead of staying frozen, so a 2560/3440/3840px monitor actually gets a
+// proportionally wider side panel too, up to each panel's own MAX ceiling.
+export const LEFT_PANEL_WIDTH_RATIO = 0.24
+export const RIGHT_PANEL_WIDTH_RATIO = 0.21
 
 /** Below this, the center Player column would be squeezed under its own
  * usable minimum -- used to cap how wide the side panels are allowed to
@@ -29,6 +44,23 @@ export interface PanelWidthsState {
 export const DEFAULT_PANEL_WIDTHS: PanelWidthsState = {
   leftWidth: LEFT_PANEL_DEFAULT,
   rightWidth: RIGHT_PANEL_DEFAULT
+}
+
+/** The window-size-aware default this app actually uses on every fresh
+ * install and every explicit splitter reset (see useWorkspaceLayout.ts) --
+ * a percentage of the FULL window width (not the space left after the icon
+ * rail; `iconRailWidth` isn't subtracted here, since the ratios were tuned
+ * against whole-window widths like a real monitor resolution), clamped to
+ * each panel's own MIN/MAX. `DEFAULT_PANEL_WIDTHS`/`LEFT_PANEL_DEFAULT`/
+ * `RIGHT_PANEL_DEFAULT` remain the plain, window-independent fallback for
+ * corrupt/missing stored values (parseStoredPanelWidths), where no current
+ * window size is available to scale against. */
+export function defaultPanelWidthsForWindow(windowWidth: number): PanelWidthsState {
+  if (!Number.isFinite(windowWidth) || windowWidth <= 0) return DEFAULT_PANEL_WIDTHS
+  return {
+    leftWidth: clampLeftWidth(windowWidth * LEFT_PANEL_WIDTH_RATIO),
+    rightWidth: clampRightWidth(windowWidth * RIGHT_PANEL_WIDTH_RATIO)
+  }
 }
 
 export function clampLeftWidth(px: number): number {

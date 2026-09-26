@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
 import { useAiSuggestions } from '../suggestions/AiSuggestionsContext'
@@ -7,13 +7,30 @@ import { useBrandPreset } from '../brand/BrandPresetContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useHistory } from '../history/HistoryContext'
 import { useStory } from '../story/StoryContext'
+import { useNarration } from '../narration/NarrationContext'
+import { useAiDubber } from '../dubbing/AiDubberContext'
 import type { ProjectFile, MediaSource, Scene } from '@shared/project'
+import { withoutTransientDubbingState } from '@shared/dubbing'
 import { pendingStageFor } from './pendingStage'
+import { markHomeSeen } from '../home/homeSession'
 
 interface ProjectContextValue {
   projectId: string | null
   projectName: string | null
   lastSavedAt: string | null
+  /** Where the project file lives on disk -- known once the first save
+   * (or the startup load's own path) has reported it. */
+  projectPath: string | null
+  createdAt: string | null
+  privacyMode: ProjectFile['privacyMode'] | null
+  renameProject: (name: string) => void
+  /** Timeline > Cover: the PNG the app just wrote becomes the project's
+   * cover (see ProjectFile.coverPath). */
+  setCover: (path: string) => void
+  /** Home screen: make another project (or a new one) the one to reopen,
+   * then reload the window so every provider hydrates from it. Flushes a
+   * pending autosave of the current project first. */
+  switchProject: (id: string | 'new') => Promise<void>
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
@@ -21,7 +38,7 @@ const ProjectContext = createContext<ProjectContextValue | null>(null)
 const AUTOSAVE_DEBOUNCE_MS = 3000
 
 export function ProjectProvider({ children }: { children: ReactNode }): JSX.Element {
-  const { items, hydrateFromSaved } = useMedia()
+  const { items, hydrateFromSaved, select: selectMedia } = useMedia()
   const { transcripts, scriptAlignments, scriptTexts, hydrateFromSaved: hydrateTranscriptsFromSaved } = useTranscript()
   const { suggestionsByMedia, setSuggestionsForMedia } = useAiSuggestions()
   const { scenesByMedia, setScenesForMedia } = useScenes()
@@ -29,10 +46,29 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
   const { sequence, restoreSequence } = useSequence()
   const { suppressNextRecord } = useHistory()
   const { narrativeGraphByMedia, entityBibleByMedia, visualPlanByMedia, sceneGroups, themeByMedia, restoreStoryState } = useStory()
+  const { state: narrationState, restore: restoreNarrationWorkspace } = useNarration()
+  const { state: dubbingState, restore: restoreDubbingWorkspace } = useAiDubber()
   const [project, setProject] = useState<ProjectFile | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
+  const [projectPath, setProjectPath] = useState<string | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextSave = useRef(true)
+  /** The save the debounce is currently waiting to run, so closing the
+   * window can run it NOW. Without this the effect cleanup below just
+   * cancelled the pending timer on unmount -- anything changed in the last
+   * AUTOSAVE_DEBOUNCE_MS before quitting silently never reached disk. */
+  const pendingSaveRef = useRef<(() => Promise<void>) | null>(null)
+
+  useEffect(() => {
+    const flush = (): void => {
+      if (saveTimer.current !== null && pendingSaveRef.current) {
+        clearTimeout(saveTimer.current)
+        pendingSaveRef.current()
+      }
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [])
   // True for the whole span between `setProject(loaded)` and the LAST
   // restore call below -- `restoreSequence`/`setBrandPreset`/`hydrateFromSaved`/
   // etc. each set their own independent piece of state, and `hydrateFromSaved`
@@ -87,6 +123,25 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
         sceneGroups: loaded.sceneGroups ?? [],
         themeByMedia: loaded.theme ?? {}
       })
+      if (loaded.narrationWorkspace) restoreNarrationWorkspace(loaded.narrationWorkspace)
+      if (loaded.dubbingWorkspace) restoreDubbingWorkspace(loaded.dubbingWorkspace)
+
+      // Re-select the video the user was working on. Which media is
+      // selected is not part of the project file, so on reopen nothing was
+      // -- and the Timeline's caption track draws the SELECTED media's
+      // subtitles, so every reopen came up with the SRT captions gone from
+      // the Timeline even though the transcript itself had saved fine
+      // ("subtitles disappear when I close the app"). Best signal available
+      // is whichever video a dubbing/narration workspace is bound to, then
+      // the video actually sitting on the main track.
+      const loadedIds = new Set(loaded.media.map((m) => m.id))
+      const mainTrackId = loaded.sequence.tracks.find((t) => t.isMain)?.id
+      const mainClipMediaId = mainTrackId ? loaded.sequence.clips.find((c) => c.trackId === mainTrackId)?.mediaId : undefined
+      const reselect = [loaded.dubbingWorkspace?.videoMediaId, loaded.narrationWorkspace?.videoMediaId, mainClipMediaId].find(
+        (id): id is string => !!id && loadedIds.has(id)
+      )
+      if (reselect) selectMedia(reselect)
+
       // Only NOW is every piece of loaded state actually applied -- see
       // isLoadingProject's own doc comment for why this must be the very
       // last thing in this callback.
@@ -108,7 +163,8 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
     }
 
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
+    const performSave = (): Promise<void> => {
+      saveTimer.current = null
       // `readyToUse`, not `stage === 'ready'` -- an item with a still-running
       // (or failed/canceled) background job is fully usable and must not be
       // dropped from the save just because thumbnail/waveform/proxy haven't
@@ -154,14 +210,19 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
         entityBible: entityBibleByMedia,
         visualPlan: visualPlanByMedia,
         sceneGroups,
-        theme: themeByMedia
+        theme: themeByMedia,
+        narrationWorkspace: narrationState,
+        dubbingWorkspace: withoutTransientDubbingState(dubbingState)
       }
 
-      void window.api.project.save(snapshot).then(() => {
+      return window.api.project.save(snapshot).then((savedPath) => {
         setProject(snapshot)
+        setProjectPath(savedPath)
         setLastSavedAt(new Date().toISOString())
       })
-    }, AUTOSAVE_DEBOUNCE_MS)
+    }
+    pendingSaveRef.current = performSave
+    saveTimer.current = setTimeout(() => void performSave(), AUTOSAVE_DEBOUNCE_MS)
 
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current)
@@ -180,14 +241,58 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
     entityBibleByMedia,
     visualPlanByMedia,
     sceneGroups,
-    themeByMedia
+    themeByMedia,
+    narrationState,
+    dubbingState,
+    project?.name,
+    project?.coverPath
   ])
 
-  return (
-    <ProjectContext.Provider value={{ projectId: project?.id ?? null, projectName: project?.name ?? null, lastSavedAt }}>
-      {children}
-    </ProjectContext.Provider>
+  const switchProject = useCallback(async (id: string | 'new') => {
+    // The save that is waiting on the debounce runs NOW and is awaited:
+    // it also records the current project as the one to reopen, so it
+    // must land before the new choice is written, not after.
+    if (saveTimer.current !== null && pendingSaveRef.current) {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = null
+      try {
+        await pendingSaveRef.current()
+      } catch {
+        // A failed flush must not strand the user on Home.
+      }
+    }
+    if (id === 'new') await window.api.project.create('Untitled Project')
+    else await window.api.project.open(id)
+    markHomeSeen()
+    window.location.reload()
+  }, [])
+
+  const setCover = useCallback((path: string) => {
+    setProject((prev) => (prev && prev.coverPath !== path ? { ...prev, coverPath: path } : prev))
+  }, [])
+
+  const renameProject = useCallback((name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    setProject((prev) => (prev && prev.name !== trimmed ? { ...prev, name: trimmed } : prev))
+  }, [])
+
+  const value = useMemo<ProjectContextValue>(
+    () => ({
+      projectId: project?.id ?? null,
+      projectName: project?.name ?? null,
+      lastSavedAt,
+      projectPath,
+      createdAt: project?.createdAt ?? null,
+      privacyMode: project?.privacyMode ?? null,
+      renameProject,
+      setCover,
+      switchProject
+    }),
+    [project?.id, project?.name, project?.createdAt, project?.privacyMode, lastSavedAt, projectPath, renameProject, setCover, switchProject]
   )
+
+  return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
 }
 
 export function useProject(): ProjectContextValue {

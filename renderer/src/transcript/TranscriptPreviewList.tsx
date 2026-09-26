@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackTime, usePlaybackControls } from '../playback/PlaybackContext'
 import { useTranscript } from './TranscriptContext'
 import { formatDuration } from '../media/format'
 
@@ -11,7 +11,8 @@ import { formatDuration } from '../media/format'
 export function TranscriptPreviewList(): JSX.Element {
   const { items, selectedId } = useMedia()
   const { transcripts } = useTranscript()
-  const { seekTo, currentTime } = usePlayback()
+  const { currentTime } = usePlaybackTime()
+  const { seekTo } = usePlaybackControls()
 
   const media = items.find((m) => m.id === selectedId)
   const segments = media ? (transcripts[media.id]?.segments ?? []) : []

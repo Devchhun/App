@@ -4,7 +4,7 @@ import { AnthropicProvider } from './providers/AnthropicProvider'
 import { ProviderError } from './providers/AiProvider'
 import type { AiProvider, SegmentInput, ClassificationResult } from './providers/AiProvider'
 import { computeCacheKey, readCache, writeCache } from './suggestionsCache'
-import type { AiSuggestion, CloudRequestPreview, GenerateSuggestionsResult } from '@shared/suggestions'
+import type { AiSuggestion, CloudRequestPreview, GenerateSuggestionsResult, ScriptTransformMode } from '@shared/suggestions'
 import type { TranscriptSegment } from '@shared/transcription'
 
 const provider: AiProvider = new AnthropicProvider()
@@ -159,6 +159,17 @@ export async function simplifySuggestionText(requestId: string, text: string): P
   activeRequests.set(requestId, controller)
   try {
     return await provider.simplifyText(apiKey, text, controller.signal)
+  } finally {
+    activeRequests.delete(requestId)
+  }
+}
+
+export async function transformScriptText(requestId: string, text: string, mode: ScriptTransformMode): Promise<string> {
+  const apiKey = await requireApiKey()
+  const controller = new AbortController()
+  activeRequests.set(requestId, controller)
+  try {
+    return await provider.transformScript(apiKey, text, mode, controller.signal)
   } finally {
     activeRequests.delete(requestId)
   }

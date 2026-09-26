@@ -1,10 +1,32 @@
-import { ipcMain, dialog, app, BrowserWindow, type WebContents } from 'electron'
+import { ipcMain, dialog, app, BrowserWindow, shell, type WebContents } from 'electron'
 import { EXPORT_IPC } from '@shared/export'
 import type { ExportOptions, ExportProgress, ExportError, ExportCapabilities } from '@shared/export'
 import type { ProjectSequence } from '@shared/project'
 import { runExport, exportGif, getAvailableCodecs, ExportError as ExportErrorClass, type ExportMediaInfo } from '../media/export'
 import { detectFfmpeg } from '../media/ffmpeg'
 import { cancelJob } from '../media/jobRunner'
+import { stat, writeFile } from 'fs/promises'
+import { join } from 'path'
+
+/** A file name that is safe on Windows: no path separators or reserved
+ * characters, never empty. The caller's extension is added separately. */
+export function safeExportBaseName(name: string): string {
+  const cleaned = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim()
+  return cleaned || 'export'
+}
+
+/** `<dir>/<base><ext>`, or `<base> (2)<ext>`, `(3)`… -- never overwrites. */
+async function uniquePath(dir: string, base: string, ext: string): Promise<string> {
+  for (let n = 1; n < 1000; n++) {
+    const candidate = join(dir, n === 1 ? `${base}${ext}` : `${base} (${n})${ext}`)
+    try {
+      await stat(candidate)
+    } catch {
+      return candidate
+    }
+  }
+  return join(dir, `${base} (${Date.now()})${ext}`)
+}
 
 function toSerializableError(err: unknown): ExportError {
   if (err instanceof ExportErrorClass) return { kind: err.kind, message: err.message }
@@ -72,4 +94,27 @@ export function registerExportIpc(): void {
   })
 
   ipcMain.handle(EXPORT_IPC.cancelExport, async (_event, requestId: string) => cancelJob(requestId))
+
+  ipcMain.handle(EXPORT_IPC.openOutput, async (_event, outputPath: string) => {
+    if (!outputPath) return false
+    shell.showItemInFolder(outputPath)
+    return true
+  })
+
+  ipcMain.handle(
+    EXPORT_IPC.writeTextFile,
+    async (_event, args: { dir: string; name: string; extension: string; content: string }): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+      try {
+        if (!args.dir || !(await stat(args.dir)).isDirectory()) return { ok: false, error: 'The export folder does not exist.' }
+        const extension = /^\.[a-z0-9]{1,8}$/i.test(args.extension) ? args.extension : '.txt'
+        const path = await uniquePath(args.dir, safeExportBaseName(args.name), extension)
+        // UTF-8 with a BOM: Windows tools (Notepad, older subtitle editors)
+        // otherwise misread Khmer text as a legacy code page.
+        await writeFile(path, `﻿${args.content}`, 'utf8')
+        return { ok: true, path }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
 }

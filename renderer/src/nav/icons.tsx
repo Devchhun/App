@@ -48,11 +48,62 @@ export function TemplatesIcon({ size = 18 }: IconProps): JSX.Element {
   )
 }
 
+/** A real toothed cog. This used to be a small circle ringed by eight plain
+ * spokes, which is the shape of a brightness/sun glyph, not a gear -- once a
+ * theme toggle appeared beside it the two were impossible to tell apart.
+ * Drawn on a 24x24 grid (overriding the shared 20x20 viewBox) because the
+ * tooth geometry needs the extra room to stay legible at 16-18px. */
+/** "Runs over the internet" -- the Remote (Online) execution mode. */
+export function GlobeIcon({ size = 18 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base} viewBox="0 0 24 24" strokeWidth={1.8}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9z" />
+    </svg>
+  )
+}
+
+/** Folder picker ("Browse..."). */
+export function FolderIcon({ size = 18 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base} viewBox="0 0 24 24" strokeWidth={1.8}>
+      <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z" />
+    </svg>
+  )
+}
+
 export function SettingsIcon({ size = 18 }: IconProps): JSX.Element {
   return (
+    <svg width={size} height={size} {...base} viewBox="0 0 24 24" strokeWidth={1.8}>
+      <circle cx="12" cy="12" r="3.1" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  )
+}
+
+/** Theme toggle pair -- drawn in the same stroked, 20x20 style as every
+ * other icon here rather than as ☀/🌙 emoji, which render with the OS's own
+ * colour font and sit at a different optical weight than the icons beside
+ * them. */
+export function SunIcon({ size = 18 }: IconProps): JSX.Element {
+  return (
     <svg width={size} height={size} {...base}>
-      <circle cx="10" cy="10" r="2.6" />
-      <path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4M15.1 15.1l-1.4-1.4M6.3 6.3L4.9 4.9" />
+      {/* Filled disc, and rays kept short and clear of it. SettingsIcon in
+          this same file is a small hollow circle ringed by eight identical
+          spokes -- at 16px an outlined sun with long rays was visually
+          indistinguishable from it, which read as two of the same button
+          sitting side by side in the titlebar. */}
+      <circle cx="10" cy="10" r="4" fill="currentColor" stroke="none" />
+      <path d="M10 2.2v1.6M10 16.2v1.6M17.8 10h-1.6M3.8 10H2.2M15.5 4.5l-1.1 1.1M5.6 14.4l-1.1 1.1M15.5 15.5l-1.1-1.1M5.6 5.6L4.5 4.5" />
+    </svg>
+  )
+}
+
+export function MoonIcon({ size = 18 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M16.2 12.4A7 7 0 0 1 7.6 3.8a7.2 7.2 0 1 0 8.6 8.6z" />
     </svg>
   )
 }
@@ -229,10 +280,11 @@ export function FullscreenIcon({ size = 14 }: IconProps): JSX.Element {
 
 // Timeline toolbar
 
+/** Outlined arrow cursor (CapCut-style): stroke only, no solid fill. */
 export function SelectionArrowIcon({ size = 15 }: IconProps): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 20 20" fill="currentColor">
-      <path d="M4 3l11 7-4.8 1.1L13 16l-2.3 1L8.2 12 5 14.5z" />
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round">
+      <path d="M4.5 3l12 7.6-5.4 1.2 3 4.7-2.3 1.4-3-4.8-4.3 4z" />
     </svg>
   )
 }
@@ -321,7 +373,35 @@ export function ChipIcon({ size = 12 }: IconProps): JSX.Element {
   )
 }
 
+/** Open book -- Story Visuals. */
+export function StoryIcon({ size = 15 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M10 5.5c-1.6-1.3-3.8-1.6-6.5-1.3v11c2.7-.3 4.9 0 6.5 1.3 1.6-1.3 3.8-1.6 6.5-1.3v-11c-2.7-.3-4.9 0-6.5 1.3z" />
+      <path d="M10 5.5v11" />
+    </svg>
+  )
+}
+
 // Preview panel
+
+export function HamburgerIcon({ size = 16 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base} strokeWidth={1.8}>
+      <path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h13" />
+    </svg>
+  )
+}
+
+/** Four corner brackets around a dot -- the "grab this frame" glyph. */
+export function SnapshotIcon({ size = 15 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <path d="M3.5 7V3.5H7M13 3.5h3.5V7M3.5 13v3.5H7M13 16.5h3.5V13" />
+      <circle cx="10" cy="10" r="2.2" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
 
 export function MenuDotsIcon({ size = 15 }: IconProps): JSX.Element {
   return (

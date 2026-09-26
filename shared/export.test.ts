@@ -113,6 +113,75 @@ describe('activeExportClips', () => {
     expect(audioClips.map((c) => c.id).sort()).toEqual(['a', 'v'])
   })
 
+  it('excludes a video clip\'s own audio when it has already been split onto a linked audio clip (regression: audio was mixed in twice, once from each)', () => {
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [
+        clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'a' }),
+        clip({ id: 'a', trackId: 'A1', startTime: 0, duration: 5, type: 'audio', linkedClipId: 'v' })
+      ],
+      markers: [],
+      duration: 10
+    }
+    const { audioClips } = activeExportClips(sequence)
+    expect(audioClips.map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('a video clip\'s linkedClipId pointing at a non-audio-clip id (or one excluded by hidden/disabled filtering) still contributes its own audio', () => {
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5, linkedClipId: 'gone' })],
+      markers: [],
+      duration: 10
+    }
+    const { audioClips } = activeExportClips(sequence)
+    expect(audioClips.map((c) => c.id)).toEqual(['v'])
+  })
+
+  it('excludes a standalone audio clip\'s own audio when IT is muted (regression: only a video clip\'s own `muted` used to be checked)', () => {
+    const sequence: ProjectSequence = {
+      tracks,
+      clips: [clip({ id: 'a', trackId: 'A1', startTime: 0, duration: 5, type: 'audio', muted: true })],
+      markers: [],
+      duration: 10
+    }
+    const { audioClips } = activeExportClips(sequence)
+    expect(audioClips).toHaveLength(0)
+  })
+
+  it('excludes every clip on a track silenced by track-level Mute (regression: export used to ignore Mute/Solo entirely, mixing in audio Preview never played)', () => {
+    const mutedTracks = [track({ id: 'V1', kind: 'video', order: 0 }), track({ id: 'A1', kind: 'audio', order: 0, muted: true })]
+    const sequence: ProjectSequence = {
+      tracks: mutedTracks,
+      clips: [clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5 }), clip({ id: 'a', trackId: 'A1', startTime: 0, duration: 5, type: 'audio' })],
+      markers: [],
+      duration: 10
+    }
+    const { audioClips, videoClips } = activeExportClips(sequence)
+    expect(audioClips.map((c) => c.id)).toEqual(['v'])
+    expect(videoClips.map((c) => c.id)).toEqual(['v']) // muting a track's AUDIO never hides its video visually
+  })
+
+  it('a soloed track is the only one included, even though every other track is unmuted (regression: Solo had no export effect at all)', () => {
+    const soloTracks = [
+      track({ id: 'V1', kind: 'video', order: 0 }),
+      track({ id: 'A1', kind: 'audio', order: 0, solo: true }),
+      track({ id: 'A2', kind: 'audio', order: 1 })
+    ]
+    const sequence: ProjectSequence = {
+      tracks: soloTracks,
+      clips: [
+        clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 5 }),
+        clip({ id: 'a1', trackId: 'A1', startTime: 0, duration: 5, type: 'audio' }),
+        clip({ id: 'a2', trackId: 'A2', startTime: 0, duration: 5, type: 'audio' })
+      ],
+      markers: [],
+      duration: 10
+    }
+    const { audioClips } = activeExportClips(sequence)
+    expect(audioClips.map((c) => c.id)).toEqual(['a1'])
+  })
+
   it('keeps clips on locked tracks (locked is edit-protection only, not export exclusion)', () => {
     const lockedTracks = [track({ id: 'V1', kind: 'video', order: 0, locked: true })]
     const sequence: ProjectSequence = { tracks: lockedTracks, clips: [clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 5 })], markers: [], duration: 10 }
@@ -123,6 +192,17 @@ describe('activeExportClips', () => {
 
 describe('buildExportFilterGraph', () => {
   const dims = { width: 640, height: 360 }
+
+  it('keeps video and audio in sync at 4x speed', () => {
+    const sped = clip({ id: 'fast', trackId: 'V1', startTime: 0, duration: 2.5, sourceIn: 0, sourceOut: 10, playbackRate: 4 })
+    const rc: ResolvedExportClip = { clip: sped, sourcePath: '/fast.mp4', trackOrder: 0 }
+    const result = buildExportFilterGraph([rc], [rc], 2.5, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4')
+    const graph = result.args[result.args.indexOf('-filter_complex') + 1]
+    expect(graph).toContain('setpts=PTS/4')
+    expect(graph).toContain('atempo=2,atempo=2')
+    expect(graph).toContain('overlay=x=')
+    expect(graph).toContain('2.5)')
+  })
 
   it('reports isEmpty when there are no clips at all', () => {
     const result = buildExportFilterGraph([], [], 0, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4')

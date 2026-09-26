@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Cinematic Kuanimation demo</title>
+<style>body{margin:0;background:#17110c;display:grid;place-items:center;min-height:100vh}canvas{max-width:100vw;max-height:100vh}</style>
+<canvas id="c"></canvas>
+<script src="kuanimation.js"></script>
+<script src="brush.js"></script>
+<script src="stage.js"></script>
+<script src="cast.js"></script>
+<script src="props.js"></script>
+<script src="action.js"></script>
+<script src="cinema.js"></script>
+<script src="director.js"></script>
+<script src="voice.js"></script>
+<script src="scenes.js"></script>
+<script>
+'use strict';
+const PLAY = buildPlay(SCENES, {
+  style: 'pencil',
+  frame: 'full',
+  end: endCard([{text: 'សាកល្បង Cinematic', size: 76}, {text: 'Made with Kuanimation', italic: true, size: 30}]),
+});
+defineFilm({fps: 30, timeline: PLAY});
+</script>

@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { iconForMenuLabel } from './contextMenuIcons'
 
 export interface ContextMenuItem {
   label: string
+  /** Glyph before the label. Left out, one is picked from the label
+   * (see contextMenuIcons.tsx); every row reserves the slot so labels
+   * line up whether or not a row has one. */
+  icon?: ReactNode
   onClick?: () => void
   disabled?: boolean
   danger?: boolean
@@ -98,7 +103,10 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
               onClose()
             }}
           >
-            {item.label}
+            <span className="context-menu-icon" aria-hidden>
+              {item.icon ?? iconForMenuLabel(item.label)}
+            </span>
+            <span className="context-menu-label">{item.label}</span>
           </button>
         )
       )}

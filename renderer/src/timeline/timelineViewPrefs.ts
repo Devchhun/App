@@ -28,6 +28,9 @@ export interface TimelineViewPrefs {
   tool: TimelineTool
   overwriteMode: OverwriteMode
   showWaveforms: boolean
+  /** True once the pref has been saved by a build with the current
+   * waveform look -- see parseStoredTimelineViewPrefs. */
+  showWaveformsV2: boolean
   trackHeightMode: TrackHeightMode
 }
 
@@ -39,13 +42,25 @@ const DEFAULT_PPS = 20
 // TimelineTrackHeaders.tsx) -- there's no text label to make room for
 // anymore, just a handful of small icons, matching the reference editor's
 // narrow header strip instead of the old text-label-forward width range.
-export const TRACK_HEADER_WIDTH_MIN = 92
+// The worst case row (an audible+visual track: kind icon + Mute + Eye +
+// Lock + the "..." menu trigger, all 20px `.timeline-header-icon` buttons
+// plus a ~16px kind icon, 2px gaps, 5px horizontal padding each side) needs
+// ~114px just to avoid clipping -- the previous 92/112 min/default sat
+// BELOW that, so the row's own `overflow: hidden` silently clipped off the
+// rightmost button (usually the "..." menu -- the only way to delete a
+// track) on exactly this common track shape, forcing a manual header-column
+// widen every time. Both bumped comfortably past the worst case; MIN is
+// what actually matters for an already-affected user, since a stored
+// too-small width gets re-clamped through clampTrackHeaderWidth on load.
+export const TRACK_HEADER_WIDTH_MIN = 130
 export const TRACK_HEADER_WIDTH_MAX = 340
-const TRACK_HEADER_WIDTH_DEFAULT = 112
+const TRACK_HEADER_WIDTH_DEFAULT = 130
 
 export const TIMELINE_PANEL_HEIGHT_MIN = 220
 export const TIMELINE_PANEL_HEIGHT_MAX = 640
-const TIMELINE_PANEL_HEIGHT_DEFAULT = 285
+/** The height the user settled on after trying taller and shorter: the
+ * Timeline toolbar sits about a third of the way up a 900px window. */
+const TIMELINE_PANEL_HEIGHT_DEFAULT = 310
 
 export const DEFAULT_TIMELINE_VIEW_PREFS: TimelineViewPrefs = {
   pixelsPerSecond: DEFAULT_PPS,
@@ -63,6 +78,7 @@ export const DEFAULT_TIMELINE_VIEW_PREFS: TimelineViewPrefs = {
   tool: 'select',
   overwriteMode: 'stack',
   showWaveforms: true,
+  showWaveformsV2: true,
   trackHeightMode: 'normal'
 }
 
@@ -76,9 +92,17 @@ export function clampTrackHeaderWidth(px: number): number {
   return Math.min(TRACK_HEADER_WIDTH_MAX, Math.max(TRACK_HEADER_WIDTH_MIN, px))
 }
 
-export function clampTimelinePanelHeight(px: number): number {
+/** The least the workspace above the Timeline (titlebar + panels) may be
+ * squeezed to before the icon rail and Player stop being usable. */
+export const WORKSPACE_MIN_HEIGHT = 520
+
+/** `windowHeight`, when given, also caps the panel so the workspace above
+ * keeps WORKSPACE_MIN_HEIGHT -- the fixed MAX alone let a 900px-tall
+ * window drag the Timeline up until the rail's buttons spilled out of it. */
+export function clampTimelinePanelHeight(px: number, windowHeight?: number): number {
   if (!Number.isFinite(px)) return TIMELINE_PANEL_HEIGHT_DEFAULT
-  return Math.min(TIMELINE_PANEL_HEIGHT_MAX, Math.max(TIMELINE_PANEL_HEIGHT_MIN, px))
+  const windowCap = windowHeight && Number.isFinite(windowHeight) ? Math.max(TIMELINE_PANEL_HEIGHT_MIN, windowHeight - WORKSPACE_MIN_HEIGHT) : TIMELINE_PANEL_HEIGHT_MAX
+  return Math.min(TIMELINE_PANEL_HEIGHT_MAX, windowCap, Math.max(TIMELINE_PANEL_HEIGHT_MIN, px))
 }
 
 const RIPPLE_SCOPES: RippleScope[] = ['current', 'linked', 'all-unlocked']
@@ -112,7 +136,15 @@ export function parseStoredTimelineViewPrefs(raw: string | null): TimelineViewPr
       skimmerOn: typeof parsed.skimmerOn === 'boolean' ? parsed.skimmerOn : DEFAULT_TIMELINE_VIEW_PREFS.skimmerOn,
       tool: TOOLS.includes(parsed.tool as TimelineTool) ? (parsed.tool as TimelineTool) : DEFAULT_TIMELINE_VIEW_PREFS.tool,
       overwriteMode: OVERWRITE_MODES.includes(parsed.overwriteMode as OverwriteMode) ? (parsed.overwriteMode as OverwriteMode) : DEFAULT_TIMELINE_VIEW_PREFS.overwriteMode,
-      showWaveforms: typeof parsed.showWaveforms === 'boolean' ? parsed.showWaveforms : DEFAULT_TIMELINE_VIEW_PREFS.showWaveforms,
+      // `showWaveformsV2` marks a choice made since the picket-style
+      // waveform shipped; an older stored "off" (made when there was
+      // little worth seeing) is reset to on once, so audio clips don't
+      // come up blank and look broken.
+      showWaveforms:
+        typeof parsed.showWaveforms === 'boolean' && (parsed.showWaveforms || parsed.showWaveformsV2 === true)
+          ? parsed.showWaveforms
+          : DEFAULT_TIMELINE_VIEW_PREFS.showWaveforms,
+      showWaveformsV2: true,
       trackHeightMode: TRACK_HEIGHT_MODES.includes(parsed.trackHeightMode as TrackHeightMode) ? (parsed.trackHeightMode as TrackHeightMode) : DEFAULT_TIMELINE_VIEW_PREFS.trackHeightMode
     }
   } catch {

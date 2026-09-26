@@ -105,5 +105,14 @@ export const MEDIA_IPC = {
    * returns its path -- the renderer then feeds that path through the exact
    * same importPaths pipeline every imported file already goes through,
    * rather than a parallel ingest path. */
-  saveGeneratedFile: 'media:saveGeneratedFile'
+  saveGeneratedFile: 'media:saveGeneratedFile',
+  /** Player's "Export still frames": writes an encoded image to a folder
+   * the user chose (default: the system Videos folder), never colliding
+   * with an existing file. */
+  saveStillFrame: 'media:saveStillFrame',
+  /** Returns the cached waveform for a file, generating it if it is
+   * missing (a failed/interrupted background job, an older project) --
+   * the Timeline asks for this when an audio clip has none to draw. */
+  ensureWaveform: 'media:ensureWaveform',
+  getDefaultStillDir: 'media:getDefaultStillDir'
 } as const

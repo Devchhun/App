@@ -8,11 +8,18 @@ import {
   findOrCreateTrack,
   sortTracksForDisplay,
   visibleTracksForDisplay,
+  withCaptionTrackContent,
+  findOrCreateNarrationTrack,
+  isNarrationTrackId,
+  findOrCreateDubbingTrack,
+  isDubbingTrackId,
+  ensureDubbingTrack,
   isInViewport,
   trackDisplayHeight,
   resolveActiveVideoClip,
   getMainVideoTrackId,
   ensureTrack,
+  ensureNarrationTrack,
   addTrack,
   addTrackAt,
   duplicateTrack,
@@ -136,6 +143,161 @@ describe('findOrCreateTrack', () => {
     }
     expect(created).toEqual(['G1', 'G2', 'G3'])
   })
+
+  it('never routes an audio insertion onto an empty VO-prefixed track (regression: a regular video import\'s own auto-linked audio landed on VO1, mixing it into the Story Narration track)', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false })]
+    const result = findOrCreateTrack(tracks, [], 0, 5, 'audio')
+    expect(result.trackId).not.toMatch(/^VO/)
+    expect(result.trackId).toBe('A1')
+  })
+})
+
+describe('findOrCreateNarrationTrack', () => {
+  it('creates VO1 from scratch when no VO track exists yet', () => {
+    const result = findOrCreateNarrationTrack([], [], 5, 3)
+    expect(result.trackId).toBe('VO1')
+    expect(result.newTrack).toMatchObject({ id: 'VO1', kind: 'audio', removable: true })
+  })
+
+  it('reuses VO1 when it is free at the desired time', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false })]
+    const result = findOrCreateNarrationTrack(tracks, [], 5, 3)
+    expect(result).toEqual({ trackId: 'VO1' })
+  })
+
+  it('routes to VO2 when VO1 is occupied at the desired time, creating it if needed', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false })]
+    const occupied = [{ trackId: 'VO1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateNarrationTrack(tracks, occupied, 5, 3)
+    expect(result.trackId).toBe('VO2')
+    expect(result.newTrack).toMatchObject({ id: 'VO2', kind: 'audio', name: 'VO2 · Voice Over', removable: true })
+  })
+
+  it('reuses an existing free VO2 rather than creating VO3', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false }), track({ id: 'VO2', kind: 'audio', order: 1, removable: true })]
+    const occupied = [{ trackId: 'VO1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateNarrationTrack(tracks, occupied, 5, 3)
+    expect(result).toEqual({ trackId: 'VO2' })
+  })
+
+  it('never routes onto a plain, generically-numbered audio track (A1/A2), only VO-prefixed ones', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false }), track({ id: 'A1', kind: 'audio', order: 1 })]
+    const occupied = [{ trackId: 'VO1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateNarrationTrack(tracks, occupied, 5, 3)
+    expect(result.trackId).toBe('VO2')
+  })
+
+  it('skips a locked VO track even if it is free at that time', () => {
+    const tracks = [track({ id: 'VO1', kind: 'audio', order: 0, removable: false, locked: true })]
+    const result = findOrCreateNarrationTrack(tracks, [], 5, 3)
+    expect(result.trackId).toBe('VO2')
+  })
+})
+
+describe('isNarrationTrackId', () => {
+  it('is true for VO1 and any overflow VO-numbered track (regression: a take that overflowed onto VO2+ rendered as a plain unstyled clip, not the violet "Take N" style, because this used to be a literal `=== \'VO1\'` check)', () => {
+    expect(isNarrationTrackId('VO1')).toBe(true)
+    expect(isNarrationTrackId('VO2')).toBe(true)
+    expect(isNarrationTrackId('VO17')).toBe(true)
+  })
+
+  it('is false for generic audio tracks and anything else', () => {
+    expect(isNarrationTrackId('A1')).toBe(false)
+    expect(isNarrationTrackId('V1')).toBe(false)
+    expect(isNarrationTrackId('C1')).toBe(false)
+    expect(isNarrationTrackId('VOX')).toBe(false)
+  })
+})
+
+describe('findOrCreateDubbingTrack', () => {
+  it('creates DUB1 from scratch when no DUB track exists yet', () => {
+    const result = findOrCreateDubbingTrack([], [], 5, 3)
+    expect(result.trackId).toBe('DUB1')
+    expect(result.newTrack).toMatchObject({ id: 'DUB1', kind: 'audio', removable: true })
+  })
+
+  it('reuses DUB1 when it is free at the desired time', () => {
+    const tracks = [track({ id: 'DUB1', kind: 'audio', order: 0, removable: false })]
+    const result = findOrCreateDubbingTrack(tracks, [], 5, 3)
+    expect(result).toEqual({ trackId: 'DUB1' })
+  })
+
+  it('routes to DUB2 when DUB1 is occupied at the desired time, creating it if needed', () => {
+    const tracks = [track({ id: 'DUB1', kind: 'audio', order: 0, removable: false })]
+    const occupied = [{ trackId: 'DUB1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateDubbingTrack(tracks, occupied, 5, 3)
+    expect(result.trackId).toBe('DUB2')
+    expect(result.newTrack).toMatchObject({ id: 'DUB2', kind: 'audio', name: 'DUB2 · AI Dubbing', removable: true })
+  })
+
+  it('reuses an existing free DUB2 rather than creating DUB3', () => {
+    const tracks = [track({ id: 'DUB1', kind: 'audio', order: 0, removable: false }), track({ id: 'DUB2', kind: 'audio', order: 1, removable: true })]
+    const occupied = [{ trackId: 'DUB1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateDubbingTrack(tracks, occupied, 5, 3)
+    expect(result).toEqual({ trackId: 'DUB2' })
+  })
+
+  it('never routes onto a plain, generically-numbered audio track (A1/A2) or a VO narration track, only DUB-prefixed ones', () => {
+    const tracks = [
+      track({ id: 'DUB1', kind: 'audio', order: 0, removable: false }),
+      track({ id: 'A1', kind: 'audio', order: 1 }),
+      track({ id: 'VO1', kind: 'audio', order: 2, removable: false })
+    ]
+    const occupied = [{ trackId: 'DUB1', startTime: 0, endTime: 8 }]
+    const result = findOrCreateDubbingTrack(tracks, occupied, 5, 3)
+    expect(result.trackId).toBe('DUB2')
+  })
+
+  it('skips a locked DUB track even if it is free at that time', () => {
+    const tracks = [track({ id: 'DUB1', kind: 'audio', order: 0, removable: false, locked: true })]
+    const result = findOrCreateDubbingTrack(tracks, [], 5, 3)
+    expect(result.trackId).toBe('DUB2')
+  })
+})
+
+describe('isDubbingTrackId', () => {
+  it('is true for DUB1 and any overflow DUB-numbered track', () => {
+    expect(isDubbingTrackId('DUB1')).toBe(true)
+    expect(isDubbingTrackId('DUB2')).toBe(true)
+    expect(isDubbingTrackId('DUB17')).toBe(true)
+  })
+
+  it('is false for generic audio tracks, VO narration tracks, and anything else', () => {
+    expect(isDubbingTrackId('A1')).toBe(false)
+    expect(isDubbingTrackId('V1')).toBe(false)
+    expect(isDubbingTrackId('VO1')).toBe(false)
+    expect(isDubbingTrackId('DUBX')).toBe(false)
+  })
+})
+
+describe('findOrCreateTrack excludes DUB tracks (regression guard alongside the existing VO exclusion)', () => {
+  it('never routes generic audio insertion onto an empty DUB1', () => {
+    const tracks = [track({ id: 'DUB1', kind: 'audio', order: 0, removable: false }), track({ id: 'A1', kind: 'audio', order: 1 })]
+    const result = findOrCreateTrack(tracks, [], 5, 3, 'audio')
+    expect(result.trackId).toBe('A1')
+  })
+})
+
+describe('ensureDubbingTrack (AI Dubber)', () => {
+  it('adds a DUB1 audio track, not removable, when missing', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 })]
+    const result = ensureDubbingTrack(tracks)
+    const dub1 = result.find((t) => t.id === 'DUB1')
+    expect(dub1).toBeDefined()
+    expect(dub1!.kind).toBe('audio')
+    expect(dub1!.removable).toBe(false)
+  })
+
+  it('is idempotent -- calling it again when DUB1 already exists changes nothing', () => {
+    const tracks = ensureDubbingTrack([track({ id: 'V1', kind: 'video', order: 0, isMain: true })])
+    expect(ensureDubbingTrack(tracks)).toBe(tracks)
+  })
+
+  it('never touches or removes any other track', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 }), track({ id: 'A2', kind: 'audio', order: 1 })]
+    const result = ensureDubbingTrack(tracks)
+    expect(result.map((t) => t.id)).toEqual(['V1', 'A1', 'A2', 'DUB1'])
+  })
 })
 
 describe('sortTracksForDisplay', () => {
@@ -148,6 +310,18 @@ describe('sortTracksForDisplay', () => {
       track({ id: 'V2', kind: 'video', order: 1 })
     ]
     expect(sortTracksForDisplay(tracks).map((t) => t.id)).toEqual(['V2', 'V1', 'A1', 'A2', 'C1'])
+  })
+
+  it('keeps every visual overlay above Main Track and only audio/SRT below it', () => {
+    const tracks = [
+      track({ id: 'A1', kind: 'audio', order: 0 }),
+      track({ id: 'V1', kind: 'video', order: 9, isMain: true }),
+      track({ id: 'T1', kind: 'text', order: 0 }),
+      track({ id: 'C1', kind: 'caption', order: 0 }),
+      track({ id: 'G1', kind: 'graphic', order: 0 }),
+      track({ id: 'V2', kind: 'video', order: 0 })
+    ]
+    expect(sortTracksForDisplay(tracks).map((t) => t.id)).toEqual(['T1', 'G1', 'V2', 'V1', 'A1', 'C1'])
   })
 })
 
@@ -196,6 +370,45 @@ describe('visibleTracksForDisplay', () => {
     const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'V2', kind: 'graphic', order: 0 })]
     visibleTracksForDisplay(tracks, {})
     expect(tracks.map((t) => t.id)).toEqual(['V1', 'V2'])
+  })
+
+  it('shows an alwaysVisibleIds track (e.g. VO1) even when empty and not main -- Story Narration Workspace', () => {
+    const tracks = [
+      track({ id: 'V1', kind: 'video', order: 0, isMain: true }),
+      track({ id: 'VO1', kind: 'audio', order: 1, removable: false }),
+      track({ id: 'A2', kind: 'audio', order: 2 })
+    ]
+    const result = visibleTracksForDisplay(tracks, { V1: true }, new Set(['VO1']))
+    expect(result.map((t) => t.id)).toEqual(['V1', 'VO1'])
+  })
+
+  it('alwaysVisibleIds is optional -- omitting it behaves exactly as before', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 })]
+    const result = visibleTracksForDisplay(tracks, { V1: true })
+    expect(result.map((t) => t.id)).toEqual(['V1'])
+  })
+})
+
+describe('withCaptionTrackContent', () => {
+  it('marks the caption track has-content once real segments exist (regression: C1 was permanently invisible before this)', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'C1', kind: 'caption', order: 0, removable: false })]
+    const map = withCaptionTrackContent({ V1: true }, tracks, true)
+    expect(map).toEqual({ V1: true, C1: true })
+    expect(visibleTracksForDisplay(tracks, map).map((t) => t.id)).toEqual(['V1', 'C1'])
+  })
+
+  it('leaves the map untouched when there are no segments', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'C1', kind: 'caption', order: 0, removable: false })]
+    const map = withCaptionTrackContent({ V1: true }, tracks, false)
+    expect(map).toEqual({ V1: true })
+  })
+
+  it('never mutates the input map (returns a new object when marking content)', () => {
+    const tracks = [track({ id: 'C1', kind: 'caption', order: 0, removable: false })]
+    const input = { V1: true }
+    const result = withCaptionTrackContent(input, tracks, true)
+    expect(input).toEqual({ V1: true })
+    expect(result).not.toBe(input)
   })
 })
 
@@ -288,6 +501,30 @@ describe('ensureTrack', () => {
   it('is idempotent when the track id already exists', () => {
     const tracks = [track({ id: 'G1', kind: 'graphic', order: 0 })]
     expect(ensureTrack(tracks, track({ id: 'G1', kind: 'graphic', order: 0 }))).toEqual(tracks)
+  })
+})
+
+describe('ensureNarrationTrack (Story Narration Workspace)', () => {
+  it('adds a VO1 audio track, not removable, when missing', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 })]
+    const result = ensureNarrationTrack(tracks)
+    const vo1 = result.find((t) => t.id === 'VO1')
+    expect(vo1).toBeDefined()
+    expect(vo1!.kind).toBe('audio')
+    expect(vo1!.removable).toBe(false)
+    // Labeled distinctly from A1 (already labeled "Narration" for the video's own audio).
+    expect(vo1!.name).not.toBe('Narration')
+  })
+
+  it('is idempotent -- calling it again when VO1 already exists changes nothing', () => {
+    const tracks = ensureNarrationTrack([track({ id: 'V1', kind: 'video', order: 0, isMain: true })])
+    expect(ensureNarrationTrack(tracks)).toBe(tracks)
+  })
+
+  it('never touches or removes any other track', () => {
+    const tracks = [track({ id: 'V1', kind: 'video', order: 0, isMain: true }), track({ id: 'A1', kind: 'audio', order: 0 }), track({ id: 'A2', kind: 'audio', order: 1 })]
+    const result = ensureNarrationTrack(tracks)
+    expect(result.map((t) => t.id)).toEqual(['V1', 'A1', 'A2', 'VO1'])
   })
 })
 

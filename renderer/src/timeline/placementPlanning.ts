@@ -12,7 +12,6 @@ export interface DropAsset {
   type: 'video' | 'image' | 'audio'
   /** Ignored for images (never source-bounded, see sequenceOps.ts). */
   sourceDurationSeconds: number
-  hasAudio?: boolean
 }
 
 export interface PlannedPlacement {

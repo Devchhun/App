@@ -1,5 +1,6 @@
 import { PURPOSE_VALUES } from '@shared/suggestions'
-import type { CommunicationPurpose } from '@shared/suggestions'
+import type { CommunicationPurpose, ScriptTransformMode } from '@shared/suggestions'
+import type { TranslationResult } from '@shared/translation'
 import { ProviderError, type AiProvider, type SegmentInput, type ClassificationResult } from './AiProvider'
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
@@ -37,6 +38,53 @@ const CLASSIFY_TOOL = {
   }
 }
 
+const TRANSLATE_TOOL = {
+  name: 'translate_segments',
+  description: 'Translates each subtitle segment into the requested target language, preserving meaning and natural spoken phrasing.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      results: {
+        type: 'array' as const,
+        items: {
+          type: 'object' as const,
+          properties: {
+            segmentId: { type: 'string' as const },
+            translated: { type: 'string' as const, description: 'The natural, spoken-language translation of this segment.' }
+          },
+          required: ['segmentId', 'translated']
+        }
+      }
+    },
+    required: ['results']
+  }
+}
+
+const TRANSFORM_SCRIPT_TOOL = {
+  name: 'transform_script',
+  description: 'Returns the rewritten or summarized script.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      result: { type: 'string' as const, description: 'The full transformed script text, in the same language as the input.' }
+    },
+    required: ['result']
+  }
+}
+
+function buildTransformScriptPrompt(text: string, mode: ScriptTransformMode): string {
+  const task =
+    mode === 'summarize'
+      ? 'Summarize the following recap script into a concise version that keeps every key story beat, character name and turning point, in order. Aim for roughly a quarter of the original length.'
+      : 'Rewrite the following recap script so it reads smoothly for narration: clear sentences, natural flow, consistent tense, no repetition. Keep every fact, name and story beat; do not add new events.'
+  return (
+    `${task}\n\n` +
+    'Rules: write in the SAME language as the input (Khmer stays Khmer, English stays English, mixed stays mixed). ' +
+    'Keep paragraph breaks. Return only the script text.\n\n' +
+    `Script:\n${text}`
+  )
+}
+
 const SIMPLIFY_TOOL = {
   name: 'simplify_text',
   description: 'Rewrites a short visual phrase to be even shorter and simpler while preserving its meaning and language.',
@@ -47,6 +95,18 @@ const SIMPLIFY_TOOL = {
     },
     required: ['simplified']
   }
+}
+
+function buildTranslatePrompt(segments: SegmentInput[], targetLanguage: string): string {
+  const lines = segments.map((s) => `[${s.segmentId}] ${s.text}`).join('\n')
+  return (
+    `Translate each of these subtitle lines into ${targetLanguage}, one line per line below. ` +
+    'These are spoken dialogue/narration lines from a video, meant to be read aloud by a text-to-speech voice -- ' +
+    `translate for natural spoken ${targetLanguage}, not a stiff literal word-for-word rendering. ` +
+    'Keep any bracketed/parenthetical stage directions (e.g. "(laughs)") in place, translated or not, exactly where they occur. ' +
+    'Use the translate_segments tool to return a translation for every segment listed, in the same order.\n\n' +
+    lines
+  )
 }
 
 function buildClassifyPrompt(segments: SegmentInput[]): string {
@@ -155,6 +215,17 @@ function validateResultEntry(raw: unknown): ClassificationResult | null {
   }
 }
 
+/** Schema-validates one raw translation entry; null (dropped) rather than
+ * throwing, mirroring validateResultEntry's own "one bad entry doesn't
+ * invalidate the batch" discipline. */
+function validateTranslationEntry(raw: unknown): TranslationResult | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.segmentId !== 'string' || r.segmentId.length === 0) return null
+  if (typeof r.translated !== 'string' || r.translated.trim().length === 0) return null
+  return { segmentId: r.segmentId, translated: r.translated }
+}
+
 export class AnthropicProvider implements AiProvider {
   readonly name = 'anthropic'
   readonly model = MODEL
@@ -216,5 +287,65 @@ export class AnthropicProvider implements AiProvider {
       throw new ProviderError('schema', 'Anthropic API response did not include a simplified phrase.')
     }
     return simplified
+  }
+
+  async transformScript(apiKey: string, text: string, mode: ScriptTransformMode, signal: AbortSignal): Promise<string> {
+    const data = await postToAnthropic(
+      apiKey,
+      {
+        model: MODEL,
+        // A rewrite returns the whole script back; a recap script can run
+        // to a few thousand words.
+        max_tokens: 8192,
+        tools: [TRANSFORM_SCRIPT_TOOL],
+        tool_choice: { type: 'tool', name: 'transform_script' },
+        messages: [{ role: 'user', content: buildTransformScriptPrompt(text, mode) }]
+      },
+      signal,
+      this.timeoutMs
+    )
+
+    const toolUse = data.content.find((block) => block.type === 'tool_use')
+    const result = (toolUse?.input as { result?: unknown } | undefined)?.result
+    if (typeof result !== 'string' || result.trim().length === 0) {
+      throw new ProviderError('schema', 'Anthropic API response did not include the transformed script.')
+    }
+    return result
+  }
+
+  async translateSegments(apiKey: string, segments: SegmentInput[], targetLanguage: string, signal: AbortSignal): Promise<TranslationResult[]> {
+    if (segments.length === 0) return []
+
+    const data = await postToAnthropic(
+      apiKey,
+      {
+        model: MODEL,
+        // Translation output has no other fields to trim (unlike
+        // classification's purpose/reason/confidence), and a real SRT can
+        // easily carry 200+ lines -- a noticeably larger budget than
+        // classifySegments' own 4096 to have real headroom for that.
+        max_tokens: 8192,
+        tools: [TRANSLATE_TOOL],
+        tool_choice: { type: 'tool', name: 'translate_segments' },
+        messages: [{ role: 'user', content: buildTranslatePrompt(segments, targetLanguage) }]
+      },
+      signal,
+      this.timeoutMs
+    )
+
+    const toolUse = data.content.find((block) => block.type === 'tool_use')
+    if (!toolUse) {
+      throw new ProviderError('schema', 'Anthropic API response did not include the expected tool call.')
+    }
+    const rawResults = (toolUse.input as { results?: unknown[] } | undefined)?.results
+    if (!Array.isArray(rawResults)) {
+      throw new ProviderError('schema', 'Anthropic API response was missing the results array.')
+    }
+
+    const validated = rawResults.map(validateTranslationEntry).filter((r): r is TranslationResult => r !== null)
+    if (validated.length === 0 && rawResults.length > 0) {
+      throw new ProviderError('schema', 'Anthropic API response contained no valid, schema-conforming translations.')
+    }
+    return validated
   }
 }

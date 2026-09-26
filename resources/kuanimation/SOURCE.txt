@@ -1,0 +1,19 @@
+Kuanimation, the drawing engine behind the AI Animation tab
+(app/main/animation/). Kept here: the runtime
+(assets/*.js, film-template.html), the references and example scenes;
+example audio and demo videos are left out.
+
+Extended for AI Animation:
+- cast.js: pp() accepts unknown arm poses and bare PROPS functions safely.
+- brush.js: empty shapes are skipped; ell()'s point count is validated;
+  Windows Khmer fonts.
+- kuanimation.js: DT.draw(i) page hook (draw without PNG encoding).
+- score.js: mood music and 14 sound effects per scene (sfx), Xianxia voices.
+- xianxia.js: Xianxia (仙侠) props, headwear and effects.
+- film-template.html: end card "Made with AI Animation".
+- references/api.md: exact values and signatures; SKILL.md: direction for
+  lively films, genres.
+- chibi.js: chibi fantasy characters (identity, 9 expressions, idle life, 23 actions).
+- fx.js: aura, magic circle, lightning, energy trail, beam, impact, sparks, smoke,
+  hit flash, motes, petals, mist; parallax; shotTrack camera.
+- examples/chibi-xianxia: demo film (Yue Lan).

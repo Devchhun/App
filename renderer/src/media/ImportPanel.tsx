@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useMedia } from './MediaContext'
 import { MediaListItem } from './MediaListItem'
-import { FilterIcon, GridViewIcon, ListViewIcon } from '../nav/icons'
+import { FilterIcon, GridViewIcon, ListViewIcon, TrashIcon } from '../nav/icons'
 import { useSequence } from '../sequence/SequenceContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { useHistory } from '../history/HistoryContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { assetFromMediaItem } from './assetFromMediaItem'
 import { findOrCreateTrack, type OccupiedRange } from '../timeline/trackModel'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { DEFAULT_IMAGE_DURATION_SECONDS } from '../sequence/sequenceOps'
 import type { MediaItem, MediaKind } from '@shared/media'
 import { MEDIA_DRAG_MIME_TYPE, setCurrentDragMediaIds, type MediaDragPayload } from './mediaDragPayload'
@@ -15,9 +17,11 @@ type SortBy = 'recent' | 'name'
 type ViewMode = 'grid' | 'list'
 
 export function ImportPanel(): JSX.Element {
-  const { items, importPaths, ffmpegStatus, selectedId, select, selectedIds, selectMedia, cancel, retry } = useMedia()
-  const { sequence, insertClip, ensureTrack } = useSequence()
-  const { currentTime } = usePlayback()
+  const { items, importPaths, ffmpegStatus, selectedId, select, selectedIds, selectMedia, selectAllMedia, clearMediaSelection, cancel, retry, removeMedia } = useMedia()
+  const { sequence, insertClip, ensureTrack, selectClips, deleteSelected } = useSequence()
+  const confirm = useConfirm()
+  const { beginTransaction, endTransaction } = useHistory()
+  const { getCurrentTime } = usePlaybackControls()
   const [isDragOver, setIsDragOver] = useState(false)
   const [search, setSearch] = useState('')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
@@ -88,12 +92,77 @@ export function ImportPanel(): JSX.Element {
       const kind = isAudio ? 'audio' : 'video'
       const duration = item.assetType === 'image' ? DEFAULT_IMAGE_DURATION_SECONDS : (item.metadata?.durationSeconds ?? DEFAULT_IMAGE_DURATION_SECONDS)
       const occupied: OccupiedRange[] = sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
+      const currentTime = getCurrentTime()
       const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, duration, kind)
       if (routing.newTrack) ensureTrack(routing.newTrack)
       insertClip(assetFromMediaItem(item), currentTime, routing.trackId)
     },
-    [insertClip, currentTime, sequence.clips, sequence.tracks, ensureTrack]
+    [insertClip, getCurrentTime, sequence.clips, sequence.tracks, ensureTrack]
   )
+
+  // Removing an item never touches its real source file on disk (this app
+  // never deletes user files, only its own reference to them) -- lets a
+  // stray/mistaken import, or leftover test/experimental media, be cleared
+  // out of the project without editing the project file by hand. Mirrors
+  // TrackHeaderMenu's own "Delete Track" confirmation exactly: silent when
+  // nothing depends on it, and the app's own confirm dialog (see
+  // ui/ConfirmDialog.tsx) when Timeline clips still reference it, since
+  // deleting the media out from under them would otherwise leave broken
+  // clips behind.
+  const handleRemoveMedia = useCallback(
+    async (item: MediaItem) => {
+      const referencingClipIds = sequence.clips.filter((c) => c.mediaId === item.id).map((c) => c.id)
+      if (referencingClipIds.length > 0) {
+        const clipWord = referencingClipIds.length === 1 ? 'clip' : 'clips'
+        const confirmed = await confirm({
+          title: `Remove "${item.fileName}"?`,
+          message: `It's used in ${referencingClipIds.length} ${clipWord} on the Timeline, which will be removed too. The file on disk is not deleted.`,
+          confirmLabel: 'Remove',
+          danger: true
+        })
+        if (!confirmed) return
+        beginTransaction()
+        selectClips(referencingClipIds)
+        deleteSelected()
+        endTransaction()
+      }
+      removeMedia(item.id)
+    },
+    [sequence.clips, beginTransaction, endTransaction, selectClips, deleteSelected, removeMedia, confirm]
+  )
+
+  // Bulk version for the multi-selection: one confirmation for the lot
+  // (always, even when nothing on the Timeline uses them -- removing many
+  // items at once is worth a second look), one history entry for any
+  // Timeline clips that go with them.
+  const handleRemoveSelected = useCallback(async () => {
+    const targets = items.filter((item) => selectedIds.includes(item.id))
+    if (targets.length === 0) return
+    const targetIds = new Set(targets.map((t) => t.id))
+    const referencingClipIds = sequence.clips.filter((c) => targetIds.has(c.mediaId)).map((c) => c.id)
+    const itemWord = targets.length === 1 ? 'item' : 'items'
+    const clipWord = referencingClipIds.length === 1 ? 'clip' : 'clips'
+    const confirmed = await confirm({
+      title: targets.length === 1 ? `Remove "${targets[0].fileName}"?` : `Remove ${targets.length} media ${itemWord}?`,
+      message:
+        referencingClipIds.length > 0
+          ? `Used in ${referencingClipIds.length} ${clipWord} on the Timeline, which will be removed too. Files on disk are not deleted.`
+          : 'Files on disk are not deleted -- only their entries in this project.',
+      confirmLabel: 'Remove',
+      danger: true
+    })
+    if (!confirmed) return
+    if (referencingClipIds.length > 0) {
+      beginTransaction()
+      selectClips(referencingClipIds)
+      deleteSelected()
+      endTransaction()
+    }
+    for (const target of targets) removeMedia(target.id)
+  }, [items, selectedIds, sequence.clips, beginTransaction, endTransaction, selectClips, deleteSelected, removeMedia, confirm])
+
+  const visibleIds = filteredItems.map((item) => item.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
 
   return (
     <div
@@ -111,9 +180,14 @@ export function ImportPanel(): JSX.Element {
           <div className="ffmpeg-warning">FFmpeg unavailable: {ffmpegStatus?.error ?? 'unknown error'}. Import is disabled.</div>
         )}
 
-        {items.length > 0 ? (
-          <>
-            <div className="media-search-row">
+        {/* "Media" and the search/filter/view-toggle share one row rather
+            than the title sitting on its own line above or below them --
+            the title always shows (even with nothing imported yet); the
+            search controls only once there's something to search. */}
+        <div className="media-search-row">
+          <h2 className="media-search-row-title">Media</h2>
+          {items.length > 0 && (
+            <>
               <input
                 className="media-search-input"
                 placeholder="Search media…"
@@ -143,29 +217,54 @@ export function ImportPanel(): JSX.Element {
                   <ListViewIcon />
                 </button>
               </div>
+            </>
+          )}
+        </div>
+
+        {items.length > 0 && (
+          <div className="media-kind-tabs">
+            <button
+              className={kindFilter === 'all' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
+              onClick={() => setKindFilter('all')}
+            >
+              All
+            </button>
+            <button
+              className={kindFilter === 'video' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
+              onClick={() => setKindFilter('video')}
+            >
+              Video
+            </button>
+            <button
+              className={kindFilter === 'audio' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
+              onClick={() => setKindFilter('audio')}
+            >
+              Audio
+            </button>
+
+            {/* Selection tools on the same row, right-aligned: Select all
+                (of what's visible under the current search/kind filter),
+                then -- once anything is selected -- the count, Clear and
+                Delete, so a batch of stray imports goes in two clicks. */}
+            <div className="media-select-actions">
+              {selectedIds.length > 0 && <span className="media-select-count">{selectedIds.length} selected</span>}
+              {allVisibleSelected ? (
+                <button className="media-kind-tab" onClick={clearMediaSelection} title="Clear selection">
+                  Clear
+                </button>
+              ) : (
+                <button className="media-kind-tab" disabled={visibleIds.length === 0} onClick={() => selectAllMedia(visibleIds)} title="Select all visible">
+                  Select all
+                </button>
+              )}
+              {selectedIds.length > 0 && (
+                <button className="media-icon-button media-icon-button-danger" title={`Delete ${selectedIds.length} selected`} onClick={() => void handleRemoveSelected()}>
+                  <TrashIcon size={14} />
+                </button>
+              )}
             </div>
-            <div className="media-kind-tabs">
-              <button
-                className={kindFilter === 'all' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
-                onClick={() => setKindFilter('all')}
-              >
-                All
-              </button>
-              <button
-                className={kindFilter === 'video' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
-                onClick={() => setKindFilter('video')}
-              >
-                Video
-              </button>
-              <button
-                className={kindFilter === 'audio' ? 'media-kind-tab media-kind-tab-active' : 'media-kind-tab'}
-                onClick={() => setKindFilter('audio')}
-              >
-                Audio
-              </button>
-            </div>
-          </>
-        ) : null}
+          </div>
+        )}
       </div>
 
       <ul className={`media-grid panel-scroll-body editor-scroll${viewMode === 'list' ? ' media-grid-list' : ''}`}>
@@ -187,6 +286,7 @@ export function ImportPanel(): JSX.Element {
             }}
             onCancel={() => cancel(item.id)}
             onRetry={() => retry(item.id)}
+            onDelete={() => void handleRemoveMedia(item)}
             onAddToTimeline={item.readyToUse ? () => handleAddToTimeline(item) : undefined}
             onDragStart={
               item.readyToUse

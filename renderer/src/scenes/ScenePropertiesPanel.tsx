@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useScenes } from './SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useHistoryFieldProps } from '../history/useHistoryFieldProps'
@@ -117,14 +117,19 @@ export function ScenePropertiesPanel(): JSX.Element {
   const [customPresets, setCustomPresets] = useState<StylePreset[]>([])
   const [iconPickerOpen, setIconPickerOpen] = useState<string | null>(null)
   const historyFieldProps = useHistoryFieldProps()
-  const { seekTo } = usePlayback()
+  const { seekTo } = usePlaybackControls()
 
-  const media = items.find((m) => m.id === selectedId)
-  const scenes = media ? (scenesByMedia[media.id] ?? []) : []
-  const scene = scenes.find((s) => s.id === selectedSceneId)
+  const selectedMedia = items.find((m) => m.id === selectedId)
+  // Timeline graphics are project-global. The selected scene can belong to
+  // a different media bucket from the asset currently highlighted in Media,
+  // so resolve the scene first and use its owner for every property update.
+  const scene = selectedSceneId
+    ? Object.values(scenesByMedia).flat().find((candidate) => candidate.id === selectedSceneId)
+    : undefined
+  const media = scene ? items.find((candidate) => candidate.id === scene.mediaId) : selectedMedia
 
-  if (!media) return <p className="placeholder">Select a media item to edit its graphics.</p>
   if (!scene) return <p className="placeholder">Select a graphics clip on the V2/V3 tracks to edit its properties.</p>
+  if (!media) return <p className="placeholder">The media item for this graphic is no longer available.</p>
 
   const canvas = CANVAS_SIZE_BY_ASPECT[brandPreset.defaultAspectRatio]
   const disabled = scene.locked
@@ -277,22 +282,26 @@ export function ScenePropertiesPanel(): JSX.Element {
   return (
     <div className="scene-properties">
       <div className="panel-fixed-head">
+        {/* The panel tab above already says "Properties" -- the template
+            is the title here, with a plain × to drop the selection. */}
         <div className="scene-properties-header">
-          <h3>Properties</h3>
-          <button className="inline-link-button" onClick={() => selectScene(null)}>
-            Close
+          <h3 className="scene-properties-title">
+            <span className="scene-properties-title-kind">Graphic</span>
+            {TEMPLATE_LABELS[scene.templateId]}
+          </h3>
+          <button className="scene-properties-close" title="Deselect" aria-label="Close" onClick={() => selectScene(null)}>
+            ×
           </button>
         </div>
-        <p className="scene-properties-subtitle">{TEMPLATE_LABELS[scene.templateId]}</p>
 
-        <div className="panel-tabs scene-properties-tabs">
-          <button className={tab === 'design' ? 'panel-tab panel-tab-active' : 'panel-tab'} onClick={() => setTab('design')}>
+        <div className="cp-tabs scene-properties-tabs" role="tablist">
+          <button role="tab" aria-selected={tab === 'design'} className={tab === 'design' ? 'cp-tab cp-tab-active' : 'cp-tab'} onClick={() => setTab('design')}>
             Design
           </button>
-          <button className={tab === 'animation' ? 'panel-tab panel-tab-active' : 'panel-tab'} onClick={() => setTab('animation')}>
+          <button role="tab" aria-selected={tab === 'animation'} className={tab === 'animation' ? 'cp-tab cp-tab-active' : 'cp-tab'} onClick={() => setTab('animation')}>
             Animation
           </button>
-          <button className={tab === 'timing' ? 'panel-tab panel-tab-active' : 'panel-tab'} onClick={() => setTab('timing')}>
+          <button role="tab" aria-selected={tab === 'timing'} className={tab === 'timing' ? 'cp-tab cp-tab-active' : 'cp-tab'} onClick={() => setTab('timing')}>
             Timing
           </button>
         </div>
@@ -2034,24 +2043,31 @@ export function ScenePropertiesPanel(): JSX.Element {
         </div>
       </div>
 
+      {/* Layer actions as one compact row of icon buttons; Delete is the
+          quiet red one at the end rather than a full-width bar. */}
       <div className="panel-fixed-foot scene-layer-controls">
         <button title="Bring forward" disabled={disabled} onClick={() => bringSceneForward(media.id, scene.id)}>
-          ↑ Forward
+          <span className="scene-layer-glyph">↑</span>
+          Forward
         </button>
         <button title="Send backward" disabled={disabled} onClick={() => sendSceneBackward(media.id, scene.id)}>
-          ↓ Backward
+          <span className="scene-layer-glyph">↓</span>
+          Backward
         </button>
         <button title="Duplicate" onClick={() => duplicateScene(media.id, scene.id)}>
-          ⧉ Duplicate
+          <span className="scene-layer-glyph">⧉</span>
+          Duplicate
         </button>
         <button
           title={(scene.linked ?? true) ? 'Unlink from its AI suggestion' : 'Re-link to its AI suggestion'}
           onClick={() => toggleSceneLinked(media.id, scene.id)}
         >
-          {(scene.linked ?? true) ? '🔗 Unlink' : '⛓️‍💥 Link'}
+          <span className="scene-layer-glyph">{(scene.linked ?? true) ? '⛓' : '⛓'}</span>
+          {(scene.linked ?? true) ? 'Unlink' : 'Link'}
         </button>
         <button className="scene-layer-delete" title="Delete" onClick={() => deleteScene(media.id, scene.id)}>
-          🗑 Delete
+          <span className="scene-layer-glyph">🗑</span>
+          Delete
         </button>
       </div>
     </div>

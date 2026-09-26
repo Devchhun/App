@@ -5,6 +5,7 @@ import { probeMedia } from './probe'
 import { cacheKeyForFile, ensureCacheDir } from './cache'
 import { generateThumbnail } from './thumbnail'
 import { generateWaveform } from './waveform'
+import type { WaveformData } from '@shared/media'
 import { generateVideoProxy } from './proxy'
 import { synthesizeVideoFromImage } from './stillImage'
 import { registerMediaToken } from './protocol'
@@ -74,7 +75,17 @@ export async function processMediaFile(
   }
 
   onProgress({ mediaId, stage: 'waveform', percent: 30, fileName, originalPath: filePath })
-  const waveform = metadata.hasAudio ? await generateWaveform(mediaId, sourcePath, cacheDir) : undefined
+  // Best-effort: a waveform that can't be drawn (an odd codec, a decode
+  // error) must not fail the whole import -- the clip still plays, and
+  // the renderer asks again later (see MEDIA_IPC.ensureWaveform).
+  let waveform: WaveformData | undefined
+  if (metadata.hasAudio) {
+    try {
+      waveform = await generateWaveform(mediaId, sourcePath, cacheDir)
+    } catch (err) {
+      console.warn(`[media] waveform for ${fileName} failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   // A still image's "video" is a synthesized, trivially-simple looping
   // frame (see stillImage.ts) -- there's no real quality/bitrate benefit to

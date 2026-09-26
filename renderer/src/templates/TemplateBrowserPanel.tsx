@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useScenes } from '../scenes/SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
@@ -20,7 +20,7 @@ const NEW_SCENE_DURATION_SECONDS = 3
 
 export function TemplateBrowserPanel(): JSX.Element {
   const { items, selectedId } = useMedia()
-  const { currentTime } = usePlayback()
+  const { getCurrentTime } = usePlaybackControls()
   const { insertScene, updateScene, selectedSceneId, scenesByMedia } = useScenes()
   const { sequence, ensureTrack } = useSequence()
   const { brandPreset } = useBrandPreset()
@@ -49,6 +49,7 @@ export function TemplateBrowserPanel(): JSX.Element {
   // their own track and stay simultaneously visible instead of overlapping.
   const handleAddNew = (definition: TemplateDefinition): void => {
     if (!media) return
+    const currentTime = getCurrentTime()
     const occupied: OccupiedRange[] = allScenes.map((s) => ({ trackId: s.track, startTime: s.startTime, endTime: s.endTime }))
     const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, NEW_SCENE_DURATION_SECONDS, 'graphic')
     if (routing.newTrack) ensureTrack(routing.newTrack)
@@ -64,7 +65,13 @@ export function TemplateBrowserPanel(): JSX.Element {
   return (
     <div className="template-library">
       <div className="panel-fixed-head">
-        <input className="media-search-input" placeholder="Search templates…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        {/* Same header strip as the Media panel: title + search on one
+            grey row, filters on the next. The old paragraph explaining
+            Add/Replace is gone -- each card button's tooltip says it. */}
+        <div className="media-search-row">
+          <h2 className="media-search-row-title">Templates</h2>
+          <input className="media-search-input" placeholder="Search templates…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
         <div className="template-library-filter-row">
           <select value={category} onChange={(e) => setCategory(e.target.value as TemplateCategory | 'all')}>
             <option value="all">All categories</option>
@@ -83,14 +90,6 @@ export function TemplateBrowserPanel(): JSX.Element {
             ))}
           </select>
         </div>
-        {!media && <p className="placeholder">Select a media item to add graphics to its timeline.</p>}
-        {media && (
-          <p className="placeholder">
-            {selectedScene
-              ? `A scene is selected -- "Add as New" inserts a fresh copy, "Replace Selected" swaps "${selectedScene.visualText.slice(0, 24)}"'s template in place.`
-              : 'Click "Add as New" to add a template at the playhead. Multiple templates at the same time each get their own track.'}
-          </p>
-        )}
       </div>
 
       <div className="panel-scroll-body editor-scroll template-library-grid">
@@ -99,11 +98,19 @@ export function TemplateBrowserPanel(): JSX.Element {
             <TemplateThumbnail definition={definition} brand={brandPreset} />
             <span className="template-library-card-name">{definition.name}</span>
             <div className="template-library-card-actions">
-              <button disabled={!media} onClick={() => handleAddNew(definition)}>
-                Add as New
+              {/* Short labels: at two cards per row these buttons are ~85px
+                  wide, where "Replace Selected" only ever rendered as
+                  "Replace Selec…". The full meaning stays in each button's
+                  own tooltip. */}
+              <button disabled={!media} title="Add as New -- inserts this template at the playhead (several at the same time each get their own track)" onClick={() => handleAddNew(definition)}>
+                Add
               </button>
-              <button disabled={!selectedScene || definition.id === selectedScene?.templateId} onClick={() => handleReplaceSelected(definition)}>
-                Replace Selected
+              <button
+                disabled={!selectedScene || definition.id === selectedScene?.templateId}
+                title={selectedScene ? `Replace Selected -- swaps "${selectedScene.visualText.slice(0, 24)}"'s template in place` : 'Replace Selected -- select a graphics clip on the Timeline first'}
+                onClick={() => handleReplaceSelected(definition)}
+              >
+                Replace
               </button>
             </div>
           </div>

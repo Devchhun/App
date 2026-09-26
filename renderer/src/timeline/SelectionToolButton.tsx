@@ -8,11 +8,11 @@ interface Props {
 }
 
 const OPTIONS: { tool: TimelineTool; label: string; shortcut: string; icon: JSX.Element }[] = [
-  { tool: 'select', label: 'Selection tool', shortcut: 'A', icon: <SelectionArrowIcon /> },
-  { tool: 'blade', label: 'Blade tool', shortcut: 'B', icon: <ScissorsIcon /> },
-  { tool: 'hand', label: 'Hand tool', shortcut: 'H', icon: <HandToolIcon /> },
-  { tool: 'range', label: 'Range tool', shortcut: 'R', icon: <RangeToolIcon /> },
-  { tool: 'roll', label: 'Roll Edit tool', shortcut: '', icon: <RollEditIcon /> }
+  { tool: 'select', label: 'Select', shortcut: 'A', icon: <SelectionArrowIcon /> },
+  { tool: 'blade', label: 'Blade', shortcut: 'B', icon: <ScissorsIcon /> },
+  { tool: 'hand', label: 'Hand', shortcut: 'H', icon: <HandToolIcon /> },
+  { tool: 'range', label: 'Range select', shortcut: 'R', icon: <RangeToolIcon /> },
+  { tool: 'roll', label: 'Roll edit', shortcut: '', icon: <RollEditIcon /> }
 ]
 
 /** Current-tool button with a dropdown to pick Select/Blade/Hand/Range/Roll
@@ -43,21 +43,25 @@ export function SelectionToolButton({ tool, onChange }: Props): JSX.Element {
         aria-label={current.label}
         onClick={() => setOpen((v) => !v)}
       >
-        {current.icon}
+        <span className="tool-trigger-icon">{current.icon}</span>
         <ChevronDownIcon size={9} />
       </button>
       {open && (
-        <div className="track-menu-popover">
+        <div className="track-menu-popover tool-menu" role="menu">
           {OPTIONS.map((o) => (
             <button
               key={o.tool}
-              className="track-menu-item"
+              role="menuitemradio"
+              aria-checked={o.tool === tool}
+              className={o.tool === tool ? 'tool-menu-item tool-menu-item-active' : 'tool-menu-item'}
               onClick={() => {
                 onChange(o.tool)
                 setOpen(false)
               }}
             >
-              {o.shortcut ? `${o.label} (${o.shortcut})` : o.label}
+              <span className="tool-menu-icon">{o.icon}</span>
+              <span className="tool-menu-label">{o.label}</span>
+              {o.shortcut && <kbd className="tool-menu-key">{o.shortcut}</kbd>}
             </button>
           ))}
         </div>

@@ -4,7 +4,9 @@
 // runs these args through ffmpeg. Mirrors shared/localAi.ts's own
 // "pure/testable core + thin main-process runner" split.
 import type { ProjectSequence, TimelineClip } from './project'
+import { clipRate, sourceEnd } from './clipTiming'
 import type { TimelineTrack } from './timelineTracks'
+import { isTrackAudioMuted } from './timelineTracks'
 
 export const EXPORT_RESOLUTION_VALUES = ['480p', '720p', '1080p', '2k', '4k'] as const
 export type ExportResolution = (typeof EXPORT_RESOLUTION_VALUES)[number]
@@ -78,6 +80,11 @@ export interface ExportOptions {
   includeAudio: boolean
   audioFormat: ExportAudioFormat
   exportGif: boolean
+  /** Also write the AI Dubber's subtitles as `<name>.srt`, carrying each
+   * line's speaker, male/female, voice, pitch, speed and volume so that
+   * importing it again restores them (shared/dubbingSrt.ts). Handled by the
+   * renderer; the video export ignores it. */
+  exportSrt: boolean
 }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
@@ -90,7 +97,8 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   frameRate: 30,
   includeAudio: true,
   audioFormat: 'aac',
-  exportGif: false
+  exportGif: false,
+  exportSrt: false
 }
 
 export interface ExportProgress {
@@ -113,6 +121,10 @@ export const EXPORT_IPC = {
   getCapabilities: 'export:getCapabilities',
   startExport: 'export:startExport',
   cancelExport: 'export:cancelExport',
+  openOutput: 'export:openOutput',
+  /** Writes a small text file (the dubbing SRT) into the export folder under
+   * a name that never overwrites an existing file. */
+  writeTextFile: 'export:writeTextFile',
   progress: 'export:progress'
 } as const
 
@@ -225,8 +237,8 @@ export function buildExportFilterGraph(
   sortedVideo.forEach((rc, i) => {
     const idx = videoInputIndex.get(rc)!
     const { clip } = rc
-    const sourceOut = clip.sourceOut ?? clip.sourceIn + clip.duration
-    const rate = clip.playbackRate ?? 1
+    const sourceOut = sourceEnd(clip)
+    const rate = clipRate(clip)
     const opacity = clip.opacity ?? 1
     const t = clip.transform
 
@@ -258,10 +270,19 @@ export function buildExportFilterGraph(
     audioClips.forEach((rc, i) => {
       const idx = audioInputIndex.get(rc)!
       const { clip } = rc
-      const sourceOut = clip.sourceOut ?? clip.sourceIn + clip.duration
+      const sourceOut = sourceEnd(clip)
       const volume = clip.volume ?? 1
       const steps: string[] = [`atrim=start=${clip.sourceIn}:end=${sourceOut}`, 'asetpts=PTS-STARTPTS']
-      if (clip.playbackRate && clip.playbackRate !== 1) steps.push(`atempo=${Math.max(0.5, Math.min(2, clip.playbackRate))}`)
+      let remainingRate = clipRate(clip)
+      while (remainingRate > 2) {
+        steps.push('atempo=2')
+        remainingRate /= 2
+      }
+      while (remainingRate < 0.5) {
+        steps.push('atempo=0.5')
+        remainingRate /= 0.5
+      }
+      if (Math.abs(remainingRate - 1) > 1e-6) steps.push(`atempo=${remainingRate}`)
       if (volume !== 1) steps.push(`volume=${volume}`)
       if (clip.fadeIn) steps.push(`afade=t=in:st=0:d=${clip.fadeIn}`)
       if (clip.fadeOut) steps.push(`afade=t=out:st=${Math.max(0, clip.duration - clip.fadeOut)}:d=${clip.fadeOut}`)
@@ -340,6 +361,26 @@ export function activeExportClips(sequence: ProjectSequence): { videoClips: Time
   const tracksById = Object.fromEntries(sequence.tracks.map((t) => [t.id, t] as const))
   const eligible = sequence.clips.filter((c) => c.enabled !== false && !tracksById[c.trackId]?.hidden)
   const videoClips = eligible.filter((c) => c.type === 'video' || c.type === 'image')
-  const audioClips = eligible.filter((c) => c.type === 'audio' || (c.type === 'video' && !c.muted))
+  // A video clip whose audio has already been split off onto its own linked
+  // audio-track clip (via the explicit "Extract to Audio" action -- see
+  // sequenceOps.extractAudio; a plain video import no longer auto-creates
+  // this pair, see sequenceOps.buildInsertedClips) must NOT also contribute
+  // its own embedded audio track here, or that audio gets mixed into the
+  // export twice (once from the video clip itself, once from its linked
+  // partner) -- audibly doubled/echoing on every export that included such a
+  // clip.
+  const eligibleIds = new Set(eligible.map((c) => c.id))
+  const audioClips = eligible.filter((c) => {
+    if (c.type !== 'audio' && c.type !== 'video') return false
+    // Mirrors Preview's own isTrackAudioMuted application (see
+    // PreviewPlayer.tsx) -- without this, soloing/muting a track in the
+    // Timeline changed what Preview played but never affected the exported
+    // file, which always mixed in every track's audio regardless.
+    if (isTrackAudioMuted(sequence.tracks, c.trackId)) return false
+    if (c.muted) return false
+    if (c.type === 'audio') return true
+    const audioSplitToLinkedClip = !!c.linkedClipId && eligibleIds.has(c.linkedClipId)
+    return !audioSplitToLinkedClip
+  })
   return { videoClips, audioClips, tracksById }
 }

@@ -107,6 +107,25 @@ describe('moveClipMagnetic -- reordering a gapless track', () => {
     const original = seq(mainTrack, clips)
     expect(moveClipMagnetic(original, 'A', 20)).toBe(original)
   })
+
+  it('pulls a lone gapped Main Track clip back to the project origin', () => {
+    const clips = [clip({ id: 'A', trackId: 'V1', startTime: 12, duration: 5 })]
+    const result = moveClipMagnetic(seq(mainTrack, clips), 'A', 30)
+    expect(result.clips.find((c) => c.id === 'A')!.startTime).toBe(0)
+  })
+
+  it('moves a video from another lane into the Main Track and closes every gap', () => {
+    const tracks = [...mainTrack, track({ id: 'V2', kind: 'video', order: 1 })]
+    const clips = [
+      clip({ id: 'A', trackId: 'V1', startTime: 0, duration: 5 }),
+      clip({ id: 'B', trackId: 'V1', startTime: 5, duration: 5 }),
+      clip({ id: 'X', trackId: 'V2', startTime: 20, duration: 2 })
+    ]
+    const result = moveClipMagnetic(seq(tracks, clips), 'X', 6)
+    const ordered = result.clips.filter((c) => c.trackId === 'V1').sort((a, b) => a.startTime - b.startTime)
+    expect(ordered.map((c) => c.id)).toEqual(['A', 'X', 'B'])
+    expect(ordered.map((c) => c.startTime)).toEqual([0, 5, 7])
+  })
 })
 
 describe('insertClipMagnetic -- inserting into a gapless track', () => {
@@ -125,6 +144,13 @@ describe('insertClipMagnetic -- inserting into a gapless track', () => {
     const result = insertClipMagnetic(seq(mainTrack, clips), { mediaId: 'new', type: 'video', sourceDurationSeconds: 3 }, 100, makeId)
     const newClip = result.clips.find((c) => c.mediaId === 'new')!
     expect(newClip.startTime).toBe(5)
+  })
+
+  it('packs a previously-gapped Main Track back to zero while inserting', () => {
+    const clips = [clip({ id: 'A', trackId: 'V1', startTime: 10, duration: 5 })]
+    const result = insertClipMagnetic(seq(mainTrack, clips), { mediaId: 'new', type: 'image', sourceDurationSeconds: 0 }, 0, makeId)
+    const ordered = result.clips.filter((c) => c.trackId === 'V1').sort((a, b) => a.startTime - b.startTime)
+    expect(ordered.map((c) => c.startTime)).toEqual([0, 5])
   })
 
   it('returns the sequence unchanged when there is no main track', () => {

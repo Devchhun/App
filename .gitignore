@@ -12,3 +12,14 @@ dist/
 # regenerate rather than commit (hundreds of MB of native binaries).
 resources/python-runtime/*
 !resources/python-runtime/.gitkeep
+# Demucs (htdemucs) separation weights -- shipped via electron-builder extraResources, never committed.
+resources/demucs-models/*.th
+
+# License signing private key -- never commit
+admin-panel/signing-key.private.json
+dist-admin/
+admin-panel/.env
+license-server/.env
+
+# The license-issuing admin tool stays private (kept on this machine only).
+admin-panel/

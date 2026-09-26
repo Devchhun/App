@@ -7,6 +7,7 @@ interface FfprobeStream {
   codec_name: string
   width?: number
   height?: number
+  channels?: number
   r_frame_rate?: string
   avg_frame_rate?: string
 }
@@ -42,6 +43,16 @@ function runAndCapture(bin: string, args: string[]): Promise<string> {
       else reject(new Error(stderr.trim() || `${bin} exited with code ${code}`))
     })
   })
+}
+
+/** Audio channel count, or 0 when there's no audio track at all. Kept
+ * separate from probeMedia's MediaMetadata (which is persisted into the
+ * project file) because only vocal removal needs it -- see
+ * vocalRemoval.ts's hasStereoAudio. */
+export async function probeAudioChannels(filePath: string): Promise<number> {
+  const output = await runAndCapture(ffprobePath, ['-v', 'error', '-print_format', 'json', '-show_streams', '-select_streams', 'a:0', filePath])
+  const parsed = JSON.parse(output) as { streams?: FfprobeStream[] }
+  return parsed.streams?.[0]?.channels ?? 0
 }
 
 export async function probeMedia(filePath: string): Promise<MediaMetadata> {

@@ -6,6 +6,7 @@ import {
   clampPixelsPerSecond,
   clampTrackHeaderWidth,
   clampTimelinePanelHeight,
+  WORKSPACE_MIN_HEIGHT,
   MIN_PPS,
   MAX_PPS,
   TRACK_HEADER_WIDTH_MIN,
@@ -63,7 +64,21 @@ describe('clamp helpers', () => {
     expect(clampTimelinePanelHeight(10)).toBe(TIMELINE_PANEL_HEIGHT_MIN)
     expect(clampTimelinePanelHeight(9999)).toBe(TIMELINE_PANEL_HEIGHT_MAX)
   })
+  it('clampTimelinePanelHeight also keeps the workspace above at least WORKSPACE_MIN_HEIGHT tall', () => {
+    expect(clampTimelinePanelHeight(9999, 900)).toBe(900 - WORKSPACE_MIN_HEIGHT)
+    // A tall window is bound by the fixed max, a tiny one by the min.
+    expect(clampTimelinePanelHeight(9999, 2000)).toBe(TIMELINE_PANEL_HEIGHT_MAX)
+    expect(clampTimelinePanelHeight(9999, 500)).toBe(TIMELINE_PANEL_HEIGHT_MIN)
+  })
   it('clamp helpers fall back to a sane default for non-finite input', () => {
     expect(clampPixelsPerSecond(NaN)).toBe(DEFAULT_TIMELINE_VIEW_PREFS.pixelsPerSecond)
+  })
+})
+
+describe('showWaveforms one-time reset', () => {
+  it('turns an old stored off back on, but keeps an off chosen since', () => {
+    expect(parseStoredTimelineViewPrefs(JSON.stringify({ showWaveforms: false })).showWaveforms).toBe(true)
+    expect(parseStoredTimelineViewPrefs(JSON.stringify({ showWaveforms: false, showWaveformsV2: true })).showWaveforms).toBe(false)
+    expect(parseStoredTimelineViewPrefs(JSON.stringify({ showWaveforms: true })).showWaveforms).toBe(true)
   })
 })

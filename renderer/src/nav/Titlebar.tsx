@@ -12,16 +12,17 @@ import {
   UndoIcon,
   RedoIcon,
   ChatIcon,
-  SettingsIcon,
   ExportIcon,
   SparkleIcon,
   MinimizeIcon,
   MaximizeIcon,
   CloseIcon,
   ShieldCheckIcon,
-  ChipIcon,
-  UpdateIcon
+  UpdateIcon,
+  SunIcon,
+  MoonIcon
 } from './icons'
+import { useTheme } from './ThemeContext'
 
 const ASPECT_RATIOS: BrandPreset['defaultAspectRatio'][] = ['16:9', '9:16', '1:1']
 
@@ -33,23 +34,37 @@ function SaveStatus(): JSX.Element {
   return <span className="titlebar-save-status">Autosave {new Date(lastSavedAt).toLocaleTimeString()}</span>
 }
 
+/** Whether a Whisper model is on disk -- a click opens Settings >
+ * Transcription, which is also where the compute device (GPU / CUDA
+ * / CPU) is shown; that badge used to sit here too. */
 function DeviceBadges(): JSX.Element {
-  const { deviceInfo, models } = useTranscript()
+  const { models } = useTranscript()
+  const { openSettings } = useUiState()
   const khmerReady = models.some((m) => m.downloaded)
 
   return (
-    <>
-      <span className={khmerReady ? 'titlebar-badge titlebar-badge-ready' : 'titlebar-badge titlebar-badge-pending'}>
-        <ShieldCheckIcon />
-        {khmerReady ? 'Khmer Ready' : 'Model Needed'}
-      </span>
-      {deviceInfo && (
-        <span className={deviceInfo.device === 'cuda' ? 'titlebar-badge titlebar-badge-gpu' : 'titlebar-badge titlebar-badge-cpu'}>
-          <ChipIcon />
-          {deviceInfo.device === 'cuda' ? `${deviceInfo.cudaDeviceName ?? 'GPU'} · CUDA` : 'CPU'}
-        </span>
-      )}
-    </>
+    <button
+      type="button"
+      className={khmerReady ? 'titlebar-badge titlebar-badge-ready titlebar-badge-button' : 'titlebar-badge titlebar-badge-pending titlebar-badge-button'}
+      title="Transcription model and compute device -- open Settings > Transcription"
+      onClick={() => openSettings('transcription')}
+    >
+      <ShieldCheckIcon />
+      {khmerReady ? 'Khmer Ready' : 'Model Needed'}
+    </button>
+  )
+}
+
+/** Quick light/dark flip. The icon shows what a click WILL do (sun while
+ * dark, moon while light) -- the convention that stays unambiguous for a
+ * lone unlabelled button. Reads the shared ThemeContext, so it can never
+ * disagree with the Settings switch. */
+function ThemeButton(): JSX.Element {
+  const { theme, toggleTheme } = useTheme()
+  return (
+    <button className="titlebar-icon-button" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={toggleTheme}>
+      {theme === 'dark' ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+    </button>
   )
 }
 
@@ -112,7 +127,11 @@ function UpdateButton(): JSX.Element {
   )
 }
 
-function WindowControls(): JSX.Element {
+/** `onClose`: what the × does. The editor's titlebar passes "go Home"
+ * -- the app is only ever closed from the Home screen's own ×, so a
+ * stray click on the editor's × can never quit mid-edit; Home passes
+ * nothing and really closes the window. */
+export function WindowControls({ onClose }: { onClose?: () => void } = {}): JSX.Element {
   const [isMaximized, setIsMaximized] = useState(false)
 
   useEffect(() => {
@@ -132,7 +151,14 @@ function WindowControls(): JSX.Element {
       >
         <MaximizeIcon />
       </button>
-      <button className="window-control-button window-control-close" title="Close" onClick={() => void window.api.windowControls.close()}>
+      <button
+        className="window-control-button window-control-close"
+        title={onClose ? 'Back to Home' : 'Close'}
+        onClick={() => {
+          if (onClose) onClose()
+          else void window.api.windowControls.close()
+        }}
+      >
         <CloseIcon />
       </button>
     </div>
@@ -142,7 +168,7 @@ function WindowControls(): JSX.Element {
 export function Titlebar(): JSX.Element {
   const { projectName } = useProject()
   const { brandPreset } = useBrandPreset()
-  const { setRightTab } = useUiState()
+  const { openHome } = useUiState()
   const { canUndo, canRedo, undo, redo } = useHistory()
   const changeAspectRatio = useChangeAspectRatio()
   const { openDialog: openExportDialog } = useExport()
@@ -154,6 +180,12 @@ export function Titlebar(): JSX.Element {
           <SparkleIcon size={16} />
         </span>
         <span className="titlebar-name">Creative AI Editor</span>
+        <button className="titlebar-home-button" title="Home -- all projects" onClick={openHome}>
+          <svg width={14} height={14} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M3 9.5 10 3l7 6.5V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1z" />
+          </svg>
+          Home
+        </button>
         {projectName && <span className="titlebar-project">Project: {projectName}</span>}
 
         <div className="titlebar-history">
@@ -190,14 +222,6 @@ export function Titlebar(): JSX.Element {
           ))}
         </select>
 
-        <div className="titlebar-actions">
-          <button className="header-generate-button" onClick={() => setRightTab('ai')}>
-            <SparkleIcon size={14} /> Generate AI Graphics
-          </button>
-          <button className="header-export-button" title="Export" onClick={openExportDialog}>
-            <ExportIcon /> Export
-          </button>
-        </div>
 
         <div className="titlebar-right">
           <DeviceBadges />
@@ -205,10 +229,12 @@ export function Titlebar(): JSX.Element {
             <ChatIcon />
           </button>
           <UpdateButton />
-          <button className="titlebar-icon-button" title="Settings (coming soon)" disabled>
-            <SettingsIcon size={16} />
+          <ThemeButton />
+          {/* Export sits right before the window controls, CapCut-style. */}
+          <button className="header-export-button titlebar-export-button" title="Export" onClick={openExportDialog}>
+            <ExportIcon /> Export
           </button>
-          <WindowControls />
+          <WindowControls onClose={openHome} />
         </div>
       </header>
     </div>

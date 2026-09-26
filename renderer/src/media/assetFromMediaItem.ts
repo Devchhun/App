@@ -8,7 +8,6 @@ export function assetFromMediaItem(item: MediaItem): InsertableAsset {
   return {
     mediaId: item.id,
     type: item.assetType ?? (item.kind === 'audio' ? 'audio' : 'video'),
-    sourceDurationSeconds: item.metadata?.durationSeconds ?? 0,
-    hasAudio: item.metadata?.hasAudio
+    sourceDurationSeconds: item.metadata?.durationSeconds ?? 0
   }
 }

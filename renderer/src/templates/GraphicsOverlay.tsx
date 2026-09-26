@@ -6,10 +6,9 @@ interface Props {
   scenes: Scene[]
   brand: BrandPreset
   currentTime: number
-  /** Unused for visibility now (see isSceneVisibleAt) -- kept only so a
-   * selected scene can still receive `stageSize` styling/measurement hooks
-   * later without a prop-shape change; selection no longer overrides
-   * time-based visibility (see isSceneVisibleAt / Timeline's seek-on-select). */
+  /** Selection never overrides time-range visibility. At the exact first
+   * animation frame it does override zero opacity so newly-added text is
+   * visible while the user edits it. */
   selectedSceneId?: string | null
   /** Actual measured stage pixel size, forwarded to every template so the
    * cinematic templates can scale their design-space layout uniformly. */
@@ -31,7 +30,7 @@ export function isSceneVisibleAt(currentTime: number, scene: Pick<Scene, 'startT
  * Khmer shaping (HarfBuzz/Skia) without Remotion in the loop -- Remotion's
  * real value is WYSIWYG with the Node-side export renderer, which is a
  * Phase G (export) concern, not required for this editable preview. */
-export function GraphicsOverlay({ scenes, brand, currentTime, stageSize }: Props): JSX.Element {
+export function GraphicsOverlay({ scenes, brand, currentTime, selectedSceneId, stageSize }: Props): JSX.Element {
   const visibleScenes = scenes.filter((s) => s.status !== 'rejected')
   const stepScenesInOrder = visibleScenes.filter((s) => s.templateId === 'numbered-steps').sort((a, b) => a.startTime - b.startTime)
   // Bring Forward / Send Backward reorders zIndex, which determines paint
@@ -44,12 +43,21 @@ export function GraphicsOverlay({ scenes, brand, currentTime, stageSize }: Props
         if (!isSceneVisibleAt(currentTime, scene)) return null
         const inSeconds = scene.animationInDurationSeconds ?? scene.animationDurationSeconds
         const outSeconds = scene.animationOutDurationSeconds ?? scene.animationDurationSeconds
-        const motion = computeSceneMotion(currentTime, scene.startTime, scene.endTime, {
+        const computedMotion = computeSceneMotion(currentTime, scene.startTime, scene.endTime, {
           intensity: brand.animationIntensity,
           enterSeconds: inSeconds,
           exitSeconds: outSeconds,
           easing: scene.animationEasing
         })
+        // A newly inserted Text scene is selected at its exact start time.
+        // Its enter animation is legitimately at opacity 0 there, but that
+        // made Add Text look broken: only the blue selection bounds appeared.
+        // Keep ordinary playback animation intact; only give the selected
+        // scene a fully visible editing preview at that exact zero-opacity
+        // boundary frame.
+        const motion = scene.id === selectedSceneId && computedMotion.visible && computedMotion.opacity === 0
+          ? { ...computedMotion, opacity: 1, enterProgress: 1, exitProgress: 0 }
+          : computedMotion
         if (!motion.visible) return null
         // A scene can reference a templateId the current build no longer
         // registers (a hand-edited/corrupted project file, or a project

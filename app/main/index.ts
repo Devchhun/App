@@ -8,11 +8,18 @@ import { registerProjectIpc } from './ipc/project'
 import { registerAiIpc } from './ipc/ai'
 import { registerLocalAiIpc } from './ipc/localAi'
 import { registerStoryIpc } from './ipc/story'
+import { registerNarrationIpc } from './ipc/narration'
+import { registerDubbingIpc } from './ipc/dubbing'
+import { registerVideoStoryNarrationIpc } from './ipc/videoStoryNarration'
+import { registerAiAnimationIpc } from './ipc/aiAnimation'
+import { registerVocalRemovalIpc } from './ipc/vocalRemoval'
+import { registerTranslationIpc } from './ipc/translation'
 import { registerExportIpc } from './ipc/export'
-import { registerWindowIpc } from './ipc/window'
+import { registerWindowIpc, HOME_WINDOW_WIDTH, HOME_WINDOW_HEIGHT } from './ipc/window'
 import { getSharedWorker } from './ai/workerProcess'
 import { initAutoUpdater, registerUpdaterIpc } from './updater'
 import { registerCrashIpc } from './ipc/crash'
+import { registerLicenseIpc } from './license/licenseStore'
 import { TRANSCRIPTION_IPC } from '@shared/transcription'
 import { WINDOW_IPC } from '@shared/window'
 
@@ -34,8 +41,10 @@ function appIconPath(): string {
 
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    // Home (the project launcher) is what a launch shows, in a small
+    // centred window; entering a project maximises it (see ipc/window.ts).
+    width: HOME_WINDOW_WIDTH,
+    height: HOME_WINDOW_HEIGHT,
     minWidth: 1024,
     minHeight: 640,
     show: false,
@@ -53,6 +62,14 @@ function createMainWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  // Chromium persists per-origin zoom in the profile across launches, so a
+  // zoom applied once (e.g. Ctrl+wheel, or an earlier build's UI-scale
+  // experiment) would otherwise stick forever. The editor is authored at
+  // 100%; pin it there on every load.
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents.setZoomFactor(1)
   })
 
   mainWindow.on('closed', () => {
@@ -133,10 +150,17 @@ app.whenReady().then(() => {
   registerAiIpc()
   registerLocalAiIpc()
   registerStoryIpc()
+  registerNarrationIpc()
+  registerDubbingIpc()
+  registerVideoStoryNarrationIpc()
+  registerAiAnimationIpc()
+  registerVocalRemovalIpc()
+  registerTranslationIpc()
   registerExportIpc()
   registerWindowIpc(() => mainWindow)
   registerUpdaterIpc(() => mainWindow)
   registerCrashIpc()
+  registerLicenseIpc(() => mainWindow)
 
   createMainWindow()
   initAutoUpdater(() => mainWindow)

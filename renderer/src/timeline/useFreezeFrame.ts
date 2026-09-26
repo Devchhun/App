@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { TimelineClip } from '@shared/project'
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useHistory } from '../history/HistoryContext'
 import { useTimelineView } from './TimelineViewContext'
@@ -38,7 +38,7 @@ interface PendingFreezeFrame {
  * capture ever has a non-null pending ref for the `items` effect to act on. */
 export function useFreezeFrame(): { triggerFreezeFrame: (clip: TimelineClip) => void } {
   const { items, importPaths } = useMedia()
-  const { currentTime, captureFrame } = usePlayback()
+  const { captureFrame, getCurrentTime } = usePlaybackControls()
   const { sequence, splitClipAt, insertGapAt, insertClip } = useSequence()
   const { beginTransaction, endTransaction } = useHistory()
   const { linkageOn } = useTimelineView()
@@ -64,6 +64,7 @@ export function useFreezeFrame(): { triggerFreezeFrame: (clip: TimelineClip) => 
 
   const triggerFreezeFrame = useCallback(
     (clip: TimelineClip) => {
+      const currentTime = getCurrentTime()
       if (!canFreezeFrame(clip, currentTime)) return
       const dataUrl = captureFrame()
       if (!dataUrl) return
@@ -87,7 +88,7 @@ export function useFreezeFrame(): { triggerFreezeFrame: (clip: TimelineClip) => 
         await importPaths([savedPath])
       })
     },
-    [currentTime, captureFrame, sequence.clips, linkageOn, importPaths]
+    [getCurrentTime, captureFrame, sequence.clips, linkageOn, importPaths]
   )
 
   return { triggerFreezeFrame }

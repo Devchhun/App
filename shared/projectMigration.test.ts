@@ -48,7 +48,7 @@ describe('migrateProjectFile', () => {
 
     const migrated = migrateProjectFile(project)
 
-    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.schemaVersion).toBe(11)
     // Center is now xPercent/yPercent directly: (20+60/2, 25+50/2) = (50, 50).
     expect(migrated.scenes[0].contentTransform).toEqual({ xPercent: 50, yPercent: 50, widthPercent: 60, heightPercent: 50, rotation: 0, lockAspectRatio: false })
   })
@@ -96,7 +96,7 @@ describe('migrateProjectFile', () => {
 
       const migrated = migrateProjectFile(project)
 
-      expect(migrated.schemaVersion).toBe(7)
+      expect(migrated.schemaVersion).toBe(11)
       const v1Clips = migrated.sequence.clips.filter((c) => c.trackId === 'V1')
       expect(v1Clips).toHaveLength(1)
       expect(v1Clips[0]).toMatchObject({ mediaId: 'm1', type: 'video', startTime: 0, duration: 12, sourceIn: 0, sourceOut: 12 })
@@ -169,7 +169,7 @@ describe('migrateProjectFile', () => {
 
       const migrated = migrateProjectFile(project)
 
-      expect(migrated.schemaVersion).toBe(7)
+      expect(migrated.schemaVersion).toBe(11)
       const trackIds = migrated.sequence.tracks.map((t) => t.id)
       expect(trackIds.sort()).toEqual(['A1', 'A2', 'C1', 'V1', 'V2', 'V3'])
       expect(migrated.sequence.tracks.find((t) => t.id === 'C1')?.removable).toBe(false)
@@ -198,7 +198,7 @@ describe('migrateProjectFile', () => {
 
       const migrated = migrateProjectFile(project)
 
-      expect(migrated.schemaVersion).toBe(7)
+      expect(migrated.schemaVersion).toBe(11)
       expect(migrated.sequence.tracks.find((t) => t.id === 'V1')?.isMain).toBe(true)
       expect(migrated.sequence.tracks.find((t) => t.id === 'V4')?.isMain).toBeFalsy()
       expect(migrated.sequence.markers).toEqual([])
@@ -226,7 +226,7 @@ describe('migrateProjectFile', () => {
 
       const migrated = migrateProjectFile(project)
 
-      expect(migrated.schemaVersion).toBe(7)
+      expect(migrated.schemaVersion).toBe(11)
       expect(migrated.sequence.clips[0]).toEqual(project.sequence.clips[0])
     })
 
@@ -249,7 +249,7 @@ describe('migrateProjectFile', () => {
 
       const migrated = migrateProjectFile(project)
 
-      expect(migrated.schemaVersion).toBe(7)
+      expect(migrated.schemaVersion).toBe(11)
       expect(migrated.narrativeGraph).toEqual({})
       expect(migrated.entityBible).toEqual({})
       expect(migrated.visualPlan).toEqual({})
@@ -272,6 +272,160 @@ describe('migrateProjectFile', () => {
       const once = migrateProjectFile(project)
       const twice = migrateProjectFile(once)
       expect(twice).toEqual(once)
+    })
+  })
+
+  describe('schemaVersion 7 -> 8: Story Narration Workspace migration', () => {
+    it('defaults narrationWorkspace to an inactive/empty state for an old project that has none', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 7 }
+      delete (project as Partial<ProjectFile>).narrationWorkspace
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.schemaVersion).toBe(11)
+      expect(migrated.narrationWorkspace).toEqual({
+        active: false,
+        optimization: { trimSilence: true, fadeInOut: true, noiseReduction: false, loudnessNormalize: false, autoGain: false },
+        segments: {}
+      })
+    })
+
+    it('is purely additive -- an existing schemaVersion 7 project keeps every other field untouched', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 7 }
+      project.scenes = [baseScene()]
+      delete (project as Partial<ProjectFile>).narrationWorkspace
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.scenes).toEqual(project.scenes)
+      expect(migrated.media).toEqual(project.media)
+    })
+
+    it('is idempotent -- a project that already has narrationWorkspace is only version-bumped', () => {
+      const project: ProjectFile = createNewProjectFile('Old Project')
+      const once = migrateProjectFile(project)
+      const twice = migrateProjectFile(once)
+      expect(twice).toEqual(once)
+    })
+
+    it('never overwrites an existing, in-progress narrationWorkspace state', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 7 }
+      project.narrationWorkspace = {
+        active: true,
+        videoMediaId: 'm1',
+        optimization: { trimSilence: false, fadeInOut: false, noiseReduction: true, loudnessNormalize: true, autoGain: true },
+        segments: { s1: { segmentId: 's1', status: 'accepted', speaker: 'female', takes: [] } }
+      }
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.narrationWorkspace).toEqual(project.narrationWorkspace)
+    })
+  })
+
+  describe('schemaVersion 8 -> 9: Keyframe Animation migration', () => {
+    it('is purely a version bump -- no clip is touched, keyframes stay undefined until a user actually adds one', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 8 }
+      project.sequence.clips = [
+        {
+          id: 'c1',
+          mediaId: 'm1',
+          type: 'video',
+          trackId: 'V1',
+          startTime: 0,
+          duration: 5,
+          sourceIn: 0,
+          sourceOut: 5,
+          locked: false
+        }
+      ]
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.schemaVersion).toBe(11)
+      expect(migrated.sequence.clips[0].keyframes).toBeUndefined()
+    })
+
+    it('is idempotent -- migrating an already-current project changes nothing', () => {
+      const project: ProjectFile = createNewProjectFile('Old Project')
+      const once = migrateProjectFile(project)
+      const twice = migrateProjectFile(once)
+      expect(twice).toEqual(once)
+    })
+
+    it('never touches an existing clip\'s own keyframes', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 8 }
+      project.sequence.clips = [
+        {
+          id: 'c1',
+          mediaId: 'm1',
+          type: 'video',
+          trackId: 'V1',
+          startTime: 0,
+          duration: 5,
+          sourceIn: 0,
+          sourceOut: 5,
+          locked: false,
+          keyframes: { opacity: [{ id: 'k1', time: 0, value: 0 }] }
+        }
+      ]
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.sequence.clips[0].keyframes).toEqual(project.sequence.clips[0].keyframes)
+    })
+  })
+
+  describe('schemaVersion 9 -> 10: AI Dubber migration', () => {
+    it('defaults dubbingWorkspace to an inactive/empty state for an old project that has none', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 9 }
+      delete (project as Partial<ProjectFile>).dubbingWorkspace
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.schemaVersion).toBe(11)
+      expect(migrated.dubbingWorkspace).toEqual({ active: false, genderDetectionStatus: 'idle', segments: {}, speakers: {} })
+    })
+
+    it('is idempotent -- a project that already has dubbingWorkspace is only version-bumped', () => {
+      const project: ProjectFile = createNewProjectFile('Old Project')
+      const once = migrateProjectFile(project)
+      const twice = migrateProjectFile(once)
+      expect(twice).toEqual(once)
+    })
+
+    it('never overwrites an existing, in-progress dubbingWorkspace state', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 9 }
+      project.dubbingWorkspace = {
+        active: true,
+        videoMediaId: 'm1',
+        genderDetectionStatus: 'detected',
+        segments: { s1: { segmentId: 's1', detectedGender: 'female', pitch: 0, speed: 1, volumeDb: 0, status: 'voice-assigned' } },
+        speakers: {}
+      }
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.dubbingWorkspace).toEqual(project.dubbingWorkspace)
+    })
+  })
+
+  describe('schemaVersion 10 -> 11: AI Dubber speaker profiles', () => {
+    it('adds an empty speaker map without changing existing segment settings', () => {
+      const project: ProjectFile = { ...createNewProjectFile('Old Project'), schemaVersion: 10 }
+      project.dubbingWorkspace = {
+        active: true,
+        videoMediaId: 'm1',
+        genderDetectionStatus: 'detected',
+        segments: { s1: { segmentId: 's1', detectedGender: 'female', pitch: 0, speed: 1, volumeDb: 0, status: 'voice-assigned' } },
+        speakers: undefined as never
+      }
+
+      const migrated = migrateProjectFile(project)
+
+      expect(migrated.schemaVersion).toBe(11)
+      expect(migrated.dubbingWorkspace?.speakers).toEqual({})
+      expect(migrated.dubbingWorkspace?.segments.s1.detectedGender).toBe('female')
     })
   })
 

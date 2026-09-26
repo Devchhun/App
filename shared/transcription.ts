@@ -40,6 +40,11 @@ export interface TranscriptSegment {
   /** User override. When present, this is shown instead of `text`; timing is untouched. */
   editedText?: string
   needsReview: boolean
+  /** Stable diarization identity for this spoken line. Optional for normal
+   * Whisper/imported-SRT transcripts; populated by AI Dubber's speaker pass. */
+  speakerId?: string
+  /** Cosine similarity to the assigned speaker centroid (0-1). */
+  speakerConfidence?: number
 }
 
 export interface Transcript {
@@ -47,12 +52,65 @@ export interface Transcript {
   segments: TranscriptSegment[]
   requestedLanguage: TranscriptionLanguage
   detectedLanguage?: string
-  modelId: WhisperModelSize
-  device: 'cuda' | 'cpu'
+  /** Absent for an SRT-imported transcript (see `source`) -- there's no Whisper run to describe. */
+  modelId?: WhisperModelSize
+  device?: 'cuda' | 'cpu'
   /** e.g. 'float16' on GPU, 'int8' on CPU. */
   computeType?: string
   generatedAt: string
   audioSourcePath: string
+  /** 'srt' for a user-imported subtitle file (Story Narration Workspace); undefined/'whisper'
+   * for the normal AI-transcription pipeline. Segments are the same shape either way -- this
+   * is purely so UI (e.g. "detected language") can tell the two sources apart. */
+  source?: 'whisper' | 'srt' | 'speaker-detection'
+}
+
+export type SpeakerGender = 'male' | 'female' | 'unknown'
+export type SpeakerAgeCategory = 'child' | 'young' | 'adult' | 'elder' | 'unknown'
+
+/** Persisted character identity inferred from original audio. Embeddings are
+ * compact acoustic vectors used for identity continuity, not gender labels. */
+export interface DetectedSpeakerProfile {
+  id: string
+  name: string
+  gender: SpeakerGender
+  genderConfidence: number
+  ageCategory: SpeakerAgeCategory
+  ageConfidence: number
+  identityConfidence: number
+  embedding: number[]
+  segmentIds: string[]
+}
+
+export interface SpeakerDiarizationObservation {
+  segmentId: string
+  embedding: number[]
+  f0Hz?: number
+  voicedRatio: number
+  spectralCentroidHz?: number
+}
+
+export interface DetectSpeakersRequest {
+  jobId: string
+  mediaId: string
+  originalPath: string
+  modelId: WhisperModelSize
+  language: TranscriptionLanguage
+}
+
+export interface DetectSpeakersResult {
+  transcript: Transcript
+  speakers: DetectedSpeakerProfile[]
+  srtText: string
+  srtPath: string
+  srtFileName: string
+}
+
+export interface DetectSpeakersProgress {
+  jobId: string
+  stage: 'extracting-audio' | 'transcribing' | 'embedding' | 'clustering' | 'writing-srt' | 'ready' | 'error' | 'canceled'
+  percent: number
+  message: string
 }
 
 export interface ScriptAlignmentSegment {
@@ -172,5 +230,9 @@ export const TRANSCRIPTION_IPC = {
   exportCorrectionDictionary: 'transcription:exportCorrectionDictionary',
   exportCorrectionDictionaryToFile: 'transcription:exportCorrectionDictionaryToFile',
   importCorrectionDictionaryFromFile: 'transcription:importCorrectionDictionaryFromFile',
-  workerStatus: 'transcription:workerStatus'
+  workerStatus: 'transcription:workerStatus',
+  importSrtFile: 'transcription:importSrtFile',
+  detectSpeakers: 'transcription:detectSpeakers',
+  cancelDetectSpeakers: 'transcription:cancelDetectSpeakers',
+  detectSpeakersProgress: 'transcription:detectSpeakersProgress'
 } as const

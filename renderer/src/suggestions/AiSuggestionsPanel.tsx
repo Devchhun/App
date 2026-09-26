@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useAiSuggestions } from './AiSuggestionsContext'
 import { CloudConsentModal } from './CloudConsentModal'
 import { PURPOSE_LABELS, PURPOSE_VALUES } from '@shared/suggestions'
@@ -30,7 +30,7 @@ const DEFAULT_FILTERS: Filters = {
 export function AiSuggestionsPanel(): JSX.Element {
   const { items, selectedId } = useMedia()
   const { transcripts } = useTranscript()
-  const { seekTo } = usePlayback()
+  const { seekTo } = usePlaybackControls()
   const {
     hasApiKey,
     saveApiKey,

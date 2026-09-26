@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeRect, clipsInRect, applyBoxSelection, type ClipGeometry } from './boxSelection'
+import { normalizeRect, clipsInRect, applyBoxSelection, clampBoxSelectionX, type ClipGeometry } from './boxSelection'
 
 describe('normalizeRect', () => {
   it('normalizes a rect dragged in any direction to left<=right, top<=bottom', () => {
     expect(normalizeRect(50, 50, 10, 10)).toEqual({ left: 10, right: 50, top: 10, bottom: 50 })
     expect(normalizeRect(10, 10, 50, 50)).toEqual({ left: 10, right: 50, top: 10, bottom: 50 })
+  })
+})
+
+describe('clampBoxSelectionX', () => {
+  it('stops a marquee at the final item instead of extending into empty future space', () => {
+    expect(clampBoxSelectionX(900, 500)).toBe(500)
+    expect(clampBoxSelectionX(320, 500)).toBe(320)
+  })
+
+  it('also clamps before the Timeline start and handles an empty Timeline', () => {
+    expect(clampBoxSelectionX(-20, 500)).toBe(0)
+    expect(clampBoxSelectionX(100, 0)).toBe(0)
   })
 })
 

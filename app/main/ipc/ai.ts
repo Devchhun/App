@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { AI_IPC } from '@shared/suggestions'
-import type { AiSuggestion, GenerateSuggestionsError, GenerateSuggestionsResult } from '@shared/suggestions'
+import type { AiSuggestion, GenerateSuggestionsError, GenerateSuggestionsResult, ScriptTransformMode } from '@shared/suggestions'
 import type { TranscriptSegment } from '@shared/transcription'
 import { hasApiKey, setApiKey, clearApiKey } from '../ai/apiKeyStore'
 import {
@@ -8,6 +8,7 @@ import {
   generateSuggestions,
   regenerateOne,
   simplifySuggestionText,
+  transformScriptText,
   cancelRequest,
   ProviderError
 } from '../ai/suggestionsService'
@@ -66,6 +67,18 @@ export function registerAiIpc(): void {
     ): Promise<IpcResult<AiSuggestion | null>> => {
       try {
         const data = await regenerateOne(args.requestId, args.mediaId, args.segment)
+        return { ok: true, data }
+      } catch (err) {
+        return { ok: false, error: toSerializableError(err) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    AI_IPC.transformScript,
+    async (_event, args: { requestId: string; text: string; mode: ScriptTransformMode }): Promise<IpcResult<string>> => {
+      try {
+        const data = await transformScriptText(args.requestId, args.text, args.mode)
         return { ok: true, data }
       } catch (err) {
         return { ok: false, error: toSerializableError(err) }

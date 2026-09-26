@@ -8,6 +8,7 @@ import type { ProjectSequence, TimelineClip } from '@shared/project'
 import type { TimelineTrack } from '@shared/timelineTracks'
 import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
 import { applyTrim, type TrimEdge } from '../sequence/sequenceOps'
+import { clipRate, sourceEnd } from '@shared/clipTiming'
 import { shiftClipsFrom, closeGap } from './reflow'
 import type { RippleScope } from './timelineViewPrefs'
 
@@ -111,20 +112,30 @@ export function rippleTrim(
   edge: TrimEdge,
   pointerTime: number,
   scope: RippleScope,
-  sourceDurationSeconds?: number
+  sourceDurationSeconds?: number,
+  linked = true,
+  partnerSourceDurationSeconds?: number
 ): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
-
-  const trimmedClip = applyTrim(target, edge, pointerTime, sourceDurationSeconds)
-  let clips = sequence.clips.map((c) => (c.id === clipId ? trimmedClip : c))
+  const partner = linked && target.linkedClipId ? sequence.clips.find((c) => c.id === target.linkedClipId) : undefined
+  if (partner?.locked) return sequence
+  let boundedTime = pointerTime
+  if (edge === 'right') {
+    if (Number.isFinite(sourceDurationSeconds)) boundedTime = Math.min(boundedTime, target.startTime + ((sourceDurationSeconds as number) - target.sourceIn) / clipRate(target))
+    if (partner) boundedTime = Math.min(boundedTime, partner.startTime + ((partnerSourceDurationSeconds ?? sourceEnd(partner)) - partner.sourceIn) / clipRate(partner))
+  }
+  const trimmedClip = applyTrim(target, edge, boundedTime, sourceDurationSeconds)
+  const trimmedPartner = partner ? applyTrim(partner, edge, boundedTime, partnerSourceDurationSeconds ?? sourceEnd(partner)) : undefined
+  let clips = sequence.clips.map((c) => c.id === clipId ? trimmedClip : c.id === partner?.id ? trimmedPartner! : c)
 
   if (edge === 'right') {
     const oldEnd = target.startTime + target.duration
     const delta = trimmedClip.duration - target.duration
-    const scopedTrackIds = resolveRippleTrackIds(sequence.tracks, target.trackId, scope, [target], sequence.clips)
+    const scopedTrackIds = new Set(resolveRippleTrackIds(sequence.tracks, target.trackId, scope, [target], sequence.clips))
+    if (partner) scopedTrackIds.add(partner.trackId)
     for (const tid of scopedTrackIds) {
-      clips = shiftClipsFrom(clips, tid, oldEnd, delta, new Set([clipId]))
+      clips = shiftClipsFrom(clips, tid, oldEnd, delta, new Set([clipId, ...(partner ? [partner.id] : [])]))
     }
   }
 

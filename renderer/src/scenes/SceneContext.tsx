@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { applySceneRipple, planSceneRipple } from './sceneCollision'
 import type { Scene, SceneStatus } from '@shared/project'
 import type { TemplateId } from '@shared/templates'
 import { useAiSuggestions } from '../suggestions/AiSuggestionsContext'
@@ -9,6 +10,12 @@ interface SceneContextValue {
   scenesByMedia: Record<string, Scene[]>
   selectedSceneId: string | null
   selectScene: (sceneId: string | null) => void
+  /** Every selected graphic (box-select / Ctrl+A); `selectedSceneId` is
+   * the first of them, the one the properties panel shows. */
+  selectedSceneIds: string[]
+  selectScenes: (sceneIds: string[]) => void
+  /** Removes graphics by id, whichever media each belongs to. */
+  deleteScenes: (sceneIds: string[]) => void
 
   updateScene: (
     mediaId: string,
@@ -56,7 +63,10 @@ interface SceneContextValue {
       >
     >
   ) => void
-  retimeScene: (mediaId: string, sceneId: string, startTime: number, endTime: number) => void
+  /** `resolveCollisions` (the drop/commit call): scenes the new span lands
+   * on are pushed right so nothing on the track overlaps -- see
+   * sceneCollision.ts. Live drag updates leave it off. */
+  retimeScene: (mediaId: string, sceneId: string, startTime: number, endTime: number, options?: { resolveCollisions?: boolean }) => void
   moveSceneToTrack: (mediaId: string, sceneId: string, track: string) => void
   toggleSceneLock: (mediaId: string, sceneId: string) => void
   toggleSceneLinked: (mediaId: string, sceneId: string) => void
@@ -70,7 +80,13 @@ interface SceneContextValue {
   /** Timeline "Text" tool and Template Library "Add": inserts a new scene of
    * `templateId` (default lower-third) at `atTime` on `track`, positioned in
    * the safe area with a default 3s duration, selected immediately for editing. */
-  insertScene: (mediaId: string, atTime: number, track: string, templateId?: TemplateId) => void
+  insertScene: (
+    mediaId: string,
+    atTime: number,
+    track: string,
+    templateId?: TemplateId,
+    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio'>>
+  ) => void
   /** Bulk-inserts every scene in one state update (and therefore one Undo
    * entry) -- the Local AI Scene Planner's "Apply" action builds each
    * accepted plan item into a real Scene (see
@@ -94,7 +110,18 @@ const SceneContext = createContext<SceneContextValue | null>(null)
 export function SceneProvider({ children }: { children: ReactNode }): JSX.Element {
   const { suggestionsByMedia } = useAiSuggestions()
   const [scenesByMedia, setScenesByMedia] = useState<Record<string, Scene[]>>({})
-  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null)
+  const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>([])
+  const selectedSceneId = selectedSceneIds[0] ?? null
+  // Every existing single-select call site keeps working: one id becomes
+  // a one-item selection, null clears it.
+  const setSelectedSceneId = useCallback((next: string | null | ((prev: string | null) => string | null)) => {
+    setSelectedSceneIds((prev) => {
+      const prevId = prev[0] ?? null
+      const resolved = typeof next === 'function' ? next(prevId) : next
+      if (resolved === prevId && prev.length <= 1) return prev
+      return resolved ? [resolved] : []
+    })
+  }, [])
 
   // Keep scenes in sync whenever accepted suggestions change (accept/reject,
   // edit, regenerate). Runs per media id so one media's edits don't touch another's.
@@ -114,7 +141,8 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
     })
   }, [suggestionsByMedia])
 
-  const selectScene = useCallback((sceneId: string | null) => setSelectedSceneId(sceneId), [])
+  const selectScene = useCallback((sceneId: string | null) => setSelectedSceneId(sceneId), [setSelectedSceneId])
+  const selectScenes = useCallback((sceneIds: string[]) => setSelectedSceneIds(sceneIds), [])
 
   const updateScene = useCallback((mediaId: string, sceneId: string, patch: Partial<Scene>) => {
     setScenesByMedia((prev) => ({
@@ -123,20 +151,30 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
     }))
   }, [])
 
-  const retimeScene = useCallback((mediaId: string, sceneId: string, startTime: number, endTime: number) => {
-    setScenesByMedia((prev) => ({
-      ...prev,
-      [mediaId]: (prev[mediaId] ?? [])
-        .map((s) => (s.id === sceneId ? { ...s, startTime, endTime, edited: true } : s))
-        .sort((a, b) => a.startTime - b.startTime)
-    }))
+  const retimeScene = useCallback((mediaId: string, sceneId: string, startTime: number, endTime: number, options?: { resolveCollisions?: boolean }) => {
+    setScenesByMedia((prev) => {
+      const list = prev[mediaId] ?? []
+      const target = list.find((s) => s.id === sceneId)
+      const rippled = options?.resolveCollisions && target ? applySceneRipple(list, planSceneRipple(list, target.track, startTime, endTime, sceneId)) : list
+      return {
+        ...prev,
+        [mediaId]: rippled.map((s) => (s.id === sceneId ? { ...s, startTime, endTime, edited: true } : s)).sort((a, b) => a.startTime - b.startTime)
+      }
+    })
   }, [])
 
   const moveSceneToTrack = useCallback((mediaId: string, sceneId: string, track: string) => {
-    setScenesByMedia((prev) => ({
-      ...prev,
-      [mediaId]: (prev[mediaId] ?? []).map((s) => (s.id === sceneId ? { ...s, track, edited: true } : s))
-    }))
+    setScenesByMedia((prev) => {
+      const list = prev[mediaId] ?? []
+      const target = list.find((s) => s.id === sceneId)
+      // Landing on another track makes room there too -- never on top of
+      // what that track already holds.
+      const rippled = target ? applySceneRipple(list, planSceneRipple(list, track, target.startTime, target.endTime, sceneId)) : list
+      return {
+        ...prev,
+        [mediaId]: rippled.map((s) => (s.id === sceneId ? { ...s, track, edited: true } : s)).sort((a, b) => a.startTime - b.startTime)
+      }
+    })
   }, [])
 
   const toggleSceneLock = useCallback((mediaId: string, sceneId: string) => {
@@ -159,16 +197,22 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
       const scene = list.find((s) => s.id === sceneId)
       if (!scene) return prev
       const copyId = crypto.randomUUID()
+      // The copy lands right AFTER the original (same length), pushing
+      // whatever follows on the track -- never stacked on top of it.
+      const length = scene.endTime - scene.startTime
       const copy: Scene = {
         ...scene,
         id: copyId,
         suggestionId: `manual-${copyId}`,
+        startTime: scene.endTime,
+        endTime: scene.endTime + length,
         edited: true,
         locked: false,
         createdAt: new Date().toISOString()
       }
       setSelectedSceneId(copyId)
-      return { ...prev, [mediaId]: [...list, copy].sort((a, b) => a.startTime - b.startTime) }
+      const rippled = applySceneRipple(list, planSceneRipple(list, scene.track, copy.startTime, copy.endTime, scene.id))
+      return { ...prev, [mediaId]: [...rippled, copy].sort((a, b) => a.startTime - b.startTime) }
     })
   }, [])
 
@@ -201,9 +245,28 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
     }))
   }, [])
 
-  const deleteScene = useCallback((mediaId: string, sceneId: string) => {
-    setScenesByMedia((prev) => ({ ...prev, [mediaId]: (prev[mediaId] ?? []).filter((s) => s.id !== sceneId) }))
-    setSelectedSceneId((prev) => (prev === sceneId ? null : prev))
+  const deleteScene = useCallback(
+    (mediaId: string, sceneId: string) => {
+      setScenesByMedia((prev) => ({ ...prev, [mediaId]: (prev[mediaId] ?? []).filter((s) => s.id !== sceneId) }))
+      setSelectedSceneIds((prev) => (prev.includes(sceneId) ? prev.filter((id) => id !== sceneId) : prev))
+    },
+    []
+  )
+
+  const deleteScenes = useCallback((sceneIds: string[]) => {
+    if (sceneIds.length === 0) return
+    const doomed = new Set(sceneIds)
+    setScenesByMedia((prev) => {
+      let changed = false
+      const next: Record<string, Scene[]> = {}
+      for (const [mediaId, list] of Object.entries(prev)) {
+        const kept = list.filter((s) => !doomed.has(s.id))
+        if (kept.length !== list.length) changed = true
+        next[mediaId] = kept
+      }
+      return changed ? next : prev
+    })
+    setSelectedSceneIds((prev) => (prev.some((id) => doomed.has(id)) ? prev.filter((id) => !doomed.has(id)) : prev))
   }, [])
 
   const splitScene = useCallback((mediaId: string, sceneId: string, atTime: number) => {
@@ -228,7 +291,13 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
   // than this pushing the new scene later in time on a fixed track. By the
   // time insertScene is called, `track`+`atTime` are already a valid,
   // non-overlapping placement.
-  const insertScene = useCallback((mediaId: string, atTime: number, track: string, templateId: TemplateId = 'lower-third') => {
+  const insertScene = useCallback((
+    mediaId: string,
+    atTime: number,
+    track: string,
+    templateId: TemplateId = 'lower-third',
+    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio'>>
+  ) => {
     const id = crypto.randomUUID()
     const defaults = defaultContentForTemplate(templateId, id)
     const duration = 3
@@ -255,9 +324,13 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
         ...(defaults?.content ? { content: defaults.content } : {}),
         ...(defaults?.icon ? { icon: defaults.icon } : {}),
         ...(defaults?.presentationMode ? { presentationMode: defaults.presentationMode } : {}),
-        ...(defaults?.background ? { background: defaults.background } : {})
+        ...(defaults?.background ? { background: defaults.background } : {}),
+        ...initialLayout
       }
-      return { ...prev, [mediaId]: [...(prev[mediaId] ?? []), scene].sort((a, b) => a.startTime - b.startTime) }
+      // Inserting at the playhead over an existing graphic pushes that
+      // graphic (and the chain after it) right rather than stacking on it.
+      const existing = applySceneRipple(prev[mediaId] ?? [], planSceneRipple(prev[mediaId] ?? [], track, startTime, startTime + duration))
+      return { ...prev, [mediaId]: [...existing, scene].sort((a, b) => a.startTime - b.startTime) }
     })
     setSelectedSceneId(id)
   }, [])
@@ -283,6 +356,9 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
       scenesByMedia,
       selectedSceneId,
       selectScene,
+      selectedSceneIds,
+      selectScenes,
+      deleteScenes,
       updateScene,
       retimeScene,
       moveSceneToTrack,
@@ -303,6 +379,9 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
       scenesByMedia,
       selectedSceneId,
       selectScene,
+      selectedSceneIds,
+      selectScenes,
+      deleteScenes,
       updateScene,
       retimeScene,
       moveSceneToTrack,

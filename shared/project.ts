@@ -19,6 +19,11 @@ import type {
 import type { TimelineTrack } from './timelineTracks'
 import { createDefaultTracks } from './timelineTracks'
 import type { StoryAnalysis, EntityBible, VisualPlan, StorySceneGroup, StoryVisualTheme } from './story'
+import type { NarrationWorkspaceState } from './narration'
+import { createDefaultNarrationWorkspaceState } from './narration'
+import type { DubbingWorkspaceState } from './dubbing'
+import { createDefaultDubbingWorkspaceState } from './dubbing'
+import type { ClipKeyframes } from './keyframes'
 
 export type { CommunicationPurpose }
 
@@ -417,6 +422,12 @@ export interface TimelineClip {
   /** Video/image only. Undefined = identity (centered, unscaled, unrotated,
    * uncropped) -- matches how the clip renders today without this field. */
   transform?: ClipTransform
+
+  /** Additive, schemaVersion 9, optional. A property with no entry here (or
+   * an empty array) reads its plain static field above exactly as before --
+   * keyframes are a purely opt-in, per-property overlay, never required.
+   * See shared/keyframes.ts's own doc comments for the interpolation rules. */
+  keyframes?: ClipKeyframes
 }
 
 export interface ClipTransform {
@@ -525,9 +536,17 @@ export interface ProjectFile {
    * optional `narrativeGraph`/`entityBible`/`visualPlan`/`sceneGroups` fields
    * for AI Connected Story Visualization (see shared/story.ts) -- purely
    * additive, no data to backfill, older files just need the version bump
-   * (see migrateToStoryVisualization). Always written as the current version
-   * on save; loadProject migrates older files forward. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7
+   * (see migrateToStoryVisualization). 8: added the optional
+   * `narrationWorkspace` field (see shared/narration.ts) for the Story
+   * Narration Workspace -- purely additive, defaults to an inactive/empty
+   * state, older files just need the version bump (see
+   * migrateToNarrationWorkspace). 10: added the optional `dubbingWorkspace`
+   * field (see shared/dubbing.ts) for AI Dubber -- purely additive, defaults
+   * to an inactive/empty state, older files just need the version bump (see
+   * migrateToDubbingWorkspace). 11 adds persisted AI Dubber speaker
+   * profiles/embeddings for diarization. Always written as the current version on
+   * save; loadProject migrates older files forward. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
   id: string
   name: string
   createdAt: string
@@ -546,6 +565,11 @@ export interface ProjectFile {
   brandPreset: BrandPreset
   captionsTrackEnabled: boolean
   privacyMode: 'fully-local' | 'cloud-assisted'
+  /** The frame chosen as this project's cover (Timeline > Cover): a PNG
+   * the app wrote beside its other generated files. Shown on the Home
+   * card in place of the first video's own thumbnail. Optional and
+   * additive -- older files simply have none. */
+  coverPath?: string
 
   /** All five fields below are additive (schemaVersion 7) and optional --
    * AI Connected Story Visualization (see shared/story.ts). A missing value
@@ -565,6 +589,21 @@ export interface ProjectFile {
   visualPlan?: Record<string, VisualPlan>
   sceneGroups?: StorySceneGroup[]
   theme?: Record<string, StoryVisualTheme>
+
+  /** Additive (schemaVersion 8), optional -- the Story Narration Workspace's
+   * own orchestration/progress state (see shared/narration.ts). Segment
+   * text/timing is NOT duplicated here; it lives in `transcripts[videoMediaId]`
+   * like any other transcript, whether it came from Whisper or an imported
+   * SRT (see Transcript.source). A missing value means the workspace has
+   * never been used in this project. */
+  narrationWorkspace?: NarrationWorkspaceState
+
+  /** Additive (schemaVersion 10), optional -- AI Dubber's own
+   * orchestration/progress state (see shared/dubbing.ts). Segment
+   * text/timing is NOT duplicated here; it lives in `transcripts[videoMediaId]`
+   * the same way Story Narration's does. A missing value means AI Dubber has
+   * never been used in this project. */
+  dubbingWorkspace?: DubbingWorkspaceState
 }
 
 export function createDefaultBrandPreset(): BrandPreset {
@@ -587,13 +626,40 @@ export function createDefaultBrandPreset(): BrandPreset {
 
 export const PROJECT_IPC = {
   getOrCreateStartup: 'project:getOrCreateStartup',
-  save: 'project:save'
+  save: 'project:save',
+  /** Home screen: every project on this machine (and the trashed ones),
+   * and the actions on them -- see app/main/project/projectStore.ts. */
+  list: 'project:list',
+  listTrash: 'project:listTrash',
+  create: 'project:create',
+  open: 'project:open',
+  rename: 'project:rename',
+  trash: 'project:trash',
+  restore: 'project:restore',
+  deleteForever: 'project:deleteForever'
 } as const
+
+/** One project as the Home screen shows it -- read from its file without
+ * loading (or migrating) the whole thing. */
+export interface ProjectSummary {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  /** Length of the edit: where the last clip ends. */
+  durationSeconds: number
+  clipCount: number
+  mediaCount: number
+  /** app-media:// URL of the first video's cached thumbnail, when it has one. */
+  thumbnailUrl?: string
+  /** The project file's own size on disk. */
+  sizeBytes: number
+}
 
 export function createNewProjectFile(name: string): ProjectFile {
   const now = new Date().toISOString()
   return {
-    schemaVersion: 7,
+    schemaVersion: 11,
     id: crypto.randomUUID(),
     name,
     createdAt: now,
@@ -611,6 +677,8 @@ export function createNewProjectFile(name: string): ProjectFile {
     entityBible: {},
     visualPlan: {},
     sceneGroups: [],
-    theme: {}
+    theme: {},
+    narrationWorkspace: createDefaultNarrationWorkspaceState(),
+    dubbingWorkspace: createDefaultDubbingWorkspaceState()
   }
 }

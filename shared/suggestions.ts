@@ -127,6 +127,11 @@ export interface GenerateSuggestionsResult {
   missingSegmentIds: string[]
 }
 
+/** What the Recap Script panel (AiScriptPanel) asks of the whole script:
+ * `rewrite` keeps the content and polishes the telling; `summarize`
+ * condenses it to a short recap. Both keep the script's own language. */
+export type ScriptTransformMode = 'rewrite' | 'summarize'
+
 export interface GenerateSuggestionsError {
   kind: ClaudeErrorKind
   message: string
@@ -141,5 +146,6 @@ export const AI_IPC = {
   generateSuggestions: 'ai:generateSuggestions',
   cancelRequest: 'ai:cancelRequest',
   regenerateSuggestion: 'ai:regenerateSuggestion',
-  simplifySuggestion: 'ai:simplifySuggestion'
+  simplifySuggestion: 'ai:simplifySuggestion',
+  transformScript: 'ai:transformScript'
 } as const

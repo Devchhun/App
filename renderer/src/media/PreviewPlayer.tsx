@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMedia } from './MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls, type SeekOptions } from '../playback/PlaybackContext'
 import { useScenes } from '../scenes/SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
@@ -8,9 +8,17 @@ import { GraphicsOverlay } from '../templates/GraphicsOverlay'
 import { SceneSelectionOverlay } from '../scenes/SceneSelectionOverlay'
 import { formatTimecode } from './format'
 import { computeStageSize } from './previewStageSize'
-import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode } from './previewPreferences'
+import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode, getPreviewQualityStorageKey, parseStoredPreviewQuality, type PreviewQuality, getScopeStorageKey, parseStoredScopeVisible } from './previewPreferences'
+import { ColorScope } from './ColorScope'
+import { StillFrameExportDialog } from './StillFrameExportDialog'
+import { useProject } from '../project/ProjectContext'
 import { findActiveClips } from '../sequence/sequenceOps'
+import { clipRate, sourceTimeAt, timelineTimeAtSource } from '@shared/clipTiming'
+import { isVideoReady, nextPlayheadTime } from './playbackClock'
 import { resolveActiveVideoClip, isTrackAudioMuted } from '../timeline/trackModel'
+import { useNarration } from '../narration/NarrationContext'
+import { useConfirm } from '../ui/ConfirmDialog'
+import { computeClipVisualStyle, resolveClipVolume, clipHasAnimatedProperties } from './clipVisuals'
 import type { TimelineClip } from '@shared/project'
 import {
   PlayIcon,
@@ -19,10 +27,10 @@ import {
   SkipEndIcon,
   StepBackIcon,
   StepForwardIcon,
-  CameraIcon,
+  SnapshotIcon,
   VolumeIcon,
   FullscreenIcon,
-  MenuDotsIcon
+  HamburgerIcon
 } from '../nav/icons'
 import type { BrandPreset } from '@shared/project'
 import type { MediaItem } from '@shared/media'
@@ -38,6 +46,15 @@ const FRAME_STEP_SECONDS = 1 / 30
  * project playhead expects before we force-correct it -- loose enough that
  * natural video decode timing doesn't fight this correction every frame. */
 const DRIFT_CORRECTION_THRESHOLD_SECONDS = 0.3
+/** During a live scrub drag, real <video> seeks (an actual decoder
+ * operation -- find the nearest keyframe, decode forward -- not a cheap
+ * state update) are throttled to at most once per this interval, instead of
+ * firing on every RAF-batched drag update (~60/s). Requesting seeks faster
+ * than the decoder can complete them just queues up latency, so the visible
+ * frame lagged further and further behind the pointer the longer a drag
+ * continued. The playhead position and timecode UI still update every
+ * frame regardless -- only the actual video-element seek is throttled. */
+const LIVE_SEEK_THROTTLE_MS = 100
 
 // `readyToUse` (probing done, duration/hasAudio/originalUrl known) rather
 // than `stage === 'ready'` (every background job finished) -- Preview plays
@@ -47,17 +64,23 @@ const DRIFT_CORRECTION_THRESHOLD_SECONDS = 0.3
 // computed in seconds against the (unchanging) probed metadata and applied
 // identically regardless of which URL this returns, so swapping sources
 // here never touches timing.
-function mediaUrl(media: MediaItem | undefined): string | undefined {
+function mediaUrl(media: MediaItem | undefined, quality: PreviewQuality = 'performance'): string | undefined {
   if (!media || !media.readyToUse) return undefined
-  return media.proxyUrl ?? media.originalUrl
+  // Best quality: the original at full resolution; best performance: the
+  // proxy whenever one exists (see the Player menu > Preview).
+  return quality === 'quality' ? media.originalUrl : (media.proxyUrl ?? media.originalUrl)
 }
 
 export function PreviewPlayer(): JSX.Element {
   const { items, selectedId } = useMedia()
-  const { registerSeek, reportTime, reportDuration, narrationMuted, toggleNarrationMuted, reportPlaying, registerPlayPause, registerFrameCapture } = usePlayback()
+  const { registerSeek, reportTime, reportDuration, narrationMuted, toggleNarrationMuted, reportPlaying, registerPlayPause, registerFrameCapture, captureFrame } =
+    usePlaybackControls()
+  const { importPaths } = useMedia()
+  const confirm = useConfirm()
   const { scenesByMedia, selectedSceneId } = useScenes()
   const { sequence } = useSequence()
   const { brandPreset } = useBrandPreset()
+  const narration = useNarration()
 
   const mediaById = useMemo(() => Object.fromEntries(items.map((m) => [m.id, m] as const)), [items])
   const selectedMedia = items.find((m) => m.id === selectedId)
@@ -78,9 +101,30 @@ export function PreviewPlayer(): JSX.Element {
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageWrapEl, setStageWrapEl] = useState<HTMLDivElement | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  // The user's requested transport state is kept separately from the
+  // element's transient paused state. Calling load() for a newly-active
+  // source emits pause before canplay; treating that as a real user pause
+  // left the button showing Pause while the media clock stayed at 00:00.
+  const playIntentRef = useRef(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [volume, setVolume] = useState(1)
   const [previewMode, setPreviewMode] = useState<'project' | 'source'>('project')
+
+  // Story Narration Workspace requires the PROJECT timeline to actually play
+  // during recording (its own playhead advance drives the auto-stop-at-bound
+  // check, the live waveform region on VO1, and the accepted take's exact
+  // timing) -- every play/seek/volume path above is deliberately a no-op
+  // whenever `previewMode !== 'project'` (Source Preview shows the raw
+  // media file, disconnected from the sequence entirely). If "Source
+  // Preview" was left selected from unrelated earlier use, entering the
+  // workspace would otherwise silently record audio-only: the video never
+  // visibly played, currentTime never advanced, and the live recording
+  // region on the Timeline stayed a zero-width sliver. Forced back to
+  // 'project' the moment the workspace activates, since there's no reason
+  // to view Source Preview while narrating.
+  useEffect(() => {
+    if (narration.active) setPreviewMode('project')
+  }, [narration.active])
   const [fitMode, setFitModeState] = useState<PreviewFitMode>(() => {
     if (typeof localStorage === 'undefined') return 'contain'
     try {
@@ -89,6 +133,28 @@ export function PreviewPlayer(): JSX.Element {
       return 'contain'
     }
   })
+  const [previewQuality, setPreviewQualityState] = useState<PreviewQuality>(() =>
+    parseStoredPreviewQuality(typeof localStorage === 'undefined' ? null : localStorage.getItem(getPreviewQualityStorageKey()))
+  )
+  const setPreviewQuality = (quality: PreviewQuality): void => {
+    setPreviewQualityState(quality)
+    try {
+      localStorage.setItem(getPreviewQualityStorageKey(), quality)
+    } catch {
+      // Per-machine convenience only.
+    }
+  }
+  const [scopeVisible, setScopeVisibleState] = useState<boolean>(() =>
+    parseStoredScopeVisible(typeof localStorage === 'undefined' ? null : localStorage.getItem(getScopeStorageKey()))
+  )
+  const setScopeVisible = (visible: boolean): void => {
+    setScopeVisibleState(visible)
+    try {
+      localStorage.setItem(getScopeStorageKey(), visible ? '1' : '0')
+    } catch {
+      // Per-machine convenience only.
+    }
+  }
   const setFitMode = (mode: PreviewFitMode): void => {
     setFitModeState(mode)
     if (typeof localStorage === 'undefined') return
@@ -99,6 +165,17 @@ export function PreviewPlayer(): JSX.Element {
     }
   }
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
+
+  const requestVideoPlay = useCallback((el: HTMLVideoElement): void => {
+    void el.play().catch((error: unknown) => {
+      if (!playIntentRef.current) return
+      // load()/src replacement commonly aborts the first play request. The
+      // canplay handler retries it against the now-ready source.
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      playIntentRef.current = false
+      setIsPlaying(false)
+    })
+  }, [])
 
   // A project can be pure graphics (scenes with no underlying V1/A1/A2 clip
   // at all -- e.g. a full-frame template over a transparent/solid
@@ -133,8 +210,11 @@ export function PreviewPlayer(): JSX.Element {
   // "topmost track renders/plays on top" rule Preview compositing uses).
   const activeV1Clip = useMemo(() => resolveActiveVideoClip(activeClips, sequence.tracks, currentTime), [activeClips, sequence.tracks, currentTime])
   const activeMedia = activeV1Clip ? mediaById[activeV1Clip.mediaId] : undefined
-  const activeSrc = mediaUrl(activeMedia)
-  const lastSyncedClipRef = useRef<{ id: string | undefined; src: string | undefined }>({ id: undefined, src: undefined })
+  const activeSrc = mediaUrl(activeMedia, previewQuality)
+  const lastSyncedClipRef = useRef<{ id: string | undefined; src: string | undefined; mediaId?: string }>({ id: undefined, src: undefined })
+  /** Wall-clock time (performance.now()) of the last real <video> seek --
+   * see LIVE_SEEK_THROTTLE_MS. */
+  const lastRealSeekAtRef = useRef(0)
 
   // CSS `aspect-ratio` combined with a percentage `max-height` inside this
   // flex chain doesn't reliably letterbox in this Chromium build -- the
@@ -168,7 +248,7 @@ export function PreviewPlayer(): JSX.Element {
    * that reaches into the video element imperatively; everything else only
    * ever changes `currentTime` state and lets this run in response. */
   const syncVideoToTime = useCallback(
-    (time: number, playing: boolean) => {
+    (time: number, playing: boolean, options?: SeekOptions, deferSourceSwap = false) => {
       const el = videoRef.current
       if (!el) return
       const clips = findActiveClips(sequence, time).filter((c) => !trackById[c.trackId]?.hidden)
@@ -181,53 +261,70 @@ export function PreviewPlayer(): JSX.Element {
       }
 
       const media = mediaById[v1.mediaId]
-      const src = mediaUrl(media)
+      const src = mediaUrl(media, previewQuality)
       if (!src) return
 
-      const localTime = v1.type === 'image' ? 0 : v1.sourceIn + (time - v1.startTime)
+      const localTime = v1.type === 'image' ? 0 : sourceTimeAt(v1, time)
+      el.playbackRate = clipRate(v1)
       const clipChanged = lastSyncedClipRef.current.id !== v1.id
+      // A preview proxy finishing in the background changes this media's URL
+      // mid-playback. Swapping then means load() + seek + a visible stall, so
+      // playback keeps the source it started with; the next pause, seek or
+      // clip change picks up the proxy.
+      const sameMediaNewUrl = lastSyncedClipRef.current.mediaId === v1.mediaId && lastSyncedClipRef.current.src !== undefined
+      if (deferSourceSwap && playing && !clipChanged && sameMediaNewUrl && lastSyncedClipRef.current.src !== src) return
       const srcChanged = lastSyncedClipRef.current.src !== src
 
       if (srcChanged) {
         el.src = src
         el.load()
       }
-      if (clipChanged || srcChanged || Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS) {
+      const needsSeek = clipChanged || srcChanged || Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS
+      // Only the fine-grained "still the same clip, just correcting drift"
+      // case is throttleable during a live scrub -- a genuine clip/source
+      // change always seeks immediately regardless, since that's a much
+      // rarer event within one drag and always needs a fresh seek anyway.
+      const throttled = options?.live && !clipChanged && !srcChanged && performance.now() - lastRealSeekAtRef.current < LIVE_SEEK_THROTTLE_MS
+      if (needsSeek && !throttled) {
         el.currentTime = localTime
+        lastRealSeekAtRef.current = performance.now()
       }
-      lastSyncedClipRef.current = { id: v1.id, src }
+      lastSyncedClipRef.current = { id: v1.id, src, mediaId: v1.mediaId }
 
       if (v1.type === 'video' && playing) {
-        if (el.paused) void el.play().catch(() => {})
+        if (el.paused) requestVideoPlay(el)
       } else if (!el.paused) {
         el.pause()
       }
     },
-    [sequence, mediaById, trackById]
+    [sequence, mediaById, previewQuality, trackById, requestVideoPlay]
   )
 
   const applyProjectTime = useCallback(
-    (time: number, playing: boolean) => {
+    (time: number, playing: boolean, options?: SeekOptions) => {
       const clamped = Math.max(0, Math.min(contentEndTime, time))
       setCurrentTime(clamped)
       reportTime(clamped)
-      if (previewMode === 'project') syncVideoToTime(clamped, playing)
+      if (previewMode === 'project') syncVideoToTime(clamped, playing, options)
       return clamped
     },
     [contentEndTime, reportTime, previewMode, syncVideoToTime]
   )
 
   // Explicit seeks (scrub bar, skip buttons, frame step, Timeline click,
-  // double-click a clip) -- always forces a full video re-sync.
+  // double-click a clip) -- always forces a full video re-sync, unless
+  // marked `live` (an in-progress scrub drag), which throttles just the
+  // real <video> seek (see LIVE_SEEK_THROTTLE_MS) while still updating the
+  // playhead/timecode UI every call.
   const seek = useCallback(
-    (value: number) => {
-      applyProjectTime(value, isPlaying)
+    (value: number, options?: SeekOptions) => {
+      applyProjectTime(value, isPlaying, options)
     },
     [applyProjectTime, isPlaying]
   )
 
   useEffect(() => {
-    registerSeek((time: number) => seek(time))
+    registerSeek((time: number, options?: SeekOptions) => seek(time, options))
     return () => registerSeek(null)
   }, [registerSeek, seek])
 
@@ -243,7 +340,9 @@ export function PreviewPlayer(): JSX.Element {
   isPlayingRef.current = isPlaying
   useEffect(() => {
     if (previewMode !== 'project') return
-    syncVideoToTime(currentTimeRef.current, isPlayingRef.current)
+    // This also fires when a proxy finishes (the media's URL changes): that
+    // swap waits for the next pause instead of stalling playback.
+    syncVideoToTime(currentTimeRef.current, isPlayingRef.current, undefined, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: see comment above.
   }, [sequence, previewMode, syncVideoToTime])
 
@@ -281,94 +380,70 @@ export function PreviewPlayer(): JSX.Element {
   useEffect(() => {
     registerPlayPause((playing: boolean) => {
       if (previewMode !== 'project') return
+      playIntentRef.current = playing
       setIsPlaying(playing)
       syncVideoToTime(currentTimeRef.current, playing)
     })
     return () => registerPlayPause(null)
   }, [registerPlayPause, previewMode, syncVideoToTime])
 
-  // Video-driven playback: while the active V1 clip is a real video, ride
-  // its native decode clock (rvfc, falling back to rAF) exactly like a
-  // single-file player would -- this is what keeps audio and picture in
-  // sync. The project's own `currentTime` is derived FROM the video
-  // element's position via the clip's startTime/sourceIn mapping.
+  // The playhead clock. While a video clip plays, the <video> element IS the
+  // clock: the playhead reads the frame the decoder is on, so there is no
+  // drift to correct and no seek-to-catch-up. (The previous design ran the
+  // playhead on the wall clock and made the video chase it; on long-GOP
+  // sources every catch-up seek took longer than the 0.3 s tolerance, so it
+  // seeked again every half second -- a stutter loop.) While the decoder is
+  // starting, seeking or buffering, the playhead waits for it -- briefly: a
+  // decoder that never delivers must not freeze the Timeline at 00:00 (the
+  // bug the wall clock was introduced for), so after MAX_HOLD_MS the wall
+  // clock takes over again. Gaps, stills and audio-only spans always use the
+  // wall clock. See playbackClock.ts.
   useEffect(() => {
-    const el = videoRef.current
-    if (!el || !isPlaying || previewMode !== 'project' || activeV1Clip?.type !== 'video') return
-    const clip = activeV1Clip
-    let cancelled = false
-    let rafHandle: number | null = null
-    let rvfcHandle: number | null = null
-
-    const publish = (): void => {
-      if (cancelled) return
-      const projectTime = clip.startTime + (el.currentTime - clip.sourceIn)
-      if (projectTime >= duration) {
-        applyProjectTime(duration, false)
-        setIsPlaying(false)
-        return
-      }
-      setCurrentTime(projectTime)
-      reportTime(projectTime)
-      // Crossing into a different clip (or off the end of this one) is
-      // handled by the render-time `activeV1Clip` recompute + this effect's
-      // own dependency on it -- but if the NEW active clip is still a video
-      // whose id differs, force an explicit sync/handoff here too.
-      const stillSameClip = projectTime >= clip.startTime && projectTime < clip.startTime + clip.duration
-      if (!stillSameClip) syncVideoToTime(projectTime, true)
-    }
-
-    const withRvfc = el as HTMLVideoElement & {
-      requestVideoFrameCallback?: (callback: () => void) => number
-      cancelVideoFrameCallback?: (handle: number) => void
-    }
-
-    if (typeof withRvfc.requestVideoFrameCallback === 'function') {
-      const loop = (): void => {
-        if (cancelled) return
-        publish()
-        rvfcHandle = withRvfc.requestVideoFrameCallback!(loop)
-      }
-      rvfcHandle = withRvfc.requestVideoFrameCallback(loop)
-    } else {
-      const loop = (): void => {
-        if (cancelled) return
-        publish()
-        rafHandle = requestAnimationFrame(loop)
-      }
-      rafHandle = requestAnimationFrame(loop)
-    }
-
-    return () => {
-      cancelled = true
-      if (rvfcHandle !== null) withRvfc.cancelVideoFrameCallback?.(rvfcHandle)
-      if (rafHandle !== null) cancelAnimationFrame(rafHandle)
-    }
-  }, [isPlaying, previewMode, activeV1Clip, duration, reportTime, applyProjectTime, syncVideoToTime])
-
-  // Wall-clock playback for spans where V1 has no playing video (a still
-  // image clip, or a gap) -- nothing else advances time in that case.
-  useEffect(() => {
-    if (!isPlaying || previewMode !== 'project' || activeV1Clip?.type === 'video') return
+    if (!isPlaying || previewMode !== 'project') return
     let cancelled = false
     let rafHandle: number | null = null
     let lastNow = performance.now()
+    let lastVideoTime = -1
+    let lastProgressAt = lastNow
 
     const loop = (now: number): void => {
       if (cancelled) return
-      const deltaSeconds = (now - lastNow) / 1000
+      // Do not jump several seconds after the renderer was suspended or a
+      // debugger breakpoint; resume with a bounded frame instead.
+      const deltaSeconds = Math.min(0.1, Math.max(0, (now - lastNow) / 1000))
       lastNow = now
-      setCurrentTime((prev) => {
-        const next = prev + deltaSeconds
-        if (next >= duration) {
-          applyProjectTime(duration, false)
-          setIsPlaying(false)
-          return duration
-        }
-        reportTime(next)
-        syncVideoToTime(next, true)
-        return next
+      const previous = currentTimeRef.current
+      const el = videoRef.current
+      const clips = findActiveClips(sequence, previous).filter((c) => !trackById[c.trackId]?.hidden)
+      const v1 = resolveActiveVideoClip(clips, sequence.tracks, previous)
+      // Only trust the element when it holds this very clip.
+      const videoOnScreen = !!el && v1?.type === 'video' && lastSyncedClipRef.current.id === v1.id
+      const ready = videoOnScreen && isVideoReady(el)
+      if (videoOnScreen && el.currentTime !== lastVideoTime) {
+        lastVideoTime = el.currentTime
+        if (ready) lastProgressAt = now
+      }
+      const { time: next } = nextPlayheadTime({
+        previousTime: previous,
+        wallDeltaSeconds: deltaSeconds,
+        videoTime: videoOnScreen ? timelineTimeAtSource(v1, el.currentTime) : null,
+        videoReady: ready,
+        stalledMs: now - lastProgressAt
       })
+      if (next >= contentEndTime) {
+        cancelled = true
+        playIntentRef.current = false
+        applyProjectTime(contentEndTime, false)
+        setIsPlaying(false)
+        return
+      }
+      // Update the ref in the same frame rather than waiting for React's
+      // render to copy state into it; this keeps the clock monotonic even
+      // when React batches several animation frames under heavy UI work.
+      currentTimeRef.current = next
+      setCurrentTime(next)
+      reportTime(next)
+      syncVideoToTime(next, true, undefined, true)
       rafHandle = requestAnimationFrame(loop)
     }
     rafHandle = requestAnimationFrame(loop)
@@ -377,7 +452,7 @@ export function PreviewPlayer(): JSX.Element {
       cancelled = true
       if (rafHandle !== null) cancelAnimationFrame(rafHandle)
     }
-  }, [isPlaying, previewMode, activeV1Clip?.type, duration, reportTime, applyProjectTime, syncVideoToTime])
+  }, [isPlaying, previewMode, contentEndTime, reportTime, applyProjectTime, syncVideoToTime, sequence, trackById])
 
   // Keep the video element's volume/mute in sync with the transport controls
   // AND the active clip's own volume + fade-in/fade-out (spec section 16) --
@@ -388,7 +463,7 @@ export function PreviewPlayer(): JSX.Element {
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
-    const clipVolume = activeV1Clip?.volume ?? 1
+    const clipVolume = resolveClipVolume(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0))
     let fadeMultiplier = 1
     if (activeV1Clip) {
       const elapsed = currentTime - activeV1Clip.startTime
@@ -401,28 +476,49 @@ export function PreviewPlayer(): JSX.Element {
       }
     }
     const trackMuted = activeV1Clip ? isTrackAudioMutedFn(activeV1Clip.trackId) : false
-    el.volume = Math.min(1, Math.max(0, volume * clipVolume * fadeMultiplier * (trackMuted ? 0 : 1)))
+    // A video clip with a `linkedClipId` has had its audio split off onto
+    // its own dedicated audio-track clip (via the explicit "Extract to
+    // Audio" action -- see SequenceContext.extractAudio; a plain video
+    // import no longer auto-creates this pair, see
+    // sequenceOps.buildInsertedClips), which plays separately through
+    // SecondaryTrackMedia below. Without this, the video element's own
+    // embedded audio track played at the same time as that linked clip's
+    // audio, so every such video was audibly doubled/echoing on every
+    // playback -- this silences the video element's own track whenever its
+    // audio lives in that separate clip instead.
+    const audioSplitToLinkedClip = !!activeV1Clip?.linkedClipId
+    // This is the SAME clip-level Mute checkbox SecondaryTrackMedia's own
+    // volume effect already honors (ClipPropertiesPanel.tsx's Mute toggle,
+    // sequenceOps.setClipsMuted) -- missing here meant muting the currently-
+    // playing main-track (V1) clip visibly showed the muted badge on it but
+    // never actually silenced it.
+    const clipMuted = !!activeV1Clip?.muted
+    // Story Narration Workspace: the original video keeps playing (visually)
+    // while actively recording, for timing reference, but its own audio must
+    // stay silent -- otherwise it plays back through the speakers right as
+    // the mic is capturing, bleeding into the very take being recorded.
+    // Countdown/reviewing/idle are unaffected (the original audio is still
+    // audible then, e.g. via "Play Original", for rehearsal/reference).
+    const recordingNarration = narration.phase === 'recording'
+    el.volume = Math.min(1, Math.max(0, volume * clipVolume * fadeMultiplier * (trackMuted || audioSplitToLinkedClip || clipMuted || recordingNarration ? 0 : 1)))
     el.muted = narrationMuted
-  }, [volume, narrationMuted, currentTime, activeV1Clip, isTrackAudioMutedFn])
+  }, [volume, narrationMuted, currentTime, activeV1Clip, isTrackAudioMutedFn, narration.phase])
 
   // Opacity/transform/crop (spec section 16) applied as plain CSS -- purely
-  // derived from the active clip's own data, no imperative video-element
-  // work needed (unlike volume/fades above, which are time-dependent).
-  const activeClipVisualStyle = useMemo((): React.CSSProperties => {
-    if (!activeV1Clip) return {}
-    const t = activeV1Clip.transform
-    const style: React.CSSProperties = {}
-    if (activeV1Clip.opacity !== undefined) style.opacity = activeV1Clip.opacity
-    if (t) {
-      style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.scaleX}, ${t.scaleY}) rotate(${t.rotation}deg)`
-      const top = (t.cropTop ?? 0) * 100
-      const right = (t.cropRight ?? 0) * 100
-      const bottom = (t.cropBottom ?? 0) * 100
-      const left = (t.cropLeft ?? 0) * 100
-      if (top || right || bottom || left) style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`
-    }
-    return style
-  }, [activeV1Clip])
+  // derived from the active clip's own data. A plain (unkeyframed) clip's
+  // style only ever changes when the clip identity itself changes, so this
+  // still memoizes on `activeV1Clip` alone in that case; a clip with
+  // Keyframe Animation (see clipVisuals.ts) needs `currentTime` too, the
+  // same way the volume/fade effect above already recomputes every frame --
+  // `clipHasAnimatedProperties` is what decides which of the two this is,
+  // so an unkeyframed clip's dependency list (and therefore recompute
+  // frequency) is completely unchanged from before this feature existed.
+  const activeClipAnimated = clipHasAnimatedProperties(activeV1Clip)
+  const activeClipVisualStyle = useMemo(
+    (): React.CSSProperties => computeClipVisualStyle(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `currentTime` is deliberately only a dependency while `activeClipAnimated` is true; see the comment above.
+    [activeV1Clip, activeClipAnimated ? currentTime : null]
+  )
 
   // Multi-track compositing/audio-mixing (spec section 20) -- every OTHER
   // active clip besides the one main-track video the existing rvfc-driven
@@ -442,11 +538,10 @@ export function PreviewPlayer(): JSX.Element {
 
   const togglePlay = (): void => {
     if (previewMode !== 'project') return
-    setIsPlaying((prev) => {
-      const next = !prev
-      syncVideoToTime(currentTime, next)
-      return next
-    })
+    const next = !playIntentRef.current
+    playIntentRef.current = next
+    setIsPlaying(next)
+    syncVideoToTime(currentTime, next)
   }
 
   const step = (deltaSeconds: number): void => seek(currentTime + deltaSeconds)
@@ -460,10 +555,65 @@ export function PreviewPlayer(): JSX.Element {
     else void el.requestFullscreen()
   }
 
+  // Player menu (the ≡ in the header): Preview mode / fit, still-frame
+  // export, fullscreen -- the same things the controls strip offers,
+  // gathered under one button the way CapCut's player menu is.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [submenu, setSubmenu] = useState<'preview' | 'scope' | null>(null)
+  const menuRootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onPointerDown = (e: PointerEvent): void => {
+      if (!menuRootRef.current?.contains(e.target as Node)) {
+        setMenuOpen(false)
+        setSubmenu(null)
+      }
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setMenuOpen(false)
+        setSubmenu(null)
+      }
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+  const closeMenu = (): void => {
+    setMenuOpen(false)
+    setSubmenu(null)
+  }
+
+  // "Export still frame": the frame under the playhead, saved as a PNG
+  // beside the app's other generated files and added to Media, so it can
+  // be dropped on the Timeline or found on disk (the dialog says where).
+  const canExportStill = previewMode === 'project' && activeV1Clip?.type === 'video'
+  const [stillFrame, setStillFrame] = useState<string | null>(null)
+  const { projectName } = useProject()
+  const exportStillFrame = (): void => {
+    closeMenu()
+    const dataUrl = captureFrame()
+    if (!dataUrl) {
+      void confirm({ title: 'No frame to export', message: 'Park the playhead on a video clip in Project Preview first.', confirmLabel: 'OK', cancelLabel: 'Close' })
+      return
+    }
+    setStillFrame(dataUrl)
+  }
+  const saveStillFrame = async (args: { dirPath: string; fileName: string; bytes: Uint8Array; importIntoProject: boolean }): Promise<void> => {
+    const savedPath = await window.api.media.saveStillFrame(args.dirPath, args.fileName, args.bytes)
+    if (args.importIntoProject) void importPaths([savedPath])
+    void confirm({ title: 'Still frame exported', message: `Saved to ${savedPath}${args.importIntoProject ? ' and added to Media.' : '.'}`, confirmLabel: 'OK', cancelLabel: 'Close' })
+  }
+
   const frameRate = activeMedia?.metadata?.frameRate || 30
+  const stillDefaultName = `${(projectName ?? 'Frame').replace(/[\\/:*?"<>|]+/g, '-')} ${formatTimecode(currentTime, frameRate).replace(/[:;]/g, '-')}`
 
   return (
     <div className="preview-player">
+      {stillFrame && <StillFrameExportDialog dataUrl={stillFrame} defaultName={stillDefaultName} onClose={() => setStillFrame(null)} onExport={saveStillFrame} />}
       <div className="preview-header">
         <span className="preview-header-title">Player</span>
         <div className="preview-mode-toggle">
@@ -476,16 +626,114 @@ export function PreviewPlayer(): JSX.Element {
           </button>
           <button
             className={previewMode === 'source' ? 'preview-mode-button preview-mode-button-active' : 'preview-mode-button'}
-            title="Source Preview -- the selected Media asset's raw file, never affects the Timeline"
-            disabled={!selectedMedia}
+            title={
+              narration.active
+                ? 'Unavailable during Story Narration -- recording plays back the Project timeline, never the raw source file'
+                : "Source Preview -- the selected Media asset's raw file, never affects the Timeline"
+            }
+            disabled={!selectedMedia || narration.active}
             onClick={() => setPreviewMode('source')}
           >
             Source Preview
           </button>
         </div>
-        <button className="preview-header-menu" title="More (coming soon)" disabled>
-          <MenuDotsIcon />
-        </button>
+        <div className="preview-menu-root" ref={menuRootRef}>
+          <button
+            className={menuOpen ? 'preview-header-menu preview-header-menu-open' : 'preview-header-menu'}
+            title="Player menu"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => {
+              setMenuOpen((v) => !v)
+              setSubmenu(null)
+            }}
+          >
+            <HamburgerIcon />
+          </button>
+          {menuOpen && (
+            <div className="preview-menu" role="menu">
+              <div className="preview-menu-item-wrap" onPointerEnter={() => setSubmenu('scope')}>
+                <button className="preview-menu-item" role="menuitem" onClick={() => setSubmenu(submenu === 'scope' ? null : 'scope')}>
+                  Color oscilloscope
+                  <span className="preview-menu-chevron" aria-hidden>
+                    ›
+                  </span>
+                </button>
+                {submenu === 'scope' && (
+                  <div className="preview-menu preview-submenu" role="menu">
+                    <button
+                      className={scopeVisible ? 'preview-menu-item preview-menu-item-checked' : 'preview-menu-item'}
+                      role="menuitemradio"
+                      aria-checked={scopeVisible}
+                      onClick={() => {
+                        setScopeVisible(true)
+                        closeMenu()
+                      }}
+                    >
+                      Show
+                    </button>
+                    <button
+                      className={!scopeVisible ? 'preview-menu-item preview-menu-item-checked' : 'preview-menu-item'}
+                      role="menuitemradio"
+                      aria-checked={!scopeVisible}
+                      onClick={() => {
+                        setScopeVisible(false)
+                        closeMenu()
+                      }}
+                    >
+                      Hide
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="preview-menu-item-wrap" onPointerEnter={() => setSubmenu('preview')}>
+                <button className="preview-menu-item" role="menuitem" onClick={() => setSubmenu(submenu === 'preview' ? null : 'preview')}>
+                  Preview
+                  <span className="preview-menu-chevron" aria-hidden>
+                    ›
+                  </span>
+                </button>
+                {submenu === 'preview' && (
+                  <div className="preview-menu preview-submenu preview-submenu-wide" role="menu">
+                    <button
+                      className={previewQuality === 'performance' ? 'preview-menu-item preview-menu-item-checked' : 'preview-menu-item'}
+                      role="menuitemradio"
+                      aria-checked={previewQuality === 'performance'}
+                      onClick={() => {
+                        setPreviewQuality('performance')
+                        closeMenu()
+                      }}
+                    >
+                      <span className="preview-menu-item-text">
+                        Best performance
+                        <span className="preview-menu-item-hint">Play the video smoothly.</span>
+                      </span>
+                    </button>
+                    <button
+                      className={previewQuality === 'quality' ? 'preview-menu-item preview-menu-item-checked' : 'preview-menu-item'}
+                      role="menuitemradio"
+                      aria-checked={previewQuality === 'quality'}
+                      onClick={() => {
+                        setPreviewQuality('quality')
+                        closeMenu()
+                      }}
+                    >
+                      <span className="preview-menu-item-text">
+                        Best quality
+                        <span className="preview-menu-item-hint">Show full resolution of the video.</span>
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="preview-menu-item-wrap" onPointerEnter={() => setSubmenu(null)}>
+                <button className="preview-menu-item" role="menuitem" disabled={!canExportStill} title={canExportStill ? 'Save the frame under the playhead as an image' : 'Park the playhead on a video clip first'} onClick={exportStillFrame}>
+                  Export still frames
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {previewMode === 'source' ? (
@@ -504,8 +752,22 @@ export function PreviewPlayer(): JSX.Element {
                 <video
                   ref={videoRef}
                   style={{ objectFit: fitMode, ...activeClipVisualStyle }}
-                  onPlay={() => setIsPlaying(true)}
-                  onPause={() => setIsPlaying(false)}
+                  onPlay={(e) => {
+                    if (playIntentRef.current) setIsPlaying(true)
+                    else e.currentTarget.pause()
+                  }}
+                  onPause={() => {
+                    // Ignore the synthetic pause caused by load()/src swap;
+                    // canplay below resumes while intent is still true.
+                    if (!playIntentRef.current) setIsPlaying(false)
+                  }}
+                  onCanPlay={(e) => {
+                    if (playIntentRef.current && e.currentTarget.paused) requestVideoPlay(e.currentTarget)
+                  }}
+                  onError={() => {
+                    playIntentRef.current = false
+                    setIsPlaying(false)
+                  }}
                 />
                 {!activeV1Clip && <div className="preview-stage-gap" />}
                 {secondaryClips.map((clip) => (
@@ -519,18 +781,56 @@ export function PreviewPlayer(): JSX.Element {
                     narrationMuted={narrationMuted}
                     trackMuted={isTrackAudioMutedFn(clip.trackId)}
                     zIndex={trackOrderById[clip.trackId] ?? 0}
+                    quality={previewQuality}
                   />
                 ))}
                 <GraphicsOverlay scenes={scenes} brand={brandPreset} currentTime={currentTime} selectedSceneId={selectedSceneId} stageSize={stageSize} />
+                {scopeVisible && <ColorScope videoRef={videoRef} />}
+                {/* Just the line being narrated -- the segment's own time
+                    range already shows in the Recording Assistant's card,
+                    so the blue timecode chip that used to sit here was a
+                    duplicate over the picture. */}
+                {narration.active && narration.currentSegment && (
+                  <div className="narration-subtitle-overlay">
+                    <div className="narration-subtitle-overlay-text">{narration.currentSegment.editedText ?? narration.currentSegment.text}</div>
+                  </div>
+                )}
               </div>
               <SceneSelectionOverlay stageRef={stageRef} currentTime={currentTime} brand={brandPreset} />
             </div>
           </div>
           <div className="preview-transport">
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.01}
+              value={currentTime}
+              onChange={(e) => seek(Number(e.target.value))}
+              className="preview-seek"
+              /* Drives the played-portion fill in CSS -- a range input can't
+                 colour its own track up to the current value on its own. */
+              style={{ '--seek-progress': `${duration > 0 ? (currentTime / duration) * 100 : 0}%` } as React.CSSProperties}
+            />
             <div className="preview-controls">
-              <span className="preview-time">
-                {formatTimecode(currentTime, frameRate)} / {formatTimecode(duration, frameRate)}
-              </span>
+              <div className="preview-controls-left">
+                <span className="preview-time">
+                  <span className="preview-time-current">{formatTimecode(currentTime, frameRate)}</span>
+                  <span className="preview-time-total">{formatTimecode(duration, frameRate)}</span>
+                </span>
+                <button title={narrationMuted ? 'Unmute' : 'Mute'} onClick={toggleNarrationMuted}>
+                  <VolumeIcon muted={narrationMuted} />
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={volume}
+                  onChange={(e) => changeVolume(Number(e.target.value))}
+                  className="preview-volume"
+                />
+              </div>
 
               <div className="preview-transport-buttons">
                 <button title="Skip to start" onClick={() => seek(0)}>
@@ -551,22 +851,10 @@ export function PreviewPlayer(): JSX.Element {
               </div>
 
               <div className="preview-controls-right">
-                <button disabled title="Snapshot export lands in a future phase">
-                  <CameraIcon />
+                <button disabled={!canExportStill} title={canExportStill ? 'Export still frames' : 'Park the playhead on a video clip first'} onClick={exportStillFrame}>
+                  <SnapshotIcon />
                 </button>
-                <button title={narrationMuted ? 'Unmute' : 'Mute'} onClick={toggleNarrationMuted}>
-                  <VolumeIcon muted={narrationMuted} />
-                </button>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={volume}
-                  onChange={(e) => changeVolume(Number(e.target.value))}
-                  className="preview-volume"
-                />
-                <select className="preview-fit-select" value={fitMode} onChange={(e) => setFitMode(e.target.value as 'contain' | 'cover')}>
+                <select className="preview-fit-select" title="How the picture fills the player" value={fitMode} onChange={(e) => setFitMode(e.target.value as 'contain' | 'cover')}>
                   <option value="contain">Fit</option>
                   <option value="cover">Fill</option>
                 </select>
@@ -575,15 +863,6 @@ export function PreviewPlayer(): JSX.Element {
                 </button>
               </div>
             </div>
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              step={0.01}
-              value={currentTime}
-              onChange={(e) => seek(Number(e.target.value))}
-              className="preview-seek"
-            />
           </div>
         </>
       )}
@@ -607,6 +886,7 @@ interface SecondaryTrackMediaProps {
    * the exact same "highest track paints on top" rule the main <video>'s own
    * clip-selection (resolveActiveVideoClip) already uses. */
   zIndex: number
+  quality: PreviewQuality
 }
 
 /** One additional simultaneously-active clip beyond whichever the main
@@ -623,14 +903,15 @@ interface SecondaryTrackMediaProps {
  * on every render (not frame-perfect like the rvfc master, but genuinely
  * synchronized, checked continuously during playback) rather than owning a
  * second independent clock that could drift. */
-function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex }: SecondaryTrackMediaProps): JSX.Element | null {
+function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex, quality }: SecondaryTrackMediaProps): JSX.Element | null {
   const elRef = useRef<HTMLVideoElement & HTMLAudioElement>(null)
-  const src = mediaUrl(media)
-  const localTime = clip.type === 'image' ? 0 : clip.sourceIn + (currentTime - clip.startTime)
+  const src = mediaUrl(media, quality)
+  const localTime = clip.type === 'image' ? 0 : sourceTimeAt(clip, currentTime)
 
   useEffect(() => {
     const el = elRef.current
     if (!el || clip.type === 'image') return
+    el.playbackRate = clipRate(clip)
     if (Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS) el.currentTime = localTime
     if (isPlaying) {
       if (el.paused) void el.play().catch(() => {})
@@ -642,29 +923,26 @@ function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume
   useEffect(() => {
     const el = elRef.current
     if (!el || clip.type === 'image') return
-    const clipVolume = clip.volume ?? 1
-    let fadeMultiplier = 1
     const elapsed = currentTime - clip.startTime
+    const clipVolume = resolveClipVolume(clip, elapsed)
+    let fadeMultiplier = 1
     const remaining = clip.startTime + clip.duration - currentTime
     if (clip.fadeIn && clip.fadeIn > 0 && elapsed < clip.fadeIn) fadeMultiplier = Math.min(fadeMultiplier, Math.max(0, elapsed / clip.fadeIn))
     if (clip.fadeOut && clip.fadeOut > 0 && remaining < clip.fadeOut) fadeMultiplier = Math.min(fadeMultiplier, Math.max(0, remaining / clip.fadeOut))
-    el.volume = Math.min(1, Math.max(0, globalVolume * clipVolume * fadeMultiplier * (clip.muted || trackMuted ? 0 : 1)))
+    // Same doubled-audio case the main <video> element's own volume effect
+    // guards against (see its `audioSplitToLinkedClip`) -- this branch
+    // renders every OTHER simultaneously-active video-kind clip (an overlay/
+    // picture-in-picture track), which just as easily has its own audio
+    // already split onto a separate linked clip that also plays here as a
+    // sibling SecondaryTrackMedia instance.
+    const audioSplitToLinkedClip = clip.type === 'video' && !!clip.linkedClipId
+    el.volume = Math.min(1, Math.max(0, globalVolume * clipVolume * fadeMultiplier * (clip.muted || trackMuted || audioSplitToLinkedClip ? 0 : 1)))
     el.muted = narrationMuted
   })
 
   if (!src || clip.enabled === false) return null
 
-  const t = clip.transform
-  const visualStyle: React.CSSProperties = { zIndex }
-  if (clip.opacity !== undefined) visualStyle.opacity = clip.opacity
-  if (t) {
-    visualStyle.transform = `translate(${t.x}px, ${t.y}px) scale(${t.scaleX}, ${t.scaleY}) rotate(${t.rotation}deg)`
-    const top = (t.cropTop ?? 0) * 100
-    const right = (t.cropRight ?? 0) * 100
-    const bottom = (t.cropBottom ?? 0) * 100
-    const left = (t.cropLeft ?? 0) * 100
-    if (top || right || bottom || left) visualStyle.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`
-  }
+  const visualStyle: React.CSSProperties = { zIndex, ...computeClipVisualStyle(clip, currentTime - clip.startTime) }
 
   if (clip.type === 'image') {
     // eslint-disable-next-line jsx-a11y/alt-text -- decorative Timeline overlay, not user-facing content needing description.
@@ -714,25 +992,40 @@ function SourcePreview({ media }: { media: MediaItem | undefined }): JSX.Element
   }
 
   return (
-    <div className="preview-stage-wrap">
-      <div className="preview-stage" style={{ width: '100%', height: '100%' }}>
-        <div className="preview-stage-clip">
-          <video
-            ref={videoRef}
-            src={src}
-            style={{ objectFit: 'contain' }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-          />
+    <>
+      <div className="preview-stage-wrap">
+        <div className="preview-stage" style={{ width: '100%', height: '100%' }}>
+          <div className="preview-stage-clip">
+            <video
+              ref={videoRef}
+              src={src}
+              style={{ objectFit: 'contain' }}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+            />
+          </div>
         </div>
       </div>
       <div className="preview-transport">
+        <input
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.01}
+          value={currentTime}
+          onChange={(e) => seek(Number(e.target.value))}
+          className="preview-seek"
+          style={{ '--seek-progress': `${duration > 0 ? (currentTime / duration) * 100 : 0}%` } as React.CSSProperties}
+        />
         <div className="preview-controls">
-          <span className="preview-time">
-            {formatTimecode(currentTime, 30)} / {formatTimecode(duration, 30)}
-          </span>
+          <div className="preview-controls-left">
+            <span className="preview-time">
+              <span className="preview-time-current">{formatTimecode(currentTime, 30)}</span>
+              <span className="preview-time-total">{formatTimecode(duration, 30)}</span>
+            </span>
+          </div>
           <div className="preview-transport-buttons">
             <button title="Skip to start" onClick={() => seek(0)}>
               <SkipStartIcon />
@@ -744,9 +1037,9 @@ function SourcePreview({ media }: { media: MediaItem | undefined }): JSX.Element
               <SkipEndIcon />
             </button>
           </div>
+          <div className="preview-controls-right" />
         </div>
-        <input type="range" min={0} max={duration || 0} step={0.01} value={currentTime} onChange={(e) => seek(Number(e.target.value))} className="preview-seek" />
       </div>
-    </div>
+    </>
   )
 }

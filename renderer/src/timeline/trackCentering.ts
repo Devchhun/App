@@ -1,5 +1,25 @@
 import type { TimelineTrack } from '@shared/timelineTracks'
 
+/** How tall the protected empty band between the ruler and the first track
+ * row is allowed to be right now.
+ *
+ * At its full `maxSafeZone` it costs that much on top of the ruler before a
+ * single track row can start -- fine on a normal panel, but when the
+ * Timeline is dragged down to a sliver, that fixed chrome is most of the
+ * panel and the rows it pushes down go straight off the bottom, leaving the
+ * user staring at an empty band with their clips scrolled out of sight. So
+ * it only keeps whatever's left after the ruler and the track rows have
+ * taken their share, down to 0 -- the rows are the point of the panel; the
+ * gap above them is a luxury.
+ *
+ * `viewportHeight <= 0` means "not measured yet" (first paint, before the
+ * caller's layout effect runs), NOT "no room at all" -- the full band is
+ * kept so it doesn't visibly collapse and re-expand on mount. */
+export function computeSafeZoneHeight(viewportHeight: number, rulerHeight: number, totalRowsHeight: number, maxSafeZone: number): number {
+  if (viewportHeight <= 0) return maxSafeZone
+  return Math.max(0, Math.min(maxSafeZone, viewportHeight - rulerHeight - totalRowsHeight))
+}
+
 /** CapCut-style main-track anchoring (not a fixed gap below the ruler): the
  * main video track's own vertical CENTER (not the whole track group's) is
  * targeted at `topRatio / (topRatio + bottomRatio)` of the usable track-area
@@ -26,7 +46,7 @@ import type { TimelineTrack } from '@shared/timelineTracks'
  * (ResizeObserver) so this always recomputes from the actual space
  * available, on any monitor size or OS display-scaling factor.)
  *
- * Both spacer heights are clamped to >=0: once the tracks above/below main
+ * Spacer heights are clamped to >=0 (or the optional trailing minimum): once the tracks above/below main
  * are tall enough on their own to exceed the target region, the
  * corresponding spacer collapses and the track area grows past its
  * `usableHeight` budget -- the ancestor scroll container takes over from
@@ -36,7 +56,8 @@ export function computeTrackCentering(
   trackHeightById: Record<string, number>,
   usableHeight: number,
   topRatio: number,
-  bottomRatio: number
+  bottomRatio: number,
+  minimumBottomSpacer = 0
 ): { topSpacerHeight: number; bottomSpacerHeight: number } {
   const mainIndex = sortedTracks.findIndex((t) => t.isMain)
   if (mainIndex === -1) {
@@ -46,7 +67,7 @@ export function computeTrackCentering(
     const totalHeight = sortedTracks.reduce((sum, t) => sum + trackHeightById[t.id], 0)
     const freeSpace = Math.max(0, usableHeight - totalHeight)
     const topSpacerHeight = (freeSpace * topRatio) / (topRatio + bottomRatio)
-    return { topSpacerHeight, bottomSpacerHeight: freeSpace - topSpacerHeight }
+    return { topSpacerHeight, bottomSpacerHeight: Math.max(minimumBottomSpacer, freeSpace - topSpacerHeight) }
   }
 
   const overlaysHeight = sortedTracks.slice(0, mainIndex).reduce((sum, t) => sum + trackHeightById[t.id], 0)
@@ -55,7 +76,13 @@ export function computeTrackCentering(
 
   const topFraction = topRatio / (topRatio + bottomRatio)
   const topSpacerHeight = Math.max(0, topFraction * usableHeight - mainHeight / 2 - overlaysHeight)
-  const bottomSpacerHeight = Math.max(0, usableHeight - topSpacerHeight - overlaysHeight - mainHeight - belowHeight)
+  // Keep a small trailing breathing area when requested by the Timeline.
+  // Once rows overflow, this intentionally extends the scrollable content
+  // instead of leaving the last row glued to the bottom edge.
+  const bottomSpacerHeight = Math.max(
+    minimumBottomSpacer,
+    usableHeight - topSpacerHeight - overlaysHeight - mainHeight - belowHeight
+  )
 
   return { topSpacerHeight, bottomSpacerHeight }
 }

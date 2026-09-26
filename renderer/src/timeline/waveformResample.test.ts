@@ -32,7 +32,15 @@ describe('computeWaveformBars', () => {
     const w = waveform([0, 0.1, 0, 0.2, 0, 0.3, 0, 0.4])
     // A clip trimmed to just the last 2 seconds (bucket 3 only, max 0.4).
     const bars = computeWaveformBars(w, 8, 6, 2, 1)
-    expect(bars).toEqual([{ min: 0, max: 0.4 }])
+    expect(bars).toEqual([{ min: 0, max: 0.4, avg: 0.4 }])
+  })
+
+  it('averages the per-bucket peaks under one pixel, so a zoomed-out bar shows loudness not the single loudest sample', () => {
+    // 4 buckets, all under ONE pixel: peaks 0.1 / 0.2 / 0.3 / 0.4.
+    const w = waveform([0, 0.1, 0, 0.2, 0, 0.3, 0, 0.4])
+    const [bar] = computeWaveformBars(w, 8, 0, 8, 1)
+    expect(bar.max).toBeCloseTo(0.4)
+    expect(bar.avg).toBeCloseTo(0.25)
   })
 
   it('returns an empty array when there is no waveform data', () => {

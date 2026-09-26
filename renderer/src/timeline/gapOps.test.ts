@@ -32,6 +32,26 @@ describe('removeGap', () => {
     const result = removeGap(s, 'V1', 3, 8)
     expect(result.clips.find((c) => c.id === 'b')!.startTime).toBe(3)
   })
+
+  it('also shifts a linked partner on a DIFFERENT track by default (regression: closing a gap on V1 used to leave the linked A1 dialogue clip behind, out of sync)', () => {
+    const s = seq([
+      clip({ id: 'v', trackId: 'V1', startTime: 8, duration: 2, linkedClipId: 'a' }),
+      clip({ id: 'a', trackId: 'A1', startTime: 8, duration: 2, type: 'audio', linkedClipId: 'v' })
+    ])
+    const result = removeGap(s, 'V1', 3, 8)
+    expect(result.clips.find((c) => c.id === 'v')!.startTime).toBe(3)
+    expect(result.clips.find((c) => c.id === 'a')!.startTime).toBe(3)
+  })
+
+  it('leaves the linked partner in place when linked=false (Linkage toggle off)', () => {
+    const s = seq([
+      clip({ id: 'v', trackId: 'V1', startTime: 8, duration: 2, linkedClipId: 'a' }),
+      clip({ id: 'a', trackId: 'A1', startTime: 8, duration: 2, type: 'audio', linkedClipId: 'v' })
+    ])
+    const result = removeGap(s, 'V1', 3, 8, false)
+    expect(result.clips.find((c) => c.id === 'v')!.startTime).toBe(3)
+    expect(result.clips.find((c) => c.id === 'a')!.startTime).toBe(8)
+  })
 })
 
 describe('removeAllGapsOnTrack', () => {
@@ -52,6 +72,17 @@ describe('removeAllGapsOnTrack', () => {
     const s = seq([clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 2 }), clip({ id: 'b', trackId: 'V1', startTime: 5, duration: 2 }), clip({ id: 'x', trackId: 'A1', startTime: 5, duration: 2 })])
     const result = removeAllGapsOnTrack(s, 'V1')
     expect(result.clips.find((c) => c.id === 'x')!.startTime).toBe(5)
+  })
+
+  it('cascades every closed gap to a linked partner on another track by default', () => {
+    const s = seq([
+      clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 2 }),
+      clip({ id: 'b', trackId: 'V1', startTime: 5, duration: 2, linkedClipId: 'x' }),
+      clip({ id: 'x', trackId: 'A1', startTime: 5, duration: 2, type: 'audio', linkedClipId: 'b' })
+    ])
+    const result = removeAllGapsOnTrack(s, 'V1')
+    expect(result.clips.find((c) => c.id === 'b')!.startTime).toBe(2)
+    expect(result.clips.find((c) => c.id === 'x')!.startTime).toBe(2)
   })
 })
 

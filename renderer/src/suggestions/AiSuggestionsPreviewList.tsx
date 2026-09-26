@@ -1,5 +1,5 @@
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useAiSuggestions } from './AiSuggestionsContext'
 import { useUiState } from '../nav/UiStateContext'
 import { PURPOSE_LABELS } from '@shared/suggestions'
@@ -14,8 +14,8 @@ const PREVIEW_COUNT = 3
 export function AiSuggestionsPreviewList(): JSX.Element {
   const { items, selectedId } = useMedia()
   const { suggestionsByMedia, setSuggestionStatus } = useAiSuggestions()
-  const { setRightTab } = useUiState()
-  const { seekTo } = usePlayback()
+  const { openSettings } = useUiState()
+  const { seekTo } = usePlaybackControls()
 
   const media = items.find((m) => m.id === selectedId)
   const suggestions = media ? (suggestionsByMedia[media.id] ?? []) : []
@@ -53,7 +53,7 @@ export function AiSuggestionsPreviewList(): JSX.Element {
           )}
         </div>
       ))}
-      <button className="inline-link-button" onClick={() => setRightTab('ai')}>
+      <button className="inline-link-button" onClick={() => openSettings('aiSuggestions')}>
         View all suggestions ({suggestions.length})
       </button>
     </div>

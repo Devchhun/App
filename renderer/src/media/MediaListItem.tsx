@@ -12,6 +12,9 @@ interface Props {
   onSelect: (e: React.MouseEvent) => void
   onCancel: () => void
   onRetry: () => void
+  /** Removes this item from the project's media list (never the real file on
+   * disk) -- always available, regardless of import stage. */
+  onDelete: () => void
   /** Undefined while the asset isn't ready to place (still validating/probing). */
   onAddToTimeline?: () => void
   /** Undefined while the asset isn't ready to drag onto the Timeline. */
@@ -20,7 +23,7 @@ interface Props {
 
 const TERMINAL_STAGES = new Set(['ready', 'error', 'canceled'])
 
-export function MediaListItem({ item, selected, multiSelected = false, compact = false, onSelect, onCancel, onRetry, onAddToTimeline, onDragStart }: Props): JSX.Element {
+export function MediaListItem({ item, selected, multiSelected = false, compact = false, onSelect, onCancel, onRetry, onDelete, onAddToTimeline, onDragStart }: Props): JSX.Element {
   const stillWorking = !TERMINAL_STAGES.has(item.stage)
   // `readyToUse` (set once probing knows duration/hasAudio and has a
   // playable original URL) is a separate, earlier gate than `stage ===
@@ -47,6 +50,20 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
       onDoubleClick={(e) => e.stopPropagation()}
     >
       +
+    </button>
+  )
+
+  const deleteButton = (
+    <button
+      className="media-thumb-delete-button"
+      title="Remove from project"
+      onClick={(e) => {
+        e.stopPropagation()
+        onDelete()
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      ✕
     </button>
   )
 
@@ -118,6 +135,7 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         {item.metadata && <span className="media-row-duration">{formatDuration(item.metadata.durationSeconds)}</span>}
         {selected && <span className="media-card-check media-row-check">✓</span>}
         {actions}
+        {deleteButton}
       </li>
     )
   }
@@ -140,6 +158,7 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         {selected && <span className="media-card-check">✓</span>}
         {item.metadata && <span className="media-card-duration">{formatDuration(item.metadata.durationSeconds)}</span>}
         {addButton}
+        {deleteButton}
         {backgroundBadge}
         {blockedOnImport && (
           <div className="media-card-progress-overlay">

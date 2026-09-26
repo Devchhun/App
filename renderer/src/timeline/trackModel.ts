@@ -6,6 +6,11 @@
 // codebase's established pure-module-first convention.
 import type { TimelineTrack, TimelineTrackKind } from '@shared/timelineTracks'
 import { MIN_TRACK_HEIGHT, DEFAULT_VIDEO_TRACK_HEIGHT, DEFAULT_AUDIO_TRACK_HEIGHT, DEFAULT_GRAPHIC_TRACK_HEIGHT } from '@shared/timelineTracks'
+// Re-exported for backward compatibility -- every existing renderer import
+// of `isTrackAudioMuted` still comes from here, but the implementation now
+// lives in shared/ so shared/export.ts (main-process export compositor) can
+// apply the exact same Mute/Solo semantics Preview does.
+export { isTrackAudioMuted } from '@shared/timelineTracks'
 import { findNonOverlappingStart } from '../scenes/sceneTimelinePlacement'
 
 const MAX_TRACK_HEIGHT = 160
@@ -98,7 +103,19 @@ export interface OccupiedRange {
  * candidate only counts as "free" if findNonOverlappingStart would return
  * desiredStart unchanged (a genuine gap, not "would need a push"). If every
  * same-kind track is occupied at that time, synthesizes a new track instead
- * of pushing time forward on an existing one. */
+ * of pushing time forward on an existing one.
+ *
+ * VO-prefixed tracks (VO1, VO2, ...) are excluded from the audio-kind
+ * candidate list entirely -- they're reserved exclusively for Story
+ * Narration Workspace accepted takes (see findOrCreateNarrationTrack, the
+ * ONLY function allowed to route onto them). Without this exclusion, this
+ * generic routing (used for every OTHER audio insertion -- Quick Record, a
+ * regular video import's own auto-linked audio, Freeze Frame, etc.) could
+ * land on an empty VO1 the same as any other free audio track, silently
+ * mixing an unrelated video's own dialogue into the narration track.
+ * DUB-prefixed tracks (DUB1, DUB2, ...) are excluded for the identical
+ * reason -- reserved exclusively for AI Dubber generated clips (see
+ * findOrCreateDubbingTrack). */
 export function findOrCreateTrack(
   tracks: TimelineTrack[],
   occupiedRanges: OccupiedRange[],
@@ -106,7 +123,9 @@ export function findOrCreateTrack(
   duration: number,
   kind: TimelineTrackKind
 ): RoutingResult {
-  const candidates = tracksOfKind(tracks, kind).sort((a, b) => a.order - b.order)
+  const candidates = tracksOfKind(tracks, kind)
+    .filter((t) => !(kind === 'audio' && (/^VO\d+$/.test(t.id) || /^DUB\d+$/.test(t.id))))
+    .sort((a, b) => a.order - b.order)
   for (const track of candidates) {
     if (track.locked) continue
     const rangesOnTrack = occupiedRanges.filter((r) => r.trackId === track.id).map((r) => ({ startTime: r.startTime, endTime: r.endTime }))
@@ -128,6 +147,70 @@ export function findOrCreateTrack(
   return { trackId: id, newTrack }
 }
 
+/** Where an accepted Story Narration take lands -- prefers the fixed VO1
+ * track (the normal case: every segment's own non-overlapping time range
+ * fits there in sequence), but a take that runs long (recording is never
+ * forcibly cut off at the SRT boundary -- see NarrationContext.tsx's own
+ * doc comment on that) can genuinely overlap an adjacent segment's own
+ * already-accepted take. Same collision-avoidance as findOrCreateTrack,
+ * scoped to VO-prefixed tracks specifically (VO1, VO2, ...) so overflow
+ * narration takes land on a dedicated additional voice-over track rather
+ * than a generic A-numbered one. */
+export function findOrCreateNarrationTrack(tracks: TimelineTrack[], occupiedRanges: OccupiedRange[], desiredStart: number, duration: number): RoutingResult {
+  const voTracks = tracks.filter((t) => t.kind === 'audio' && /^VO\d+$/.test(t.id)).sort((a, b) => Number(a.id.slice(2)) - Number(b.id.slice(2)))
+  for (const track of voTracks) {
+    if (track.locked) continue
+    const rangesOnTrack = occupiedRanges.filter((r) => r.trackId === track.id).map((r) => ({ startTime: r.startTime, endTime: r.endTime }))
+    const resolvedStart = findNonOverlappingStart(rangesOnTrack, desiredStart, duration)
+    if (resolvedStart === desiredStart) return { trackId: track.id }
+  }
+  const nextNum = voTracks.reduce((max, t) => Math.max(max, Number(t.id.slice(2))), 0) + 1
+  const id = `VO${nextNum}`
+  const newTrack: TimelineTrack = {
+    id,
+    kind: 'audio',
+    name: `${id} · Voice Over`,
+    order: trackOrderForNewTrack(tracks, 'audio'),
+    height: defaultHeightForKind('audio'),
+    hidden: false,
+    locked: false,
+    muted: false,
+    removable: true
+  }
+  return { trackId: id, newTrack }
+}
+
+/** Where a generated AI Dubber clip lands -- identical collision-avoidance
+ * to findOrCreateNarrationTrack, scoped to DUB-prefixed tracks (DUB1, DUB2,
+ * ...) instead of VO-prefixed ones. Every dubbed line is normally placed at
+ * its own subtitle's exact time range, so overlaps are rare, but two
+ * adjacent subtitles with no gap between them (or a re-generated line that
+ * now runs slightly longer) can still collide -- overflow lands on a
+ * dedicated additional dubbing track rather than a generic A-numbered one. */
+export function findOrCreateDubbingTrack(tracks: TimelineTrack[], occupiedRanges: OccupiedRange[], desiredStart: number, duration: number): RoutingResult {
+  const dubTracks = tracks.filter((t) => t.kind === 'audio' && /^DUB\d+$/.test(t.id)).sort((a, b) => Number(a.id.slice(3)) - Number(b.id.slice(3)))
+  for (const track of dubTracks) {
+    if (track.locked) continue
+    const rangesOnTrack = occupiedRanges.filter((r) => r.trackId === track.id).map((r) => ({ startTime: r.startTime, endTime: r.endTime }))
+    const resolvedStart = findNonOverlappingStart(rangesOnTrack, desiredStart, duration)
+    if (resolvedStart === desiredStart) return { trackId: track.id }
+  }
+  const nextNum = dubTracks.reduce((max, t) => Math.max(max, Number(t.id.slice(3))), 0) + 1
+  const id = `DUB${nextNum}`
+  const newTrack: TimelineTrack = {
+    id,
+    kind: 'audio',
+    name: `${id} · AI Dubbing`,
+    order: trackOrderForNewTrack(tracks, 'audio'),
+    height: defaultHeightForKind('audio'),
+    hidden: false,
+    locked: false,
+    muted: false,
+    removable: true
+  }
+  return { trackId: id, newTrack }
+}
+
 /** Horizontal-culling predicate (spec section 17: 1-2 hour narration files
  * must stay smooth) -- half-open-interval overlap test, same convention as
  * rangesOverlap, so a clip exactly touching the viewport edge (startTime ===
@@ -137,6 +220,22 @@ export function findOrCreateTrack(
  * this works for both TimelineClip and Scene without importing either type. */
 export function isInViewport(startTime: number, duration: number, viewStart: number, viewEnd: number): boolean {
   return startTime < viewEnd && startTime + duration > viewStart
+}
+
+/** `trackHasContent` (Timeline.tsx) is built purely from `sequence.clips`/
+ * scenes -- the caption track never carries either (CaptionsTrack renders
+ * straight from `transcripts`, a wholly separate data source), so its own
+ * entry could never become true any other way, leaving C1 permanently
+ * invisible even once a video had a real AI transcript or an imported SRT
+ * with actual segments -- despite visibleTracksForDisplay's own doc comment
+ * promising it "stays visible once it has content." Called once with the
+ * current media's own segment count; every caption-kind track (there is
+ * normally exactly one, C1) is marked has-content together. */
+export function withCaptionTrackContent(map: Record<string, boolean>, tracks: TimelineTrack[], hasCaptionSegments: boolean): Record<string, boolean> {
+  if (!hasCaptionSegments) return map
+  const next = { ...map }
+  for (const t of tracks) if (t.kind === 'caption') next[t.id] = true
+  return next
 }
 
 /** Which tracks the Timeline actually renders as a row -- an empty track (no
@@ -154,21 +253,32 @@ export function isInViewport(startTime: number, duration: number, viewStart: num
  * remains the existing drop-to-auto-create-a-track target (see
  * ClipTrack.tsx's performMove), so hiding a track never removes the ability
  * to add one back. */
-export function visibleTracksForDisplay(tracks: TimelineTrack[], trackHasContent: Record<string, boolean>): TimelineTrack[] {
-  return sortTracksForDisplay(tracks).filter((t) => trackHasContent[t.id] || t.isMain)
+export function visibleTracksForDisplay(
+  tracks: TimelineTrack[],
+  trackHasContent: Record<string, boolean>,
+  /** Track ids to show even when empty and not main -- used by the Story
+   * Narration Workspace so VO1 is visible on the Timeline the moment the
+   * workspace is prepared, before its first accepted take exists. */
+  alwaysVisibleIds?: Set<string>
+): TimelineTrack[] {
+  return sortTracksForDisplay(tracks).filter((t) => trackHasContent[t.id] || t.isMain || alwaysVisibleIds?.has(t.id))
 }
 
-/** Display order for the Timeline's track rows: video/graphic/text render
- * with the highest-order (topmost-painting) track shown highest in the row
- * stack too, matching the existing V3-above-V2-above-V1 visual convention;
- * audio tracks list in ascending order; the caption track always sorts
- * last. */
+/** Display order for Timeline rows, with Main Track as a hard boundary:
+ * every visual overlay (non-main video, graphic, text) stays above it;
+ * only audio and caption/SRT rows may appear below it. Within the upper
+ * visual group, higher paint order still renders first. */
 export function sortTracksForDisplay(tracks: TimelineTrack[]): TimelineTrack[] {
-  const rank: Record<TimelineTrackKind, number> = { video: 0, graphic: 0, text: 0, audio: 1, caption: 2 }
+  const rank = (track: TimelineTrack): number => {
+    if (track.kind === 'video' && track.isMain) return 1
+    if (track.kind === 'video' || track.kind === 'graphic' || track.kind === 'text') return 0
+    if (track.kind === 'audio') return 2
+    return 3
+  }
   return [...tracks].sort((a, b) => {
-    const kindDiff = rank[a.kind] - rank[b.kind]
+    const kindDiff = rank(a) - rank(b)
     if (kindDiff !== 0) return kindDiff
-    if (rank[a.kind] === 0) return b.order - a.order // video/graphic/text: highest order first
+    if (rank(a) === 0) return b.order - a.order // visual overlays: highest order first
     return a.order - b.order // audio (and caption, though there's only ever one)
   })
 }
@@ -226,6 +336,88 @@ export function resolveActiveVideoClip<C extends { trackId: string; startTime: n
 export function ensureTrack(tracks: TimelineTrack[], track: TimelineTrack): TimelineTrack[] {
   if (tracks.some((t) => t.id === track.id)) return tracks
   return [...tracks, track]
+}
+
+/** The Story Narration Workspace's dedicated, always-created-first voice-
+ * over track's fixed id -- accepted takes land here whenever it has room
+ * (see sequenceOps.acceptNarrationTake), never on a generically-numbered
+ * audio track. A take that overflows it (see findOrCreateNarrationTrack)
+ * lands on VO2, VO3, ... instead -- use isNarrationTrackId, not a literal
+ * `=== NARRATION_TRACK_ID` check, anywhere a clip/track needs to be
+ * recognized as "a Story Narration take/track" regardless of which specific
+ * VO-numbered one it ended up on. */
+export const NARRATION_TRACK_ID = 'VO1'
+
+/** True for VO1 and any overflow narration track created alongside it
+ * (VO2, VO3, ...) -- see findOrCreateNarrationTrack. Every UI treatment
+ * that's specific to an accepted Story Narration take (the violet "Take N"
+ * badge/styling in ClipTrack.tsx, the live recording region) must check
+ * this, not `=== NARRATION_TRACK_ID`, or a take that overflowed onto VO2+
+ * silently renders as a plain, unstyled audio clip instead. */
+export function isNarrationTrackId(trackId: string): boolean {
+  return /^VO\d+$/.test(trackId)
+}
+
+/** Ensures VO1 exists -- idempotent, safe to call every time the workspace
+ * is (re)prepared. `removable:false` mirrors the one fixed caption track's
+ * own "always exists once created, not user-deletable" precedent (see
+ * shared/timelineTracks.ts's C1): a Story Narration Workspace can't
+ * function without somewhere to land accepted takes, so it isn't subject to
+ * pruneEmptyTracks or the ordinary "..." menu's Delete Track action.
+ * Labeled "VO1 · Voice Over" (not "Narration") to avoid confusion with A1,
+ * which is already labeled "Narration" as the video's own linked/original
+ * audio -- a completely different track. */
+export function ensureNarrationTrack(tracks: TimelineTrack[]): TimelineTrack[] {
+  if (tracks.some((t) => t.id === NARRATION_TRACK_ID)) return tracks
+  const newTrack: TimelineTrack = {
+    id: NARRATION_TRACK_ID,
+    kind: 'audio',
+    name: 'VO1 · Voice Over',
+    order: trackOrderForNewTrack(tracks, 'audio'),
+    height: defaultHeightForKind('audio'),
+    hidden: false,
+    locked: false,
+    muted: false,
+    removable: false
+  }
+  return [...tracks, newTrack]
+}
+
+/** AI Dubber's dedicated, always-created-first dubbing track's fixed id --
+ * generated clips land here whenever it has room (see
+ * sequenceOps.acceptDubbingClip), never on a generically-numbered audio
+ * track. A clip that overflows it (see findOrCreateDubbingTrack) lands on
+ * DUB2, DUB3, ... instead -- use isDubbingTrackId, not a literal
+ * `=== DUBBING_TRACK_ID` check, anywhere a clip/track needs to be
+ * recognized as "an AI Dubber clip/track" regardless of which specific
+ * DUB-numbered one it ended up on. */
+export const DUBBING_TRACK_ID = 'DUB1'
+
+/** True for DUB1 and any overflow dubbing track created alongside it
+ * (DUB2, DUB3, ...) -- see findOrCreateDubbingTrack. */
+export function isDubbingTrackId(trackId: string): boolean {
+  return /^DUB\d+$/.test(trackId)
+}
+
+/** Ensures DUB1 exists -- idempotent, safe to call every time the workspace
+ * is (re)prepared. `removable:false` mirrors ensureNarrationTrack's own
+ * precedent exactly: AI Dubber can't function without somewhere to land
+ * generated clips, so it isn't subject to pruneEmptyTracks or the ordinary
+ * "..." menu's Delete Track action. */
+export function ensureDubbingTrack(tracks: TimelineTrack[]): TimelineTrack[] {
+  if (tracks.some((t) => t.id === DUBBING_TRACK_ID)) return tracks
+  const newTrack: TimelineTrack = {
+    id: DUBBING_TRACK_ID,
+    kind: 'audio',
+    name: 'DUB1 · AI Dubbing',
+    order: trackOrderForNewTrack(tracks, 'audio'),
+    height: defaultHeightForKind('audio'),
+    hidden: false,
+    locked: false,
+    muted: false,
+    removable: false
+  }
+  return [...tracks, newTrack]
 }
 
 /** `explicitId`, when given, is used verbatim instead of computing a fresh
@@ -359,19 +551,3 @@ export function collapseAll(tracks: TimelineTrack[], collapsed: boolean): Timeli
   return tracks.map((t) => ({ ...t, collapsed }))
 }
 
-/** Resolves whether a track's audio should be silenced, given the whole
- * sequence's tracks -- standard DAW-style Mute/Solo semantics: once ANY
- * track is soloed, every non-soloed track is silenced regardless of its own
- * `muted` flag, while the soloed track(s) themselves stay audible even if
- * also explicitly muted (soloing always wins for that same track);
- * otherwise (nothing soloed) a track is silenced only by its own `muted`
- * flag. Used by PreviewPlayer.tsx to actually apply the track header's
- * Mute/Solo controls to playback (previously typed and toggleable but never
- * read anywhere, so they had no real effect). */
-export function isTrackAudioMuted(tracks: TimelineTrack[], trackId: string): boolean {
-  const track = tracks.find((t) => t.id === trackId)
-  if (!track) return false
-  const anySoloed = tracks.some((t) => t.solo)
-  if (anySoloed) return !track.solo
-  return !!track.muted
-}

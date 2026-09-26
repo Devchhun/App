@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useMemo } from 'react'
 import { useSequence } from '../sequence/SequenceContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
+import { useNarration } from '../narration/NarrationContext'
 import { frameDuration } from './frameMath'
+import { useScenes } from '../scenes/SceneContext'
 
 function isEditingText(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
@@ -18,6 +20,13 @@ const FRAME_STEP_FPS = 30
  * stays generic there). Every handler bails out while the user is typing in
  * an input/textarea, matching that same existing guard.
  *
+ * Also owns the Story Narration Workspace's own recording shortcuts,
+ * checked first so they win over this same file's plain Space (play/pause)
+ * and Backspace (delete selected clip) while the Recording Assistant panel
+ * is active: Shift+Space starts recording the current segment (idle) or
+ * stops it (recording); Backspace discards the just-recorded take while
+ * it's still under review (redoTake), before it's been Accepted.
+ *
  * Deliberately does NOT call beginTransaction/endTransaction around these --
  * each action here is a single, already-atomic state update (unlike a
  * pointer drag's many intermediate updates), so HistoryContext's own
@@ -27,7 +36,14 @@ const FRAME_STEP_FPS = 30
  * begin+mutate+end back-to-back is actually a bug: React batches the state
  * update, so `endTransaction` would still see the PRE-mutation snapshot and
  * record a no-op. */
-export function useTimelineShortcuts(sequenceDuration: number): void {
+interface CaptionSelectionShortcuts {
+  selectedIds: string[]
+  allIds: string[]
+  select: (ids: string[]) => void
+  removeSelected: () => void
+}
+
+export function useTimelineShortcuts(sequenceDuration: number, captions?: CaptionSelectionShortcuts, playbackEndTime = sequenceDuration): void {
   const {
     sequence,
     selectedTimelineClipIds,
@@ -43,8 +59,16 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
     deleteRange,
     addMarkerAtTime
   } = useSequence()
-  const { currentTime, seekTo, isPlaying, setPlaying } = usePlayback()
+  // getCurrentTime() -- a point-in-time read, not the reactive usePlaybackTime()
+  // hook -- since every use below is inside a keydown handler or the shuttle's
+  // own rAF loop, never JSX; this keeps the global keydown listener from being
+  // torn down and re-added 60x/sec during playback (its own effect used to
+  // depend on `currentTime` directly).
+  const { seekTo, isPlaying, setPlaying, getCurrentTime } = usePlaybackControls()
+  const { scenesByMedia, selectedSceneIds, selectScenes, deleteScenes } = useScenes()
+  const allScenes = useMemo(() => Object.values(scenesByMedia).flat(), [scenesByMedia])
   const { linkageOn, tool, setTool, rangeSelection, setRangeSelection, rippleScope, pixelsPerSecond, setPixelsPerSecond, timelineViewportWidth } = useTimelineView()
+  const { active: narrationActive, phase: narrationPhase, startRecording: startNarrationRecording, stopRecording: stopNarrationRecording, redoTake: redoNarrationTake } = useNarration()
 
   // J/K/L shuttle -- forward playback uses the real <video> element (smooth,
   // native decode) at 1x; a REPEATED L (already forward-shuttling) and every
@@ -55,8 +79,7 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
   // stepped rather than perfectly smooth. Speed doubles (up to 8x) on each
   // repeated same-direction press, matching "repeated J/L increase speed."
   const shuttleRef = useRef<{ direction: 1 | -1; speed: number; rafId: number } | null>(null)
-  const currentTimeRef = useRef(currentTime)
-  currentTimeRef.current = currentTime
+  const shuttleTimeRef = useRef(0)
 
   const stopShuttle = useCallback(() => {
     if (shuttleRef.current) cancelAnimationFrame(shuttleRef.current.rafId)
@@ -66,20 +89,25 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
   const startShuttle = useCallback(
     (direction: 1 | -1, speed: number) => {
       setPlaying(false)
+      shuttleTimeRef.current = getCurrentTime()
       let last = performance.now()
       const tick = (now: number): void => {
         const dt = (now - last) / 1000
         last = now
-        const next = Math.max(0, Math.min(sequenceDuration, currentTimeRef.current + direction * speed * dt))
+        const next = Math.max(0, Math.min(playbackEndTime, shuttleTimeRef.current + direction * speed * dt))
         seekTo(next)
-        currentTimeRef.current = next
+        shuttleTimeRef.current = next
+        if ((direction > 0 && next >= playbackEndTime) || (direction < 0 && next <= 0)) {
+          shuttleRef.current = null
+          return
+        }
         const rafId = requestAnimationFrame(tick)
         shuttleRef.current = { direction, speed, rafId }
       }
       const rafId = requestAnimationFrame(tick)
       shuttleRef.current = { direction, speed, rafId }
     },
-    [seekTo, setPlaying, sequenceDuration]
+    [seekTo, setPlaying, playbackEndTime, getCurrentTime]
   )
 
   useEffect(() => stopShuttle, [stopShuttle])
@@ -87,6 +115,28 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (isEditingText(e.target)) return
+      // A point-in-time read, taken once per keypress -- every use below is
+      // synchronous within this same handler invocation, never JSX.
+      const currentTime = getCurrentTime()
+
+      // Story Narration Workspace's own recording shortcuts -- checked
+      // first (and returning unconditionally once matched) so they always
+      // win over the plain-Space play/pause and Backspace-deletes-clip
+      // handlers below, which would otherwise also fire for the same
+      // keypress while the Recording Assistant panel is active.
+      if (narrationActive) {
+        if (e.shiftKey && e.key === ' ') {
+          e.preventDefault()
+          if (narrationPhase === 'idle') startNarrationRecording()
+          else if (narrationPhase === 'recording') stopNarrationRecording()
+          return
+        }
+        if (e.key === 'Backspace' && narrationPhase === 'reviewing') {
+          e.preventDefault()
+          redoNarrationTake()
+          return
+        }
+      }
 
       if (e.ctrlKey || e.metaKey) {
         if (e.key.toLowerCase() === 'd' && selectedTimelineClipIds.length > 0) {
@@ -112,6 +162,8 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
         } else if (e.key.toLowerCase() === 'a') {
           e.preventDefault()
           selectClips(sequence.clips.map((c) => c.id))
+          selectScenes(allScenes.map((s) => s.id))
+          captions?.select(captions.allIds)
         }
         return
       }
@@ -122,8 +174,13 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
         // same Shift-forces-ripple convention as the clip-selection case below.
         deleteRange(rangeSelection, e.shiftKey)
         setRangeSelection(null)
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTimelineClipIds.length > 0) {
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && (selectedTimelineClipIds.length > 0 || selectedSceneIds.length > 0 || Boolean(captions?.selectedIds.length))) {
         e.preventDefault()
+        // Every selected Timeline item goes in one command, even when the
+        // selection mixes clips, graphics and subtitle blocks.
+        if (selectedSceneIds.length > 0) deleteScenes(selectedSceneIds)
+        if (captions?.selectedIds.length) captions.removeSelected()
+        if (selectedTimelineClipIds.length === 0) return
         // Shift+Delete = Ripple Delete (spec section 9) using the current
         // Ripple-scope setting regardless of whether the Ripple toggle itself
         // is on -- an explicit command, not gated by the ambient toggle.
@@ -204,7 +261,7 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
       } else if (e.key === 'ArrowRight' && e.shiftKey) {
         e.preventDefault()
         stopShuttle()
-        seekTo(Math.min(sequenceDuration, currentTime + 1))
+        seekTo(Math.min(playbackEndTime, currentTime + 1))
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
         stopShuttle()
@@ -212,7 +269,7 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         stopShuttle()
-        seekTo(Math.min(sequenceDuration, currentTime + frameDuration(FRAME_STEP_FPS)))
+        seekTo(Math.min(playbackEndTime, currentTime + frameDuration(FRAME_STEP_FPS)))
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         // Previous/next edit point -- the nearest clip boundary (any clip's
         // start or end) strictly before/after the playhead, across every track.
@@ -235,6 +292,8 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
       } else if (e.key === 'Escape') {
         stopShuttle()
         clearClipSelection()
+        selectScenes([])
+        captions?.select([])
         setRangeSelection(null)
       } else if (e.key === 'Home') {
         e.preventDefault()
@@ -243,7 +302,7 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
       } else if (e.key === 'End') {
         e.preventDefault()
         stopShuttle()
-        seekTo(sequenceDuration)
+        seekTo(playbackEndTime)
       }
     }
 
@@ -252,6 +311,7 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
   }, [
     sequence,
     selectedTimelineClipIds,
+    captions,
     selectClips,
     deleteSelected,
     duplicateSelected,
@@ -261,13 +321,19 @@ export function useTimelineShortcuts(sequenceDuration: number): void {
     cutSelected,
     pasteAtTime,
     pasteAttributesToSelected,
-    currentTime,
+    getCurrentTime,
     seekTo,
     isPlaying,
+    narrationActive,
+    narrationPhase,
+    startNarrationRecording,
+    stopNarrationRecording,
+    redoNarrationTake,
     setPlaying,
     startShuttle,
     stopShuttle,
     sequenceDuration,
+    playbackEndTime,
     linkageOn,
     tool,
     setTool,

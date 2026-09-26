@@ -8,6 +8,9 @@ import { sortTracksForDisplay, trackDisplayHeight } from './trackModel'
 import { TrackHeaderMenu } from './TrackHeaderMenu'
 import { EyeIcon, LockIcon, VolumeIcon, VideoTrackIcon, AudioTrackIcon, GraphicTrackIcon, TextTrackIcon, CaptionTrackIcon } from '../nav/icons'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
+import { useConfirm } from '../ui/ConfirmDialog'
+import { useProject } from '../project/ProjectContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 
 /** Kinds that can actually carry audio (a video's own embedded track, or a
  * dedicated audio track) -- these get the Mute speaker icon; graphic/text/
@@ -33,6 +36,10 @@ function TrackKindIcon({ kind }: { kind: TimelineTrackKind }): JSX.Element {
 
 interface Props {
   tracks: TimelineTrack[]
+  /** Display-only kind override for legacy tracks whose saved kind predates
+   * dedicated text tracks (e.g. an old Add Text lower-third on a graphic
+   * row). It changes only the glyph, never project data. */
+  iconKindByTrackId?: Record<string, TimelineTrackKind>
   /** Which tracks currently have any clips/scenes on them -- gates the
    * "confirm before deleting a non-empty track" behavior in the "..." menu. */
   trackHasContent: Record<string, boolean>
@@ -44,6 +51,14 @@ interface Props {
    * rows they're supposed to label sit lower, centered around the main
    * track -- every row would point at the wrong track. */
   topSpacerHeight: number
+  /** The other half of that same centering result. Without it this column
+   * ended right below its last header row while the content column beside
+   * it kept going for another `bottomSpacerHeight` -- so the header strip's
+   * own background simply stopped partway down, leaving a bare unfilled
+   * band under it, and (because `.timeline-scroll-2d` lays the two columns
+   * out as flex-start siblings) the short column had less height to scroll
+   * through than the tall one next to it. */
+  bottomSpacerHeight: number
 }
 
 /** One row shape for every track kind, parameterized by `track.kind` for
@@ -52,7 +67,7 @@ interface Props {
  * The "..." menu (and the ability to add a sibling above/below) is hidden
  * for the one fixed caption track, which has no siblings and can't be
  * deleted/duplicated (see shared/timelineTracks.ts's `removable`). */
-function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasContent: boolean }): JSX.Element {
+function UnifiedTrackHeader({ track, hasContent, iconKind }: { track: TimelineTrack; hasContent: boolean; iconKind?: TimelineTrackKind }): JSX.Element {
   const { toggleTrackFlag, addTrackAt, duplicateTrack, renameTrack, removeTrack, reorderTrack } = useSequence()
   const { scenesByMedia, deleteScene } = useScenes()
   const { beginTransaction, endTransaction } = useHistory()
@@ -132,33 +147,12 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
       onContextMenu={handleContextMenu}
       onDoubleClick={() => setEditingName(true)}
     >
-      <span className="timeline-header-kind-icon" title={track.kind}>
-        <TrackKindIcon kind={track.kind} />
+      <span className="timeline-header-kind-icon" title={iconKind ?? track.kind}>
+        <TrackKindIcon kind={iconKind ?? track.kind} />
       </span>
-      {AUDIBLE_KINDS.includes(track.kind) && (
-        <button
-          className={track.muted ? 'timeline-header-icon timeline-header-icon-active' : 'timeline-header-icon'}
-          title={track.muted ? 'Unmute' : 'Mute'}
-          onClick={(e) => {
-            e.stopPropagation()
-            toggleTrackFlag(track.id, 'muted')
-          }}
-        >
-          <VolumeIcon size={16} muted={track.muted} />
-        </button>
-      )}
-      {VISUAL_KINDS.includes(track.kind) && (
-        <button
-          className="timeline-header-icon"
-          title={track.hidden ? 'Show' : 'Hide'}
-          onClick={(e) => {
-            e.stopPropagation()
-            toggleTrackFlag(track.id, 'hidden')
-          }}
-        >
-          <EyeIcon open={!track.hidden} size={16} />
-        </button>
-      )}
+      {/* CapCut's order and spacing: kind, lock, eye, speaker, menu --
+          spread evenly across the header so every row's icons line up in
+          columns, with an empty slot where a kind has no eye/speaker. */}
       <button
         className="timeline-header-icon"
         title={track.locked ? 'Unlock track' : 'Lock track'}
@@ -169,6 +163,35 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
       >
         <LockIcon locked={track.locked} size={16} />
       </button>
+      {VISUAL_KINDS.includes(track.kind) ? (
+        <button
+          className="timeline-header-icon"
+          title={track.hidden ? 'Show' : 'Hide'}
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleTrackFlag(track.id, 'hidden')
+          }}
+        >
+          <EyeIcon open={!track.hidden} size={16} />
+        </button>
+      ) : (
+        <span className="timeline-header-icon timeline-header-icon-slot" aria-hidden />
+      )}
+      {AUDIBLE_KINDS.includes(track.kind) ? (
+        <button
+          className={track.muted ? 'timeline-header-icon timeline-header-icon-active' : 'timeline-header-icon'}
+          title={track.muted ? 'Unmute' : 'Mute'}
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleTrackFlag(track.id, 'muted')
+          }}
+        >
+          <VolumeIcon size={16} muted={track.muted} />
+        </button>
+      ) : (
+        <span className="timeline-header-icon timeline-header-icon-slot" aria-hidden />
+      )}
+      {!track.removable && <span className="timeline-header-icon timeline-header-icon-slot" aria-hidden />}
       {track.removable && (
         <TrackHeaderMenu
           track={track}
@@ -188,14 +211,97 @@ function UnifiedTrackHeader({ track, hasContent }: { track: TimelineTrack; hasCo
   )
 }
 
-export function TimelineTrackHeaders({ tracks, trackHasContent, topSpacerHeight }: Props): JSX.Element {
+export function TimelineTrackHeaders({ tracks, iconKindByTrackId, trackHasContent, topSpacerHeight, bottomSpacerHeight }: Props): JSX.Element {
   return (
     <div className="timeline-headers">
-      <div className="timeline-header-spacer" />
+      {/* The Cover tab lives in the corner above the headers, where it
+          never sits on top of a clip's first seconds. */}
+      <div className="timeline-header-ruler-spacer">
+        <CoverButton />
+      </div>
+      <div className="timeline-header-safe-zone-spacer" />
       <div className="timeline-tracks-spacer" style={{ height: topSpacerHeight }} />
       {sortTracksForDisplay(tracks).map((track) => (
-        <UnifiedTrackHeader key={track.id} track={track} hasContent={trackHasContent[track.id] ?? false} />
+        <UnifiedTrackHeader key={track.id} track={track} iconKind={iconKindByTrackId?.[track.id]} hasContent={trackHasContent[track.id] ?? false} />
       ))}
+      {/* Mirrors the content column's own trailing spacer (Timeline.tsx), so
+          both columns come out exactly the same height -- see the prop's own
+          doc comment. Also gives the sticky main-track header row the same
+          run of parent height its content-side counterpart has to stay
+          pinned through. */}
+      <div className="timeline-tracks-spacer" style={{ height: bottomSpacerHeight }} />
     </div>
+  )
+}
+
+/** CapCut's "Cover" tab: the frame under the playhead becomes the
+ * project's cover -- the picture its Home card
+ * shows. Saved as a PNG beside the app's other generated files. */
+function CoverButton(): JSX.Element {
+  const { captureFrame } = usePlaybackControls()
+  const { projectId, setCover } = useProject()
+  const confirm = useConfirm()
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const setCoverFromPlayhead = async (): Promise<void> => {
+    if (status === 'saving') return
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
+    setStatus('saving')
+    try {
+      const dataUrl = captureFrame()
+      if (!dataUrl) {
+        setStatus('error')
+        await confirm({
+          title: 'No frame for the cover',
+          message: 'Move the playhead onto a visible video or image frame in Project Preview, then press Cover again.',
+          confirmLabel: 'OK',
+          hideCancel: true
+        })
+        return
+      }
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      const binary = atob(base64)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+      const savedPath = await window.api.media.saveGeneratedFile(`cover-${projectId ?? 'project'}.png`, bytes)
+      setCover(savedPath)
+      setStatus('saved')
+      await confirm({
+        title: 'Project cover updated',
+        message: 'The frame under the playhead is now this project’s cover on the Home screen.',
+        confirmLabel: 'OK',
+        hideCancel: true
+      })
+    } catch (error) {
+      setStatus('error')
+      await confirm({
+        title: 'Could not set cover',
+        message: error instanceof Error ? error.message : 'The current frame could not be saved. Please try another frame.',
+        confirmLabel: 'OK',
+        hideCancel: true
+      })
+    } finally {
+      resetTimerRef.current = setTimeout(() => setStatus('idle'), 1800)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`timeline-cover-button timeline-cover-button-${status}`}
+      title="Set this frame as the project cover (shown on the Home screen)"
+      disabled={status === 'saving'}
+      aria-live="polite"
+      onClick={(e) => {
+        e.stopPropagation()
+        void setCoverFromPlayhead()
+      }}
+    >
+      <svg width={13} height={13} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M4 14.5V16h1.5L15 6.5 13.5 5zM11.5 7l1.5 1.5" />
+      </svg>
+      {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Cover set' : status === 'error' ? 'Try again' : 'Cover'}
+    </button>
   )
 }

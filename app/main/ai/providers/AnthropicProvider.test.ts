@@ -153,6 +153,60 @@ describe('AnthropicProvider -- cancellation and timeout', () => {
   })
 })
 
+describe('AnthropicProvider.translateSegments -- structured-output parsing (HTTP error/cancel/timeout mapping is shared with classifySegments and covered above, not re-tested here)', () => {
+  it('parses a valid tool_use response into translation results', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, { content: [{ type: 'tool_use', name: 'translate_segments', input: { results: [{ segmentId: 's1', translated: 'សួស្តី' }] } }] }))
+    )
+    const provider = new AnthropicProvider()
+    const results = await provider.translateSegments('key', [{ segmentId: 's1', text: 'Hello' }], 'Khmer', new AbortController().signal)
+    expect(results).toEqual([{ segmentId: 's1', translated: 'សួស្តី' }])
+  })
+
+  it('drops schema-invalid entries but keeps valid ones', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          content: [{ type: 'tool_use', name: 'translate_segments', input: { results: [{ segmentId: 's1', translated: 'ok' }, { segmentId: '', translated: '' }] } }]
+        })
+      )
+    )
+    const provider = new AnthropicProvider()
+    const results = await provider.translateSegments('key', [{ segmentId: 's1', text: 'a' }], 'Khmer', new AbortController().signal)
+    expect(results).toEqual([{ segmentId: 's1', translated: 'ok' }])
+  })
+
+  it('throws a schema error when every entry is invalid', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, { content: [{ type: 'tool_use', name: 'translate_segments', input: { results: [{ segmentId: '', translated: '' }] } }] }))
+    )
+    const provider = new AnthropicProvider()
+    await expect(provider.translateSegments('key', [{ segmentId: 's1', text: 'a' }], 'Khmer', new AbortController().signal)).rejects.toMatchObject({
+      kind: 'schema'
+    })
+  })
+
+  it('throws a schema error when there is no tool_use block at all', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, { content: [{ type: 'text', text: 'no tool call' }] })))
+    const provider = new AnthropicProvider()
+    await expect(provider.translateSegments('key', [{ segmentId: 's1', text: 'a' }], 'Khmer', new AbortController().signal)).rejects.toMatchObject({
+      kind: 'schema'
+    })
+  })
+
+  it('returns an empty array without making any request for zero segments', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const provider = new AnthropicProvider()
+    const results = await provider.translateSegments('key', [], 'Khmer', new AbortController().signal)
+    expect(results).toEqual([])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('AnthropicProvider.simplifyText', () => {
   it('returns the simplified phrase from a valid tool_use response', async () => {
     vi.stubGlobal(

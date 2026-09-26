@@ -16,6 +16,7 @@ import {
   moveClips,
   deleteTimeRange,
   resolveMoveSet,
+  moveClipSet,
   setClipsEnabled,
   linkClips,
   unlinkClips,
@@ -28,6 +29,8 @@ import {
   moveClipToTrack,
   moveClipToNewTrack,
   removeTrack,
+  acceptNarrationTake,
+  acceptDubbingClip,
   pickClipProperties,
   applyClipProperties,
   resetClipProperties,
@@ -37,7 +40,10 @@ import {
   updateMarker,
   removeMarker,
   addClipMarker,
-  removeClipMarker
+  removeClipMarker,
+  addOrUpdateKeyframe,
+  moveKeyframe,
+  removeKeyframe
 } from './sequenceOps'
 import { updateClipSelection, clearClipSelection } from './sequenceSelection'
 import type { ProjectSequence, TimelineClip } from '@shared/project'
@@ -103,6 +109,43 @@ describe('1. Image default duration is 5 seconds', () => {
   it('inserts at the playhead, clamped to >= 0', () => {
     const [clip] = buildInsertedClips({ mediaId: 'm1', type: 'image', sourceDurationSeconds: 0 }, -5, 'V1', makeId)
     expect(clip.startTime).toBe(0)
+  })
+})
+
+describe('buildInsertedClips: video (no more auto-split linked audio clip)', () => {
+  it('produces a single video clip, not a linked video+audio pair -- a plain import is one clip, matching the reference editor\'s own default of one clip per file until "Extract to Audio" is used explicitly', () => {
+    idCounter = 0
+    const inserted = buildInsertedClips({ mediaId: 'm1', type: 'video', sourceDurationSeconds: 10 }, 0, 'V1', makeId)
+    expect(inserted).toHaveLength(1)
+    expect(inserted[0].type).toBe('video')
+    expect(inserted[0].linkedClipId).toBeUndefined()
+  })
+})
+
+describe('buildInsertedClips: optional overrides (e.g. AI Dubber muting the original video on insert)', () => {
+  it('applies muted: true when passed, leaving every other field at its normal default', () => {
+    idCounter = 0
+    const [clip] = buildInsertedClips({ mediaId: 'm1', type: 'video', sourceDurationSeconds: 10 }, 0, 'V1', makeId, { muted: true })
+    expect(clip.muted).toBe(true)
+    expect(clip.locked).toBe(false)
+  })
+
+  it('leaves muted undefined when no overrides are given, same as before this param existed', () => {
+    idCounter = 0
+    const [clip] = buildInsertedClips({ mediaId: 'm1', type: 'video', sourceDurationSeconds: 10 }, 0, 'V1', makeId)
+    expect(clip.muted).toBeUndefined()
+  })
+})
+
+describe('insertClip: a plain video import never creates or touches an audio track', () => {
+  it('inserts only the one video clip, leaving A1 untouched even when it already has content', () => {
+    const a1 = track({ id: 'A1', kind: 'audio', order: 0 })
+    const existing: TimelineClip = { id: 'existing-a', mediaId: 'm0', type: 'audio', trackId: 'A1', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10, locked: false }
+    const sequence: ProjectSequence = { tracks: [a1], clips: [existing], markers: [], duration: 10 }
+    const result = insertClip(sequence, { mediaId: 'm1', type: 'video', sourceDurationSeconds: 10 }, 0, 'V1', makeId)
+    expect(result.clips.filter((c) => c.type === 'video')).toHaveLength(1)
+    expect(result.clips.find((c) => c.id === 'existing-a')).toEqual(existing)
+    expect(result.tracks).toEqual(sequence.tracks)
   })
 })
 
@@ -213,6 +256,9 @@ describe('8. Linked video/audio split together', () => {
     expect(audioPieces).toHaveLength(2)
     for (const piece of result.clips) {
       expect([0, 5]).toContain(piece.startTime)
+      const linked = result.clips.find((other) => other.id === piece.linkedClipId)
+      expect(linked?.linkedClipId).toBe(piece.id)
+      expect(linked?.startTime).toBe(piece.startTime)
     }
   })
 
@@ -226,6 +272,7 @@ describe('8. Linked video/audio split together', () => {
 
     expect(result.clips.filter((c) => c.type === 'video')).toHaveLength(2)
     expect(result.clips.filter((c) => c.type === 'audio')).toHaveLength(1)
+    expect(result.clips.find((c) => c.id === 'a1')?.linkedClipId).toBeUndefined()
   })
 })
 
@@ -627,6 +674,56 @@ describe('resolveMoveSet', () => {
   })
 })
 
+describe('moveClipSet', () => {
+  it('moves selected clips together while preserving their relative spacing', () => {
+    const sequence = seqOf([videoClip({ id: 'a', startTime: 1, duration: 2 }), videoClip({ id: 'b', startTime: 6, duration: 2 })])
+    const result = moveClipSet(sequence, 'a', ['a', 'b'], 3, false)
+    expect(result.clips.map((c) => c.startTime)).toEqual([3, 8])
+  })
+
+  it('clamps the whole selection at zero and at an external clip', () => {
+    const sequence = seqOf([videoClip({ id: 'a', startTime: 1, duration: 2 }), videoClip({ id: 'b', startTime: 6, duration: 2 }), videoClip({ id: 'wall', startTime: 10, duration: 2 })])
+    expect(moveClipSet(sequence, 'a', ['a', 'b'], -5, false).clips.map((c) => c.startTime)).toEqual([0, 5, 10])
+    expect(moveClipSet(sequence, 'a', ['a', 'b'], 9, false).clips.map((c) => c.startTime)).toEqual([3, 8, 10])
+  })
+})
+
+describe('speed-aware clip edits', () => {
+  it('retimes the source window, splits at the right source frame, and trims in source seconds', () => {
+    const original = seqOf([videoClip({ id: 'v', duration: 10, sourceOut: 10 })])
+    const fast = applyClipProperties(original, ['v'], { playbackRate: 2 })
+    expect(fast.clips[0]).toMatchObject({ duration: 5, sourceIn: 0, sourceOut: 10, playbackRate: 2 })
+    const pieces = splitClip(fast, 'v', 2, { makeId }).clips
+    expect(pieces[0]).toMatchObject({ duration: 2, sourceIn: 0, sourceOut: 4 })
+    expect(pieces[1]).toMatchObject({ startTime: 2, duration: 3, sourceIn: 4, sourceOut: 10 })
+    expect(trimClip(fast, 'v', 'right', 3, 10).clips[0]).toMatchObject({ duration: 3, sourceOut: 6 })
+  })
+
+  it('keeps a linked audio partner at the same rate and bounds both on trim', () => {
+    const video = videoClip({ id: 'v', duration: 10, sourceOut: 10, linkedClipId: 'a' })
+    const audio = videoClip({ id: 'a', type: 'audio', trackId: 'A1', duration: 10, sourceOut: 10, linkedClipId: 'v' })
+    const fast = applyClipProperties(seqOf([video, audio]), ['v'], { playbackRate: 2 })
+    expect(fast.clips.map((c) => c.duration)).toEqual([5, 5])
+    expect(fast.clips.map((c) => c.playbackRate)).toEqual([2, 2])
+    const trimmed = trimClip(fast, 'v', 'right', 8, 20, true, 10)
+    expect(trimmed.clips.map((c) => c.duration)).toEqual([5, 5])
+  })
+
+  it('slowing a clip makes room for its following neighbour', () => {
+    const sequence = seqOf([videoClip({ id: 'v', duration: 10 }), videoClip({ id: 'next', startTime: 10, duration: 3, sourceOut: 3 })])
+    const slowed = applyClipProperties(sequence, ['v'], { playbackRate: 0.5 })
+    expect(slowed.clips[0].duration).toBe(20)
+    expect(slowed.clips[1].startTime).toBe(20)
+  })
+
+  it('does not grow a clip through a locked neighbour', () => {
+    const sequence = seqOf([videoClip({ id: 'v', duration: 10 }), videoClip({ id: 'locked', startTime: 10, duration: 3, sourceOut: 3, locked: true })])
+    const result = applyClipProperties(sequence, ['v'], { playbackRate: 0.5 })
+    expect(result.clips[0].duration).toBe(10)
+    expect(result.clips[0].playbackRate).toBeUndefined()
+  })
+})
+
 describe('setClipsEnabled / findActiveClips excludes disabled clips', () => {
   it('a disabled clip is excluded from findActiveClips', () => {
     const sequence = seqOf([videoClip({ id: 'a', startTime: 0, duration: 10 })])
@@ -867,6 +964,41 @@ describe('moveClipToTrack', () => {
     const sequence = seqOf([videoClip({ id: 'a', locked: true, trackId: 'V1' })])
     expect(moveClipToTrack(sequence, 'a', 8, 'V2')).toBe(sequence)
   })
+
+  it('never lands on top of a clip already on the destination track -- that clip is pushed right', () => {
+    const sequence = seqOf([
+      videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 4 }),
+      videoClip({ id: 'b', trackId: 'V2', startTime: 2, duration: 5 })
+    ])
+    const result = moveClipToTrack(sequence, 'a', 1, 'V2')
+    const a = result.clips.find((c) => c.id === 'a')!
+    const b = result.clips.find((c) => c.id === 'b')!
+    expect(a.trackId).toBe('V2')
+    expect(a.startTime).toBe(1)
+    // b now starts exactly where a ends
+    expect(b.startTime).toBe(5)
+  })
+})
+
+describe('overlap guards', () => {
+  it('a plain right-edge trim stops at the next clip on the track', () => {
+    const sequence = seqOf([videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 3 }), videoClip({ id: 'b', trackId: 'V1', startTime: 5, duration: 3 })])
+    const result = trimClip(sequence, 'a', 'right', 7, 100)
+    expect(result.clips.find((c) => c.id === 'a')!.duration).toBe(5)
+  })
+
+  it('a plain left-edge trim stops at the previous clip on the track', () => {
+    const sequence = seqOf([videoClip({ id: 'a', trackId: 'V1', startTime: 0, duration: 3 }), videoClip({ id: 'b', trackId: 'V1', startTime: 5, duration: 3, sourceIn: 4 })])
+    const result = trimClip(sequence, 'b', 'left', 1, 100)
+    expect(result.clips.find((c) => c.id === 'b')!.startTime).toBe(3)
+  })
+
+  it('insertClip pushes what already sits at that time on the track', () => {
+    const sequence = seqOf([videoClip({ id: 'a', trackId: 'V1', startTime: 2, duration: 4 })])
+    const result = insertClip(sequence, { mediaId: 'm', kind: 'video', fileName: 'x.mp4', sourceDurationSeconds: 3, hasAudio: false } as never, 1, 'V1')
+    const a = result.clips.find((c) => c.id === 'a')!
+    expect(a.startTime).toBe(4)
+  })
 })
 
 describe('moveClipToNewTrack', () => {
@@ -976,6 +1108,120 @@ describe('removeTrack', () => {
   })
 })
 
+describe('acceptNarrationTake (Story Narration Workspace "Accept & Next")', () => {
+  const takeAsset = (mediaId: string, sourceDurationSeconds = 3): { mediaId: string; type: 'audio'; sourceDurationSeconds: number } => ({
+    mediaId,
+    type: 'audio',
+    sourceDurationSeconds
+  })
+
+  it('inserts the take at the exact given start time on the given track', () => {
+    const sequence = seqOf([])
+    const { sequence: result, clipId } = acceptNarrationTake(sequence, 'VO1', 12.5, takeAsset('take-1'))
+    const clip = result.clips.find((c) => c.id === clipId)!
+    expect(clip.startTime).toBe(12.5)
+    expect(clip.trackId).toBe('VO1')
+    expect(clip.mediaId).toBe('take-1')
+  })
+
+  it('replaces a previously-accepted take for the same segment -- never leaves two clips', () => {
+    const sequence = seqOf([])
+    const first = acceptNarrationTake(sequence, 'VO1', 5, takeAsset('take-1'))
+    const second = acceptNarrationTake(first.sequence, 'VO1', 5, takeAsset('take-2'), first.clipId)
+
+    const vo1Clips = second.sequence.clips.filter((c) => c.trackId === 'VO1')
+    expect(vo1Clips).toHaveLength(1)
+    expect(vo1Clips[0].mediaId).toBe('take-2')
+    expect(vo1Clips[0].id).toBe(second.clipId)
+    expect(vo1Clips[0].id).not.toBe(first.clipId)
+  })
+
+  it('leaves other clips on the same track untouched when replacing a take', () => {
+    const other = videoClip({ id: 'other-vo', mediaId: 'm-other', type: 'audio', trackId: 'VO1', startTime: 30, duration: 3 })
+    const sequence = seqOf([other])
+    const first = acceptNarrationTake(sequence, 'VO1', 5, takeAsset('take-1'))
+    const second = acceptNarrationTake(first.sequence, 'VO1', 5, takeAsset('take-2'), first.clipId)
+    expect(second.sequence.clips.find((c) => c.id === 'other-vo')).toBeDefined()
+  })
+
+  it('recomputes duration to include the newly-accepted take', () => {
+    const sequence = seqOf([])
+    const { sequence: result } = acceptNarrationTake(sequence, 'VO1', 100, takeAsset('take-1', 4))
+    expect(result.duration).toBe(computeSequenceDuration(result.clips))
+    expect(result.duration).toBeGreaterThan(104)
+  })
+
+  it('routes an overlapping take onto VO2 instead of overlapping VO1 (regression: recording can now run past its SRT segment -- see NarrationContext.tsx -- so an adjacent segment\'s accepted take can genuinely overlap the next one)', () => {
+    const sequence = seqOf([])
+    // Segment A's take runs long, spilling into segment B's own [10, 13) start.
+    const a = acceptNarrationTake(sequence, 'VO1', 5, takeAsset('take-a', 8))
+    const b = acceptNarrationTake(a.sequence, 'VO1', 10, takeAsset('take-b', 3))
+
+    const clipA = b.sequence.clips.find((c) => c.id === a.clipId)!
+    const clipB = b.sequence.clips.find((c) => c.id === b.clipId)!
+    expect(clipA.trackId).toBe('VO1')
+    expect(clipB.trackId).toBe('VO2')
+    expect(b.sequence.tracks.some((t) => t.id === 'VO2' && t.kind === 'audio')).toBe(true)
+  })
+
+  it('re-accepting the same segment at the same spot stays on VO1 -- excludes its own previous clip from the collision check', () => {
+    const sequence = seqOf([])
+    const first = acceptNarrationTake(sequence, 'VO1', 5, takeAsset('take-1', 3))
+    const second = acceptNarrationTake(first.sequence, 'VO1', 5, takeAsset('take-2', 3), first.clipId)
+    const clip = second.sequence.clips.find((c) => c.id === second.clipId)!
+    expect(clip.trackId).toBe('VO1')
+  })
+})
+
+describe('acceptDubbingClip (AI Dubber "Generate Dubbing", mirrors acceptNarrationTake)', () => {
+  const dubAsset = (mediaId: string, sourceDurationSeconds = 3): { mediaId: string; type: 'audio'; sourceDurationSeconds: number } => ({
+    mediaId,
+    type: 'audio',
+    sourceDurationSeconds
+  })
+
+  it('inserts the generated clip at the exact given start time on the given track', () => {
+    const sequence = seqOf([])
+    const { sequence: result, clipId } = acceptDubbingClip(sequence, 'DUB1', 12.5, dubAsset('dub-1'))
+    const clip = result.clips.find((c) => c.id === clipId)!
+    expect(clip.startTime).toBe(12.5)
+    expect(clip.trackId).toBe('DUB1')
+    expect(clip.mediaId).toBe('dub-1')
+  })
+
+  it('replaces a previously-generated clip for the same subtitle -- never leaves two clips', () => {
+    const sequence = seqOf([])
+    const first = acceptDubbingClip(sequence, 'DUB1', 5, dubAsset('dub-1'))
+    const second = acceptDubbingClip(first.sequence, 'DUB1', 5, dubAsset('dub-2'), first.clipId)
+
+    const dub1Clips = second.sequence.clips.filter((c) => c.trackId === 'DUB1')
+    expect(dub1Clips).toHaveLength(1)
+    expect(dub1Clips[0].mediaId).toBe('dub-2')
+    expect(dub1Clips[0].id).toBe(second.clipId)
+    expect(dub1Clips[0].id).not.toBe(first.clipId)
+  })
+
+  it('routes an overlapping generated clip onto DUB2 instead of overlapping DUB1', () => {
+    const sequence = seqOf([])
+    const a = acceptDubbingClip(sequence, 'DUB1', 5, dubAsset('dub-a', 8))
+    const b = acceptDubbingClip(a.sequence, 'DUB1', 10, dubAsset('dub-b', 3))
+
+    const clipA = b.sequence.clips.find((c) => c.id === a.clipId)!
+    const clipB = b.sequence.clips.find((c) => c.id === b.clipId)!
+    expect(clipA.trackId).toBe('DUB1')
+    expect(clipB.trackId).toBe('DUB2')
+    expect(b.sequence.tracks.some((t) => t.id === 'DUB2' && t.kind === 'audio')).toBe(true)
+  })
+
+  it('re-generating the same subtitle at the same spot stays on DUB1 -- excludes its own previous clip from the collision check', () => {
+    const sequence = seqOf([])
+    const first = acceptDubbingClip(sequence, 'DUB1', 5, dubAsset('dub-1', 3))
+    const second = acceptDubbingClip(first.sequence, 'DUB1', 5, dubAsset('dub-2', 3), first.clipId)
+    const clip = second.sequence.clips.find((c) => c.id === second.clipId)!
+    expect(clip.trackId).toBe('DUB1')
+  })
+})
+
 describe('pickClipProperties / applyClipProperties (Paste Attributes)', () => {
   it('picks only appearance/speed/audio fields, never timing or identity', () => {
     const clip = videoClip({ id: 'a', startTime: 5, duration: 10, opacity: 0.5, volume: 0.8, playbackRate: 2, fadeIn: 1, fadeOut: 2 })
@@ -989,18 +1235,41 @@ describe('pickClipProperties / applyClipProperties (Paste Attributes)', () => {
     expect(result.clips.find((c) => c.id === 'a')!.opacity).toBe(0.4)
     expect(result.clips.find((c) => c.id === 'b')!.opacity).toBe(1)
   })
+
+  it('picks up a keyframed clip\'s keyframes too, so Paste Attributes carries the animation across', () => {
+    const keyframes = { opacity: [{ id: 'k1', time: 0, value: 0 }] }
+    const clip = videoClip({ id: 'a', keyframes })
+    expect(pickClipProperties(clip).keyframes).toEqual(keyframes)
+  })
+
+  it('applying a picked patch with keyframes actually installs them on the target clip', () => {
+    const source = videoClip({ id: 'a', keyframes: { opacity: [{ id: 'k1', time: 0, value: 0 }] } })
+    const sequence = seqOf([source, videoClip({ id: 'b' })])
+    const result = applyClipProperties(sequence, ['b'], pickClipProperties(source))
+    expect(result.clips.find((c) => c.id === 'b')!.keyframes).toEqual(source.keyframes)
+  })
 })
 
 describe('resetClipProperties', () => {
-  it('clears every adjustable field back to its un-adjusted default', () => {
+  it('clears every adjustable field back to its un-adjusted default, including any keyframes', () => {
     const sequence = seqOf([
-      videoClip({ id: 'a', opacity: 0.4, volume: 0.2, playbackRate: 2, fadeIn: 1, fadeOut: 1, transform: { x: 5, y: 5, scaleX: -1, scaleY: 1, rotation: 90, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 } })
+      videoClip({
+        id: 'a',
+        opacity: 0.4,
+        volume: 0.2,
+        playbackRate: 2,
+        fadeIn: 1,
+        fadeOut: 1,
+        transform: { x: 5, y: 5, scaleX: -1, scaleY: 1, rotation: 90, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 },
+        keyframes: { opacity: [{ id: 'k1', time: 0, value: 0 }] }
+      })
     ])
     const result = resetClipProperties(sequence, ['a'])
     const clip = result.clips.find((c) => c.id === 'a')!
     expect(clip.opacity).toBe(1)
     expect(clip.volume).toBe(1)
     expect(clip.playbackRate).toBe(1)
+    expect(clip.keyframes).toBeUndefined()
     expect(clip.fadeIn).toBe(0)
     expect(clip.fadeOut).toBe(0)
     expect(clip.transform).toBeUndefined()
@@ -1077,5 +1346,63 @@ describe('per-clip markers', () => {
     const sequence = addClipMarker(seqOf([videoClip({ id: 'a', duration: 10 })]), 'a', 2, () => 'cm1')
     const result = removeClipMarker(sequence, 'a', 'cm1')
     expect(result.clips.find((c) => c.id === 'a')!.markers).toEqual([])
+  })
+})
+
+describe('keyframe animation (Keyframe Animation feature)', () => {
+  it('addOrUpdateKeyframe creates the first keyframe for a property, clamped within the clip\'s own duration', () => {
+    const sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    const result = addOrUpdateKeyframe(sequence, 'a', 'opacity', 999, 0.5, undefined, () => 'kf1')
+    const keyframes = result.clips.find((c) => c.id === 'a')!.keyframes!.opacity!
+    expect(keyframes).toEqual([{ id: 'kf1', time: 10, value: 0.5, easing: undefined }])
+  })
+
+  it('a second addOrUpdateKeyframe at a NEW time appends, keeping the first', () => {
+    let sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'opacity', 0, 0, undefined, () => 'kf1')
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'opacity', 5, 1, undefined, () => 'kf2')
+    const keyframes = sequence.clips.find((c) => c.id === 'a')!.keyframes!.opacity!
+    expect(keyframes.map((k) => k.id)).toEqual(['kf1', 'kf2'])
+  })
+
+  it('addOrUpdateKeyframe at an EXISTING keyframe\'s exact time overwrites its value instead of duplicating', () => {
+    let sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'opacity', 5, 0.2, undefined, () => 'kf1')
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'opacity', 5, 0.9, undefined, () => 'kf2')
+    const keyframes = sequence.clips.find((c) => c.id === 'a')!.keyframes!.opacity!
+    expect(keyframes).toHaveLength(1)
+    expect(keyframes[0]).toEqual({ id: 'kf1', time: 5, value: 0.9, easing: undefined })
+  })
+
+  it('keyframing one property never touches another property\'s own keyframes on the same clip', () => {
+    let sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'opacity', 0, 1, undefined, () => 'kf1')
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'x', 0, 50, undefined, () => 'kf2')
+    const clip = sequence.clips.find((c) => c.id === 'a')!
+    expect(clip.keyframes!.opacity).toHaveLength(1)
+    expect(clip.keyframes!.x).toHaveLength(1)
+  })
+
+  it('is a no-op on a locked clip', () => {
+    const sequence = seqOf([videoClip({ id: 'a', duration: 10, locked: true })])
+    const result = addOrUpdateKeyframe(sequence, 'a', 'opacity', 0, 1, undefined, () => 'kf1')
+    expect(result.clips.find((c) => c.id === 'a')!.keyframes).toBeUndefined()
+  })
+
+  it('moveKeyframe repositions it in time, clamped to the clip\'s duration, without touching its value', () => {
+    let sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'rotation', 2, 90, undefined, () => 'kf1')
+    sequence = moveKeyframe(sequence, 'a', 'rotation', 'kf1', 999)
+    const keyframe = sequence.clips.find((c) => c.id === 'a')!.keyframes!.rotation![0]
+    expect(keyframe).toEqual({ id: 'kf1', time: 10, value: 90, easing: undefined })
+  })
+
+  it('removeKeyframe deletes it, leaving other keyframes on the same property untouched', () => {
+    let sequence = seqOf([videoClip({ id: 'a', duration: 10 })])
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'volume', 0, 1, undefined, () => 'kf1')
+    sequence = addOrUpdateKeyframe(sequence, 'a', 'volume', 5, 0, undefined, () => 'kf2')
+    sequence = removeKeyframe(sequence, 'a', 'volume', 'kf1')
+    const keyframes = sequence.clips.find((c) => c.id === 'a')!.keyframes!.volume!
+    expect(keyframes.map((k) => k.id)).toEqual(['kf2'])
   })
 })

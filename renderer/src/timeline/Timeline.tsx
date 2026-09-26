@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackTime, usePlaybackControls, type SeekOptions } from '../playback/PlaybackContext'
 import { useScenes } from '../scenes/SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
@@ -9,18 +9,23 @@ import { useTimelineShortcuts } from './useTimelineShortcuts'
 import { useUiState } from '../nav/UiStateContext'
 import { TimeRuler } from './TimeRuler'
 import { playheadBadgeEdge } from './playheadBadgePosition'
-import { computeTrackCentering } from './trackCentering'
+import { computeTrackCentering, computeSafeZoneHeight } from './trackCentering'
 import { TimelineToolbar } from './TimelineToolbar'
 import { CaptionsTrack } from './CaptionsTrack'
 import { GraphicsTrack } from './GraphicsTrack'
 import { ClipTrack } from './ClipTrack'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
+import { useConfirm } from '../ui/ConfirmDialog'
+import { useHistory } from '../history/HistoryContext'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { visibleTracksForDisplay, trackDisplayHeight, isInViewport, type OccupiedRange } from './trackModel'
-import { planSequentialDrop, planStackDrop, type PlannedPlacement } from './placementPlanning'
+import { visibleTracksForDisplay, trackDisplayHeight, isInViewport, withCaptionTrackContent, isNarrationTrackId, NARRATION_TRACK_ID, findOrCreateTrack, type OccupiedRange } from './trackModel'
+import { useNarration } from '../narration/NarrationContext'
+import { useAiDubber } from '../dubbing/AiDubberContext'
+import { planSequentialDrop, planStackDrop, type DropAsset, type PlannedPlacement } from './placementPlanning'
 import { DropGhostPreview } from './DropGhostPreview'
-import { normalizeRect, clipsInRect, applyBoxSelection, type ClipGeometry, type ScreenRect } from './boxSelection'
+import { normalizeRect, clipsInRect, applyBoxSelection, clampBoxSelectionX, type ClipGeometry, type ScreenRect } from './boxSelection'
 import { canSplitClip } from '../sequence/sequenceOps'
+import { updateClipSelection, type ClickModifiers } from '../sequence/sequenceSelection'
 import { canFreezeFrame as canFreezeFrameCheck, useFreezeFrame } from './useFreezeFrame'
 import { findGapAt } from './gapOps'
 import { computeZoomAroundCursor } from './zoomMath'
@@ -28,23 +33,33 @@ import { DEFAULT_TIMELINE_VIEW_PREFS } from './timelineViewPrefs'
 import { assetFromMediaItem } from '../media/assetFromMediaItem'
 import { MEDIA_DRAG_MIME_TYPE, getCurrentDragMediaIds, setCurrentDragMediaIds, type MediaDragPayload } from '../media/mediaDragPayload'
 import { formatDuration } from '../media/format'
+import { computeTimelineDisplayDuration } from './timelineDuration'
+import { nextPlaybackScrollLeft } from './playbackFollow'
+import { nearestInsertionBoundary } from './magnet'
+import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey } from '../dubbing/voxcpmSettings'
 import type { MediaItem } from '@shared/media'
 import type { TimelineClip, Scene } from '@shared/project'
+import type { TimelineTrackKind } from '@shared/timelineTracks'
+import type { KeyframeableProperty } from '@shared/keyframes'
 
-// Mirrors styles.css's --timeline-ruler-height/--timeline-top-safe-zone/
-// --timeline-content-start -- kept in sync by hand since CSS custom
-// properties aren't readable from plain numeric JS geometry (trackTopById
-// below, the drag-preview ghost boxes it feeds). If the CSS values ever
-// change, these three need to change with them.
+// Mirrors styles.css's --timeline-ruler-height/--timeline-top-safe-zone --
+// kept in sync by hand since CSS custom properties aren't readable from
+// plain numeric JS geometry (trackTopById below, the drag-preview ghost
+// boxes it feeds). If the CSS values ever change, these need to change with
+// them. TOP_SAFE_ZONE_PX is the band's MAXIMUM: the live value (safeZonePx
+// below) shrinks it on a squeezed panel, and drives the CSS variable back
+// the other way so both sides stay in agreement.
 const RULER_HEIGHT_PX = 26
-const TOP_SAFE_ZONE_PX = 60
-const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
+const TOP_SAFE_ZONE_PX = 34
 
 // CapCut-style main-track anchoring (not a fixed gap below the ruler): the
 // main video track's own vertical center is targeted at
 // TOP_SPACER_RATIO/(TOP_SPACER_RATIO+BOTTOM_SPACER_RATIO) of the usable
-// track-area height -- ~46%, a bit above true center ("leaning slightly
-// upward" per the reference design) -- via two spacer rows placed directly
+// track-area height -- 46%, a hair above true center so a lone clip reads
+// as centered. (It was briefly 36% to leave more room below the last
+// Audio/SRT row; that put a single clip visibly high, and the user asked
+// for it back. The room below is guaranteed by MIN_BOTTOM_SPACER_PX
+// instead, which only matters once rows fill the panel.) Two spacer rows placed directly
 // above/below the track group, each given an explicit computed height (see
 // trackCentering.ts). As overlay tracks are added above main or
 // audio/caption tracks below it, both spacers shrink to make room for them
@@ -56,6 +71,7 @@ const CONTENT_START_PX = RULER_HEIGHT_PX + TOP_SAFE_ZONE_PX
 // "not actually centered on a large monitor" bug, not a safeguard.
 const TOP_SPACER_RATIO = 46
 const BOTTOM_SPACER_RATIO = 54
+const MIN_BOTTOM_SPACER_PX = 28
 
 // `viewportRange` starts `null` until the viewport-tracking effect below
 // measures the scroll container -- see that effect's own doc comment for why
@@ -72,12 +88,25 @@ const BOTTOM_SPACER_RATIO = 54
 // from "every tick across the whole project" down to a handful.
 const UNMEASURED_VIEWPORT_FALLBACK_SECONDS = 300
 
+/** Pointer this close to the visible content's left/right edge (or past
+ * it) while dragging scrolls the Timeline sideways -- see
+ * startEdgeAutoScroll. */
+const EDGE_AUTOSCROLL_ZONE_PX = 48
+/** px per frame: gentle just inside the zone, up to a brisk page-crawl
+ * when the pointer is well outside the Timeline. */
+function edgeAutoScrollSpeed(distanceIntoZonePx: number): number {
+  return Math.min(28, 3 + distanceIntoZonePx / 5)
+}
+
 export function Timeline(): JSX.Element {
   const { items, selectedId, select: selectMediaForInspection, importPaths } = useMedia()
-  const { transcripts } = useTranscript()
-  const { currentTime, seekTo } = usePlayback()
-  const { scenesByMedia, selectedSceneId, selectScene, retimeScene } = useScenes()
+  const { transcripts, moveSegment, moveSegments, removeSegments } = useTranscript()
+  const { currentTime } = usePlaybackTime()
+  const { seekTo, isPlaying } = usePlaybackControls()
+  const { scenesByMedia, selectedSceneId, selectedSceneIds, selectScene, selectScenes, retimeScene, deleteScenes } = useScenes()
   const { setRightTab } = useUiState()
+  const narration = useNarration()
+  const aiDubber = useAiDubber()
   const {
     sequence,
     selectedTimelineClipIds,
@@ -85,6 +114,7 @@ export function Timeline(): JSX.Element {
     selectClips,
     clearClipSelection,
     moveClip,
+    moveClipSet,
     trimClip,
     insertPlannedClips,
     splitClipAt,
@@ -110,8 +140,14 @@ export function Timeline(): JSX.Element {
     reorderTrack,
     resetClipProperties,
     replaceClipMedia,
-    addTrack
+    addTrack,
+    removeKeyframe,
+    insertClip,
+    ensureTrack,
+    toggleClipMute
   } = useSequence()
+  const { beginTransaction, endTransaction } = useHistory()
+  const confirm = useConfirm()
   const {
     pixelsPerSecond,
     setPixelsPerSecond,
@@ -124,12 +160,15 @@ export function Timeline(): JSX.Element {
     rangeSelection,
     setRangeSelection,
     skimmerOn,
-    trackHeightMode
+    trackHeightMode,
+    timelinePanelHeightPx
   } = useTimelineView()
   const { triggerFreezeFrame } = useFreezeFrame()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
+  const [selectedCaptionSegmentIds, setSelectedCaptionSegmentIds] = useState<string[]>([])
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const timelineRootRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   /** 'scrub': dragging on the ruler seeks the playhead (existing behavior).
    * 'maybe-box': mousedown on empty track area -- not yet committed to a
@@ -179,6 +218,18 @@ export function Timeline(): JSX.Element {
    * pending-ref-plus-effect-on-items pattern VoiceoverRecorder.tsx already
    * uses for its own "wait for the import pipeline" case. */
   const pendingReplaceRef = useRef<{ clipId: string; path: string } | null>(null)
+  /** The instrumental track waiting on its import round-trip, plus the video
+   * clip it belongs under -- same pending-ref-then-items-effect pattern as
+   * pendingReplaceRef above. */
+  const pendingVocalRemovalRef = useRef<{ clipId: string; path: string } | null>(null)
+  const [removingVocalsClipId, setRemovingVocalsClipId] = useState<string | null>(null)
+  /** Live progress of the running Remove Vocal job (see the onProgress
+   * subscription below) -- null when nothing is running. */
+  const [vocalProgress, setVocalProgress] = useState<{ percent: number; stage: string } | null>(null)
+
+  useEffect(() => {
+    return window.api.vocalRemoval.onProgress((p) => setVocalProgress({ percent: p.percent, stage: p.stage }))
+  }, [])
   /** The visible horizontal time window, in project-absolute seconds -- for
    * long timelines (1-2 hour narration files) ClipTrack/GraphicsTrack use
    * this to skip rendering any clip/scene DOM node entirely outside it (see
@@ -202,7 +253,45 @@ export function Timeline(): JSX.Element {
   // media is selected in the Media panel never touches `scenes` or `sequence`.
   const media = items.find((m) => m.id === selectedId)
   const transcript = media ? transcripts[media.id] : undefined
-  const segments = transcript?.segments ?? []
+  // Keep the empty fallback referentially stable. A fresh `[]` on every
+  // render invalidated trackHasContent -> sortedTracks -> the viewport
+  // layout effect below. That effect updates viewportRange, so the first
+  // clip added to an otherwise-empty Timeline entered an infinite render
+  // loop (React error #185) even though no captions existed at all.
+  const segments = useMemo(() => transcript?.segments ?? [], [transcript?.segments])
+
+  useEffect(() => {
+    const existing = new Set(segments.map((segment) => segment.id))
+    setSelectedCaptionSegmentIds((current) => {
+      const next = current.filter((id) => existing.has(id))
+      return next.length === current.length ? current : next
+    })
+  }, [transcript?.segments])
+
+  const selectCaptionSegment = useCallback((segmentId: string, modifiers: ClickModifiers = {}) => {
+    // A normal click is an exclusive Timeline selection, regardless of
+    // whether the previously-selected item was a clip, graphic, or caption.
+    // Ctrl/Shift intentionally keep the other item types selected so the
+    // user can build a mixed selection (box-select follows the same rule).
+    if (!modifiers.ctrl && !modifiers.shift) {
+      clearClipSelection()
+      selectScenes([])
+    }
+    setSelectedCaptionSegmentIds((current) => updateClipSelection(current, segmentId, segments.map((segment) => segment.id), modifiers))
+  }, [segments, clearClipSelection, selectScenes])
+
+  const removeSelectedCaptions = useCallback(() => {
+    if (!selectedId || selectedCaptionSegmentIds.length === 0) return
+    if (aiDubber.state.videoMediaId === selectedId) aiDubber.removeSubtitles(selectedCaptionSegmentIds)
+    else removeSegments(selectedId, selectedCaptionSegmentIds)
+    setSelectedCaptionSegmentIds([])
+  }, [selectedId, selectedCaptionSegmentIds, aiDubber, removeSegments])
+
+  const deleteAllSelectedTimelineItems = useCallback(() => {
+    if (selectedTimelineClipIds.length > 0) deleteSelected()
+    if (selectedSceneIds.length > 0) deleteScenes(selectedSceneIds)
+    if (selectedCaptionSegmentIds.length > 0) removeSelectedCaptions()
+  }, [selectedTimelineClipIds.length, deleteSelected, selectedSceneIds, deleteScenes, selectedCaptionSegmentIds.length, removeSelectedCaptions])
 
   // Graphics scenes are already project-global on disk (Scene.startTime/endTime
   // are absolute seconds, not media-relative) -- flatten every media's bucket
@@ -233,19 +322,92 @@ export function Timeline(): JSX.Element {
     return map
   }, [sequence.clips])
 
+  // Viewport-culled clips per track, computed once per render pass instead
+  // of inline inside the tracks .map() below -- that inline version built a
+  // fresh array for EVERY track on EVERY render (independent of playback),
+  // which alone defeated React.memo(ClipTrack) even before the playhead-prop
+  // fix. Object.is-stable per track as long as clipsByTrackId/viewportRange
+  // haven't actually changed.
+  //
+  // ...except `viewportRange` is a fresh object on every scroll frame (see
+  // its own rAF'd update effect below), and `.filter()` a fresh array even
+  // when it selects exactly the same clips -- so scrolling, or dragging a
+  // clip anywhere near the edge, handed every track a brand-new `clips` prop
+  // 60x a second and re-rendered the entire Timeline each time. Culling
+  // membership only actually changes when a clip crosses the window's edge,
+  // so the previous array is reused whenever the result is element-wise
+  // identical, and memo(ClipTrack) holds for every untouched track.
+  const previousVisibleClipsRef = useRef<Record<string, TimelineClip[]>>({})
+  const visibleClipsByTrackId = useMemo(() => {
+    if (!viewportRange) return clipsByTrackId
+    const previous = previousVisibleClipsRef.current
+    const map: Record<string, TimelineClip[]> = {}
+    for (const [trackId, clips] of Object.entries(clipsByTrackId)) {
+      const culled = clips.filter((c) => isInViewport(c.startTime, c.duration, viewportRange.start, viewportRange.end))
+      const before = previous[trackId]
+      map[trackId] = before && before.length === culled.length && before.every((c, i) => c === culled[i]) ? before : culled
+    }
+    previousVisibleClipsRef.current = map
+    return map
+  }, [clipsByTrackId, viewportRange])
+
   const trackHasContent = useMemo(() => {
     const map: Record<string, boolean> = {}
     for (const id of Object.keys(scenesByTrackId)) if (scenesByTrackId[id].length > 0) map[id] = true
     for (const id of Object.keys(clipsByTrackId)) if (clipsByTrackId[id].length > 0) map[id] = true
-    return map
-  }, [scenesByTrackId, clipsByTrackId])
+    return withCaptionTrackContent(map, sequence.tracks, segments.length > 0)
+  }, [scenesByTrackId, clipsByTrackId, segments, sequence.tracks])
   // Only tracks with real content (plus the main video track and the fixed
   // caption track, which stay visible even empty -- see
   // visibleTracksForDisplay's own doc comment) actually render as a row, so
   // an unused Overlay/Graphics/Music track -- or debris left behind by a past
   // bug -- doesn't clutter the Timeline. `sequence.tracks` itself is
   // untouched: hiding a track here never deletes it or its settings.
-  const sortedTracks = useMemo(() => visibleTracksForDisplay(sequence.tracks, trackHasContent), [sequence.tracks, trackHasContent])
+  // Story Narration Workspace: VO1 stays visible on the Timeline the moment
+  // the workspace is prepared, even before its first accepted take, so the
+  // user can see the recording target row -- not gated behind having
+  // content the way an ordinary empty Overlay/Music track is.
+  const alwaysVisibleTrackIds = useMemo(() => (narration.active ? new Set([NARRATION_TRACK_ID]) : undefined), [narration.active])
+  // Story Narration Workspace: "Take N" labels for VO1's accepted clips, and
+  // the live red in-progress recording region shown on VO1 while actively
+  // recording/reviewing the current segment (before it's been accepted, so
+  // there's no real clip to represent it yet).
+  const narrationTakeLabels = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const segState of Object.values(narration.state.segments)) {
+      if (segState.acceptedClipId) map[segState.acceptedClipId] = segState.takes.length
+    }
+    return map
+  }, [narration.state.segments])
+  const narrationLiveRecordingRegion = useMemo(() => {
+    if (!narration.active || !narration.currentSegment) return null
+    if (narration.phase !== 'recording' && narration.phase !== 'reviewing') return null
+    const { startTime, endTime } = narration.currentSegment
+    return {
+      startTime,
+      endTime: narration.phase === 'recording' ? Math.max(startTime, currentTime) : endTime,
+      analyserRef: narration.mic.analyserRef,
+      isRecording: narration.phase === 'recording'
+    }
+  }, [narration.active, narration.currentSegment, narration.phase, currentTime, narration.mic.analyserRef])
+  const sortedTracks = useMemo(
+    () => visibleTracksForDisplay(sequence.tracks, trackHasContent, alwaysVisibleTrackIds),
+    [sequence.tracks, trackHasContent, alwaysVisibleTrackIds]
+  )
+
+  // Projects created before Add Text received a dedicated `text` track may
+  // still store lower-thirds on a graphic row. Present those rows with the
+  // correct text glyph without destructively rewriting saved project data.
+  const trackIconKindById = useMemo(() => {
+    const result: Record<string, TimelineTrackKind> = {}
+    for (const track of sortedTracks) {
+      const scenes = scenesByTrackId[track.id] ?? []
+      result[track.id] = track.kind === 'graphic' && scenes.length > 0 && scenes.every((scene) => scene.templateId === 'lower-third')
+        ? 'text'
+        : track.kind
+    }
+    return result
+  }, [sortedTracks, scenesByTrackId])
 
   const trackHeightById = useMemo(() => {
     const map: Record<string, number> = {}
@@ -253,40 +415,85 @@ export function Timeline(): JSX.Element {
     return map
   }, [sortedTracks, trackHeightMode])
 
+  // The protected empty band under the ruler only keeps its full height for
+  // as long as the panel can afford it -- see computeSafeZoneHeight's own
+  // doc comment for why a squeezed panel has to give it up to keep the
+  // track rows themselves on screen.
+  const totalTrackRowsHeight = useMemo(
+    () => sortedTracks.reduce((sum, t) => sum + (trackHeightById[t.id] ?? 0), 0),
+    [sortedTracks, trackHeightById]
+  )
+  const safeZonePx = computeSafeZoneHeight(timelineViewportHeight, RULER_HEIGHT_PX, totalTrackRowsHeight, TOP_SAFE_ZONE_PX)
+  const contentStartPx = RULER_HEIGHT_PX + safeZonePx
+
   // The main track's own vertical center (not the whole track group's) is
   // what's anchored at TOP_SPACER_RATIO's target -- see computeTrackCentering's
   // own doc comment for why that distinction matters (a linked audio track
   // below main, or any other below-track, would otherwise pull the group
   // center down and main away from the target).
-  const usableTrackAreaHeight = Math.max(0, timelineViewportHeight - CONTENT_START_PX)
-  const { topSpacerHeight, bottomSpacerHeight } = useMemo(
-    () => computeTrackCentering(sortedTracks, trackHeightById, usableTrackAreaHeight, TOP_SPACER_RATIO, BOTTOM_SPACER_RATIO),
-    [sortedTracks, trackHeightById, usableTrackAreaHeight]
+  //
+  // Budgeted over EVERYTHING below the ruler, protected band included, then
+  // the band's own height is deducted from the top spacer it shares that gap
+  // with. Centering used to be budgeted over only the space BELOW the band,
+  // which quietly made the band pure extra dead space stacked on top of an
+  // already-centered layout: the gap above the clips came out a full
+  // safe-zone taller than the one below them (measured on a real panel: 65px
+  // above vs 14px below), which is exactly the "it never centers the item"
+  // this kept being reported as. Counting the band as part of the top gap
+  // instead balances it, with the deliberate 40/60 upward lean.
+  const trackAreaBudget = Math.max(0, timelineViewportHeight - RULER_HEIGHT_PX)
+  const { topSpacerHeight: topGapTotal, bottomSpacerHeight } = useMemo(
+    () =>
+      computeTrackCentering(
+        sortedTracks,
+        trackHeightById,
+        trackAreaBudget,
+        TOP_SPACER_RATIO,
+        BOTTOM_SPACER_RATIO,
+        MIN_BOTTOM_SPACER_PX
+      ),
+    [sortedTracks, trackHeightById, trackAreaBudget]
   )
+  const topSpacerHeight = Math.max(0, topGapTotal - safeZonePx)
+  const usableTrackAreaHeight = Math.max(0, timelineViewportHeight - contentStartPx)
 
   // Cumulative row position/height per track, for the drag-drop ghost
   // preview to draw its dashed boxes against the right row (rows are plain
   // document flow within .timeline-tracks-area, not individually
   // positioned, so this is computed once per track-list/height change
   // rather than measured from the DOM). Starts after the top spacer's own
-  // height, not directly at CONTENT_START_PX -- must stay in exact agreement
+  // height, not directly at contentStartPx -- must stay in exact agreement
   // with the spacer's actual rendered height (set inline from the same
   // topSpacerHeight value below) or the ghost preview would draw against
-  // the wrong row.
+  // the wrong row. Uses the LIVE contentStartPx (not the fixed constant) so
+  // it still lines up once a squeezed panel has collapsed the safe zone.
   const trackTopById = useMemo(() => {
     const map: Record<string, number> = {}
-    let top = CONTENT_START_PX + topSpacerHeight
+    let top = contentStartPx + topSpacerHeight
     for (const t of sortedTracks) {
       map[t.id] = top
       top += trackHeightById[t.id]
     }
     return map
-  }, [sortedTracks, trackHeightById, topSpacerHeight])
+  }, [sortedTracks, trackHeightById, topSpacerHeight, contentStartPx])
 
   const occupiedRanges: OccupiedRange[] = useMemo(
     () => sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration })),
     [sequence.clips]
   )
+
+  /** Dropping directly on the Main Track is an ordered-list insertion, not
+   * collision-aware free placement. It therefore targets the nearest cut
+   * boundary and never creates an overlay track just because V1 is already
+   * occupied at the pointer time. */
+  const planMediaDrop = useCallback((assets: DropAsset[], dropTime: number, stack: boolean, targetTrackId?: string): PlannedPlacement[] => {
+    const mainTrack = sequence.tracks.find((track) => track.kind === 'video' && track.isMain)
+    if (mainTrack && targetTrackId === mainTrack.id && assets.every((asset) => asset.type === 'video' || asset.type === 'image')) {
+      const boundary = nearestInsertionBoundary(sequence.clips, mainTrack.id, dropTime)
+      return planSequentialDrop(assets, boundary, [mainTrack], [])
+    }
+    return (stack ? planStackDrop : planSequentialDrop)(assets, dropTime, sequence.tracks, occupiedRanges)
+  }, [sequence.tracks, sequence.clips, occupiedRanges])
 
   const dropTimeFromClientX = useCallback(
     (clientX: number): number => {
@@ -314,10 +521,10 @@ export function Timeline(): JSX.Element {
       const assets = ids.map((id) => mediaById[id]).filter((m): m is MediaItem => Boolean(m)).map(assetFromMediaItem)
       if (assets.length === 0) return
       const dropTime = dropTimeFromClientX(e.clientX)
-      const plan = e.altKey ? planStackDrop : planSequentialDrop
-      setDragPlacements(plan(assets, dropTime, sequence.tracks, occupiedRanges))
+      const targetTrackId = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-track-id]')?.dataset.trackId : undefined
+      setDragPlacements(planMediaDrop(assets, dropTime, e.altKey, targetTrackId))
     },
-    [mediaById, dropTimeFromClientX, sequence.tracks, occupiedRanges]
+    [mediaById, dropTimeFromClientX, planMediaDrop]
   )
 
   const handleTimelineDragLeave = useCallback((e: React.DragEvent) => {
@@ -343,10 +550,10 @@ export function Timeline(): JSX.Element {
       const assets = payload.mediaIds.map((id) => mediaById[id]).filter((m): m is MediaItem => Boolean(m)).map(assetFromMediaItem)
       if (assets.length === 0) return
       const dropTime = dropTimeFromClientX(e.clientX)
-      const plan = e.altKey ? planStackDrop : planSequentialDrop
-      insertPlannedClips(plan(assets, dropTime, sequence.tracks, occupiedRanges))
+      const targetTrackId = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-track-id]')?.dataset.trackId : undefined
+      insertPlannedClips(planMediaDrop(assets, dropTime, e.altKey, targetTrackId))
     },
-    [mediaById, dropTimeFromClientX, sequence.tracks, occupiedRanges, insertPlannedClips]
+    [mediaById, dropTimeFromClientX, planMediaDrop, insertPlannedClips]
   )
 
   // The Timeline's own duration is the project sequence's -- never derived
@@ -354,10 +561,32 @@ export function Timeline(): JSX.Element {
   // be pure graphics (scenes with no underlying clip at all), so this must
   // also cover whichever is longer, the clip sequence or the furthest scene,
   // or the ruler/scrub range would cap at 0 with no clips.
-  const sceneMaxEnd = allScenes.reduce((max, s) => Math.max(max, s.endTime), 0)
-  const effectiveDuration = Math.max(sequence.duration, sceneMaxEnd > 0 ? sceneMaxEnd + 5 : 0)
+  const effectiveDuration = computeTimelineDisplayDuration(
+    sequence.duration,
+    allScenes.map((scene) => scene.endTime),
+    segments.map((segment) => segment.endTime)
+  )
+  const playbackEndTime = Math.max(
+    sequence.clips.reduce((max, clip) => Math.max(max, clip.startTime + clip.duration), 0),
+    ...allScenes.map((scene) => scene.endTime),
+    0
+  )
+  // Unlike effectiveDuration (which includes visual padding), this is the
+  // exact right edge of the final selectable Timeline item. Box selection
+  // is clamped here so it cannot grow through an empty future.
+  const timelineItemEndTime = Math.max(
+    playbackEndTime,
+    ...segments.map((segment) => segment.endTime),
+    0
+  )
 
-  useTimelineShortcuts(effectiveDuration)
+  const captionShortcuts = useMemo(() => ({
+    selectedIds: selectedCaptionSegmentIds,
+    allIds: segments.map((segment) => segment.id),
+    select: setSelectedCaptionSegmentIds,
+    removeSelected: removeSelectedCaptions
+  }), [selectedCaptionSegmentIds, segments, removeSelectedCaptions])
+  useTimelineShortcuts(effectiveDuration, captionShortcuts, playbackEndTime)
 
   const activeSegmentId = useMemo(() => {
     const seg = segments.find((s) => currentTime >= s.startTime && currentTime < s.endTime)
@@ -384,6 +613,18 @@ export function Timeline(): JSX.Element {
   // this with nothing to observe, and neither viewport dimension is ever
   // measured for the rest of the session (the main-track centering layout
   // below would then always measure a 0px-tall track area).
+  //
+  // `timelinePanelHeightPx` is in the dep list on purpose, even though the
+  // ResizeObserver below already watches the same element: that state IS the
+  // panel's height (the top-edge splitter writes it), so depending on it
+  // re-measures synchronously, in the very commit that resizes the panel,
+  // before the browser paints. The observer alone always lands a frame late
+  // -- its callback fires after layout, so the frame that shrank the panel
+  // still painted with the OLD height. Dragging the splitter fast enough
+  // meant the centering math kept running against a stale, larger viewport:
+  // the top spacer stayed sized for the old height, pushing the tracks down
+  // past the bottom of the now-shorter panel and leaving a tall empty band
+  // you could scroll around in, with the clips nowhere near centered.
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -395,7 +636,18 @@ export function Timeline(): JSX.Element {
     const observer = new ResizeObserver(report)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [setTimelineViewportWidth, isEmpty])
+  }, [setTimelineViewportWidth, isEmpty, timelinePanelHeightPx])
+
+  const handleSelectClip = useCallback(
+    (clipId: string, modifiers: ClickModifiers = {}) => {
+      if (!modifiers.ctrl && !modifiers.shift) {
+        selectScenes([])
+        setSelectedCaptionSegmentIds([])
+      }
+      selectClip(clipId, modifiers)
+    },
+    [selectClip, selectScenes]
+  )
 
   // Selecting a scene whose time range the playhead isn't currently inside
   // seeks to it -- a scene only ever renders in Preview while the playhead is
@@ -404,21 +656,23 @@ export function Timeline(): JSX.Element {
   // silently doing nothing until the user separately scrubs to it.
   const handleSelectScene = useCallback(
     (sceneId: string) => {
+      clearClipSelection()
+      setSelectedCaptionSegmentIds([])
       selectScene(sceneId)
       const scene = allScenes.find((s) => s.id === sceneId)
       if (scene && (currentTime < scene.startTime || currentTime >= scene.endTime)) {
         seekTo(scene.startTime)
       }
     },
-    [selectScene, allScenes, currentTime, seekTo]
+    [clearClipSelection, selectScene, allScenes, currentTime, seekTo]
   )
 
   const handleDoubleClickClip = useCallback(
     (clip: TimelineClip) => {
-      selectClip(clip.id)
+      handleSelectClip(clip.id)
       seekTo(clip.startTime)
     },
-    [selectClip, seekTo]
+    [handleSelectClip, seekTo]
   )
 
   const handleBladeSplit = useCallback(
@@ -450,6 +704,56 @@ export function Timeline(): JSX.Element {
     if (match.stage === 'error') return
     replaceClipMedia(pending.clipId, match.id, match.metadata?.durationSeconds ?? 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `items` should retrigger this; replaceClipMedia is a stable context callback.
+  }, [items])
+
+  /** "Remove Vocal" -- renders an instrumental copy of the clip's source
+   * audio (see app/main/media/vocalRemoval.ts), then puts it on an audio
+   * track directly under the video clip and mutes the video's own audio, so
+   * what plays is the background WITHOUT the original dialogue. Keeping the
+   * original clip (muted) rather than replacing it means the change is
+   * undoable and the original voice is one un-mute away. */
+  const handleRemoveVocal = useCallback(
+    async (clip: TimelineClip): Promise<void> => {
+      const media = mediaById[clip.mediaId]
+      if (!media?.originalPath) return
+      setRemovingVocalsClipId(clip.id)
+      try {
+        // The real separator (Demucs) runs from the VoxCPM2 runtime the
+        // AI Dubber is already configured with -- same per-machine setting.
+        const voxcpm = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
+        const result = await window.api.vocalRemoval.removeVocals(`vocal-${clip.id}-${Date.now()}`, media.originalPath, voxcpm.installDir, voxcpm.device)
+        if (!result.ok) {
+          await confirm({ title: 'Could not remove vocals', message: result.error, confirmLabel: 'OK', hideCancel: true })
+          return
+        }
+        pendingVocalRemovalRef.current = { clipId: clip.id, path: result.outputPath }
+        await importPaths([result.outputPath])
+      } finally {
+        setRemovingVocalsClipId(null)
+        setVocalProgress(null)
+      }
+    },
+    [mediaById, importPaths, confirm]
+  )
+
+  useEffect(() => {
+    const pending = pendingVocalRemovalRef.current
+    if (!pending) return
+    const match = items.find((item) => item.originalPath === pending.path)
+    if (!match || (match.stage !== 'ready' && match.stage !== 'error')) return
+    pendingVocalRemovalRef.current = null
+    if (match.stage === 'error') return
+    const clip = sequence.clips.find((c) => c.id === pending.clipId)
+    if (!clip) return
+
+    const occupied: OccupiedRange[] = sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
+    const routing = findOrCreateTrack(sequence.tracks, occupied, clip.startTime, clip.duration, 'audio')
+    beginTransaction()
+    if (routing.newTrack) ensureTrack(routing.newTrack)
+    insertClip(assetFromMediaItem(match), clip.startTime, routing.trackId)
+    if (!clip.muted) toggleClipMute(clip.id)
+    endTransaction()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only `items` should retrigger this; the sequence mutators are stable context callbacks.
   }, [items])
 
   /** Clip context menu (spec section 11) -- every item delegates to an
@@ -505,6 +809,11 @@ export function Timeline(): JSX.Element {
           onClick: () => extractAudio(clip.id),
           disabled: clip.type !== 'video' || !!clip.linkedClipId || !media?.metadata?.hasAudio
         },
+        {
+          label: removingVocalsClipId === clip.id ? 'Removing Vocal…' : 'Remove Vocal',
+          onClick: () => void handleRemoveVocal(clip),
+          disabled: !media?.metadata?.hasAudio || removingVocalsClipId !== null
+        },
         { label: clip.groupId ? 'Ungroup' : 'Group Selected', onClick: clip.groupId ? ungroupSelected : groupSelected, disabled: !clip.groupId && selectedTimelineClipIds.length < 2 },
         { separator: true, label: '' },
         { label: 'Replace Media…', onClick: () => void handleReplaceMedia(clip.id), disabled: clip.locked },
@@ -551,6 +860,17 @@ export function Timeline(): JSX.Element {
       handleReplaceMedia,
       resetClipProperties
     ]
+  )
+
+  /** Keyframe Animation's diamond-marker context menu -- a single "Delete
+   * Keyframe" item, checked BEFORE the clip-level menu below in
+   * handleContextMenu since a diamond is a small overlay nested inside the
+   * clip's own DOM (see ClipTrack.tsx's ClipKeyframeOverlay). */
+  const buildKeyframeMenuItems = useCallback(
+    (clipId: string, property: KeyframeableProperty, keyframeId: string): ContextMenuItem[] => [
+      { label: 'Delete Keyframe', onClick: () => removeKeyframe(clipId, property, keyframeId) }
+    ],
+    [removeKeyframe]
   )
 
   /** Ruler context menu -- markers, in/out points (reusing the Range tool's
@@ -652,13 +972,13 @@ export function Timeline(): JSX.Element {
         },
         ...(gap && trackId
           ? [
-              { label: 'Remove Gap', onClick: () => removeGap(trackId, gap) },
-              { label: 'Remove All Gaps on Track', onClick: () => removeAllGapsOnTrack(trackId) }
+              { label: 'Remove Gap', onClick: () => removeGap(trackId, gap, linkageOn) },
+              { label: 'Remove All Gaps on Track', onClick: () => removeAllGapsOnTrack(trackId, linkageOn) }
             ]
           : [])
       ]
     },
-    [sequence, pasteAtTime, hasClipboardContent, addTrack, addMarkerAtTime, selectClips, currentTime, removeGap, removeAllGapsOnTrack]
+    [sequence, pasteAtTime, hasClipboardContent, addTrack, addMarkerAtTime, selectClips, currentTime, removeGap, removeAllGapsOnTrack, linkageOn]
   )
 
   const handleContextMenu = useCallback(
@@ -668,6 +988,20 @@ export function Timeline(): JSX.Element {
       const content = contentRef.current
       if (!content) return
       const atTime = Math.max(0, (e.clientX - content.getBoundingClientRect().left) / pixelsPerSecond)
+
+      const keyframeEl = target.closest<HTMLElement>('[data-keyframe-id]')
+      const keyframeClipEl = keyframeEl?.closest<HTMLElement>('[data-clip-id]')
+      const keyframeId = keyframeEl?.dataset.keyframeId
+      const keyframeProperty = keyframeEl?.dataset.keyframeProperty
+      const keyframeClipId = keyframeClipEl?.dataset.clipId
+      if (keyframeId && keyframeProperty && keyframeClipId) {
+        setContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          items: buildKeyframeMenuItems(keyframeClipId, keyframeProperty as KeyframeableProperty, keyframeId)
+        })
+        return
+      }
 
       const clipEl = target.closest<HTMLElement>('[data-clip-id]')
       if (clipEl) {
@@ -687,17 +1021,17 @@ export function Timeline(): JSX.Element {
       const trackEl = target.closest<HTMLElement>('[data-track-id]')
       setContextMenu({ x: e.clientX, y: e.clientY, items: buildEmptySpaceMenuItems(atTime, trackEl?.dataset.trackId) })
     },
-    [pixelsPerSecond, sequence.clips, selectedTimelineClipIds, selectClip, buildClipMenuItems, buildRulerMenuItems, buildEmptySpaceMenuItems]
+    [pixelsPerSecond, sequence.clips, selectedTimelineClipIds, selectClip, buildClipMenuItems, buildRulerMenuItems, buildEmptySpaceMenuItems, buildKeyframeMenuItems]
   )
 
   const seekFromClientX = useCallback(
-    (clientX: number) => {
+    (clientX: number, options?: SeekOptions) => {
       const content = contentRef.current
       if (!content || effectiveDuration <= 0) return
       const rect = content.getBoundingClientRect()
       const x = clientX - rect.left
       const time = Math.min(effectiveDuration, Math.max(0, x / pixelsPerSecond))
-      seekTo(time)
+      seekTo(time, options)
     },
     [effectiveDuration, pixelsPerSecond, seekTo]
   )
@@ -709,6 +1043,11 @@ export function Timeline(): JSX.Element {
     if (!rect) return { x: 0, y: 0 }
     return { x: clientX - rect.left, y: clientY - rect.top }
   }, [])
+
+  const boxSelectionPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
+    const point = contentLocalPoint(clientX, clientY)
+    return { ...point, x: clampBoxSelectionX(point.x, timelineItemEndTime * pixelsPerSecond) }
+  }, [contentLocalPoint, timelineItemEndTime, pixelsPerSecond])
 
   // Every clip's screen-space (content-local) box, for box-select hit
   // testing -- reuses the same trackTopById/trackHeightById row geometry the
@@ -728,8 +1067,132 @@ export function Timeline(): JSX.Element {
       }),
     [sequence.clips, pixelsPerSecond, trackTopById, trackHeightById]
   )
+  // Graphics take part in box-select exactly like clips do.
+  const sceneGeometries = useMemo<ClipGeometry[]>(
+    () =>
+      allScenes.map((s) => {
+        const top = trackTopById[s.track] ?? 0
+        return { id: s.id, trackId: s.track, left: s.startTime * pixelsPerSecond, right: s.endTime * pixelsPerSecond, top, bottom: top + (trackHeightById[s.track] ?? 0) }
+      }),
+    [allScenes, pixelsPerSecond, trackTopById, trackHeightById]
+  )
+  const captionGeometries = useMemo<ClipGeometry[]>(() => {
+    const captionTrack = sequence.tracks.find((track) => track.kind === 'caption')
+    if (!captionTrack) return []
+    const top = trackTopById[captionTrack.id] ?? 0
+    const bottom = top + (trackHeightById[captionTrack.id] ?? 0)
+    return segments.map((segment) => ({ id: segment.id, trackId: captionTrack.id, left: segment.startTime * pixelsPerSecond, right: segment.endTime * pixelsPerSecond, top, bottom }))
+  }, [segments, sequence.tracks, pixelsPerSecond, trackTopById, trackHeightById])
 
-  const handlePointerDown = (e: React.MouseEvent): void => {
+  /** The fields the drag handlers read -- satisfied by both React's
+   * synthetic MouseEvent and the native one from the window listeners. */
+  type PointerLike = { clientX: number; clientY: number; button: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; target: EventTarget | null; preventDefault: () => void }
+
+  // Once a drag starts here it is tracked on `window`, not just on
+  // .timeline-content: the browser keeps delivering mousemove/mouseup to
+  // the page while the button is held, even with the pointer past the
+  // Timeline's edge or outside the app window. Before this the content's
+  // own onMouseLeave cancelled the drag the moment the pointer crossed its
+  // border, so scrubbing the playhead off the end of the Timeline (or a
+  // fast box-select toward the panel edge) just died mid-gesture.
+  const windowDragCleanupRef = useRef<(() => void) | null>(null)
+
+  // Edge auto-scroll: while a scrub / box / range drag holds the pointer
+  // within EDGE_AUTOSCROLL_ZONE_PX of the visible content's left or right
+  // edge (or past it), the Timeline scrolls sideways every frame -- faster
+  // the further out the pointer is -- and the drag is re-committed at the
+  // pointer's unchanged screen position, so the playhead / box keeps
+  // pace with the new content underneath it. Runs as its own rAF loop for
+  // the life of the drag; a pointer in the middle just makes each tick a
+  // no-op.
+  const edgeScrollRafRef = useRef<number | null>(null)
+  const stopEdgeAutoScroll = (): void => {
+    if (edgeScrollRafRef.current !== null) cancelAnimationFrame(edgeScrollRafRef.current)
+    edgeScrollRafRef.current = null
+  }
+  const startEdgeAutoScroll = (): void => {
+    if (edgeScrollRafRef.current !== null) return
+    const tick = (): void => {
+      edgeScrollRafRef.current = null
+      const scrollEl = scrollRef.current
+      const latest = latestPointerMoveRef.current
+      const mode = draggingRef.current
+      if (!scrollEl || !latest || !mode || mode === 'pan') return
+      const rect = scrollEl.getBoundingClientRect()
+      const leftEdge = rect.left + trackHeaderWidth
+      const rightEdge = rect.right
+      let dx = 0
+      if (latest.clientX < leftEdge + EDGE_AUTOSCROLL_ZONE_PX) dx = -edgeAutoScrollSpeed(leftEdge + EDGE_AUTOSCROLL_ZONE_PX - latest.clientX)
+      else if (latest.clientX > rightEdge - EDGE_AUTOSCROLL_ZONE_PX) dx = edgeAutoScrollSpeed(latest.clientX - (rightEdge - EDGE_AUTOSCROLL_ZONE_PX))
+      if (dx !== 0) {
+        const before = scrollEl.scrollLeft
+        scrollEl.scrollLeft = before + dx
+        if (scrollEl.scrollLeft !== before) commitPointerMove(latest)
+      }
+      edgeScrollRafRef.current = requestAnimationFrame(tick)
+    }
+    edgeScrollRafRef.current = requestAnimationFrame(tick)
+  }
+
+  const trackDragOnWindow = (): void => {
+    windowDragCleanupRef.current?.()
+    const onUp = (ev: MouseEvent): void => {
+      windowDragCleanupRef.current?.()
+      stopDragging(ev)
+    }
+    const onMove = (ev: MouseEvent): void => {
+      // The button is already up but no mouseup reached us -- it was
+      // swallowed by a child's stopPropagation, or released over another
+      // window. The next movement ends the drag where the pointer is, so
+      // a marquee never stays painted after the mouse is let go.
+      if (ev.buttons === 0) {
+        onUp(ev)
+        return
+      }
+      handlePointerMove(ev)
+    }
+    // A window losing focus mid-drag (Alt+Tab, a dialog) also ends it.
+    const onBlur = (): void => {
+      const latest = latestPointerMoveRef.current
+      windowDragCleanupRef.current?.()
+      if (latest) stopDragging({ ...latest, ctrlKey: false, metaKey: false, shiftKey: false })
+      else {
+        draggingRef.current = false
+        boxStartRef.current = null
+        setBoxRect(null)
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('blur', onBlur)
+    windowDragCleanupRef.current = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onBlur)
+      stopEdgeAutoScroll()
+      windowDragCleanupRef.current = null
+    }
+    startEdgeAutoScroll()
+  }
+  useEffect(() => () => windowDragCleanupRef.current?.(), [])
+
+  // Follow playback without the old full-page jump at the right edge. Once
+  // the playhead reaches the forward guide, ease the viewport a small amount
+  // each frame so clips/ruler move steadily rather than visibly jolting.
+  // Only while playing: a manual seek/scrub is the user's own view choice.
+  useEffect(() => {
+    if (!isPlaying) return
+    const scrollEl = scrollRef.current
+    if (!scrollEl) return
+    const playheadX = currentTime * pixelsPerSecond
+    const viewLeft = scrollEl.scrollLeft
+    const viewWidth = scrollEl.clientWidth - trackHeaderWidth
+    if (viewWidth <= 0) return
+    const next = nextPlaybackScrollLeft(playheadX, viewLeft, viewWidth)
+    if (Math.abs(next - viewLeft) >= 0.25) scrollEl.scrollLeft = next
+  }, [isPlaying, currentTime, pixelsPerSecond, trackHeaderWidth])
+
+  const handlePointerDown = (e: PointerLike): void => {
     // Reaches here for empty Timeline area / ruler clicks, AND (for Hand and
     // Range tools specifically) clicks that landed on a clip too -- see
     // ClipTrack.tsx/GraphicsTrack.tsx's own tool-aware bypass, which lets
@@ -741,6 +1204,7 @@ export function Timeline(): JSX.Element {
       e.preventDefault()
       draggingRef.current = 'pan'
       panStartRef.current = { clientX: e.clientX, clientY: e.clientY, scrollLeft: scrollRef.current?.scrollLeft ?? 0, scrollTop: scrollRef.current?.scrollTop ?? 0 }
+      trackDragOnWindow()
       return
     }
     if (e.button === 2) {
@@ -757,6 +1221,7 @@ export function Timeline(): JSX.Element {
     if (tool === 'hand') {
       draggingRef.current = 'pan'
       panStartRef.current = { clientX: e.clientX, clientY: e.clientY, scrollLeft: scrollRef.current?.scrollLeft ?? 0, scrollTop: scrollRef.current?.scrollTop ?? 0 }
+      trackDragOnWindow()
       return
     }
     if (tool === 'range') {
@@ -764,6 +1229,7 @@ export function Timeline(): JSX.Element {
       const t = dropTimeFromClientX(e.clientX)
       rangeStartTimeRef.current = t
       setRangeSelection({ start: t, end: t })
+      trackDragOnWindow()
       return
     }
     // Ruler drags (and grabbing the playhead's own handle) scrub the playhead
@@ -774,13 +1240,21 @@ export function Timeline(): JSX.Element {
     if ((e.target as HTMLElement).closest('.timeline-ruler, .timeline-playhead-handle')) {
       draggingRef.current = 'scrub'
       seekFromClientX(e.clientX)
+      trackDragOnWindow()
       return
     }
+    // A press on an item (clip, caption, graphics scene) belongs to that
+    // item's own drag -- never the start of a marquee. The item handlers
+    // cancel the compat mousedown themselves; this is the backstop for any
+    // that don't, so a box can never appear over an item being grabbed.
+    if ((e.target as HTMLElement).closest('.clip-track-clip, .timeline-caption-block, .graphics-clip')) return
     draggingRef.current = 'maybe-box'
-    boxStartRef.current = contentLocalPoint(e.clientX, e.clientY)
+    boxStartRef.current = boxSelectionPoint(e.clientX, e.clientY)
+    trackDragOnWindow()
   }
 
-  const handlePointerMove = (e: React.MouseEvent): void => {
+  const handlePointerMove = (e: { clientX: number; clientY: number }): void => {
+    if (draggingRef.current) latestPointerMoveRef.current = { clientX: e.clientX, clientY: e.clientY }
     if (skimmerOn && skimmerRef.current) {
       const { x } = contentLocalPoint(e.clientX, e.clientY)
       skimmerRef.current.style.display = 'block'
@@ -794,11 +1268,14 @@ export function Timeline(): JSX.Element {
       scrollEl.scrollTop = start.scrollTop - (e.clientY - start.clientY)
       return
     }
-    if (draggingRef.current === 'scrub') {
-      seekFromClientX(e.clientX)
-      return
-    }
-    if (draggingRef.current === 'range' || draggingRef.current === 'maybe-box' || draggingRef.current === 'box') {
+    if (draggingRef.current === 'scrub' || draggingRef.current === 'range' || draggingRef.current === 'maybe-box' || draggingRef.current === 'box') {
+      // Scrubbing the playhead used to call seekFromClientX synchronously on
+      // every raw mousemove -- browsers dispatch far more of these than one
+      // per animation frame, and each one triggers a full Timeline
+      // re-render (every clip/track recomputed), which is exactly the
+      // per-pixel-state cost this same batching already eliminated for box-
+      // select/range-select drags. Routing 'scrub' through the identical
+      // one-commit-per-frame path makes playhead dragging just as smooth.
       latestPointerMoveRef.current = { clientX: e.clientX, clientY: e.clientY }
       if (pointerMoveRafIdRef.current === null) {
         pointerMoveRafIdRef.current = requestAnimationFrame(() => {
@@ -811,6 +1288,14 @@ export function Timeline(): JSX.Element {
   }
 
   const commitPointerMove = (e: { clientX: number; clientY: number }): void => {
+    if (draggingRef.current === 'scrub') {
+      // `live: true` lets PreviewPlayer.tsx throttle the actual, expensive
+      // <video> decoder seek separately from this per-frame playhead
+      // update -- see SeekOptions' own doc comment. stopDragging fires one
+      // final non-live seek on release for a precise landing position.
+      seekFromClientX(e.clientX, { live: true })
+      return
+    }
     if (draggingRef.current === 'range') {
       const startTime = rangeStartTimeRef.current
       if (startTime === null) return
@@ -821,7 +1306,7 @@ export function Timeline(): JSX.Element {
     if (draggingRef.current === 'maybe-box' || draggingRef.current === 'box') {
       const start = boxStartRef.current
       if (!start) return
-      const { x, y } = contentLocalPoint(e.clientX, e.clientY)
+      const { x, y } = boxSelectionPoint(e.clientX, e.clientY)
       if (draggingRef.current === 'maybe-box') {
         if (Math.hypot(x - start.x, y - start.y) < BOX_SELECT_THRESHOLD_PX) return
         draggingRef.current = 'box'
@@ -833,13 +1318,16 @@ export function Timeline(): JSX.Element {
   const commitBoxSelection = (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): void => {
     const start = boxStartRef.current
     if (!start) return
-    const { x, y } = contentLocalPoint(e.clientX, e.clientY)
+    const { x, y } = boxSelectionPoint(e.clientX, e.clientY)
     const rect = normalizeRect(start.x, start.y, x, y)
     const hitIds = clipsInRect(rect, clipGeometries)
-    selectClips(applyBoxSelection(selectedTimelineClipIds, hitIds, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }))
+    const modifiers = { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }
+    selectClips(applyBoxSelection(selectedTimelineClipIds, hitIds, modifiers))
+    selectScenes(applyBoxSelection(selectedSceneIds, clipsInRect(rect, sceneGeometries), modifiers))
+    setSelectedCaptionSegmentIds(applyBoxSelection(selectedCaptionSegmentIds, clipsInRect(rect, captionGeometries), modifiers))
   }
 
-  const stopDragging = (e: React.MouseEvent): void => {
+  const stopDragging = (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): void => {
     // A commit may still be scheduled for next frame -- flush it now so
     // `rangeSelection` (read directly, just below) and the box-select commit
     // are never a stale frame behind the pointer's actual last position.
@@ -852,6 +1340,15 @@ export function Timeline(): JSX.Element {
     if (draggingRef.current === 'pan') {
       draggingRef.current = false
       panStartRef.current = null
+      return
+    }
+    if (draggingRef.current === 'scrub') {
+      // The drag itself only ever issued `live` (throttleable) seeks -- one
+      // final full-precision seek on release guarantees the video actually
+      // lands exactly where the pointer did, not wherever the last
+      // throttled frame happened to leave it.
+      seekFromClientX(e.clientX)
+      draggingRef.current = false
       return
     }
     if (draggingRef.current === 'range') {
@@ -868,6 +1365,8 @@ export function Timeline(): JSX.Element {
     } else if (draggingRef.current === 'maybe-box') {
       // Never actually moved -- a plain click, same as the old always-seek behavior.
       clearClipSelection()
+      selectScenes([])
+      setSelectedCaptionSegmentIds([])
       seekFromClientX(e.clientX)
     }
     draggingRef.current = false
@@ -875,19 +1374,11 @@ export function Timeline(): JSX.Element {
     setBoxRect(null)
   }
 
-  // Leaving the Timeline area mid-drag cancels rather than commits -- an
-  // outside-the-content mouseup isn't visible to this element's own onMouseUp.
-  const cancelDragging = (): void => {
-    if (pointerMoveRafIdRef.current !== null) {
-      cancelAnimationFrame(pointerMoveRafIdRef.current)
-      pointerMoveRafIdRef.current = null
-    }
-    draggingRef.current = false
-    boxStartRef.current = null
-    setBoxRect(null)
-    panStartRef.current = null
+  /** Pointer left .timeline-content: only the hover-only skimmer line
+   * needs hiding -- an in-progress drag keeps going on the window
+   * listeners (see trackDragOnWindow). */
+  const handleContentMouseLeave = (): void => {
     if (skimmerRef.current) skimmerRef.current.style.display = 'none'
-    if (snapGuideRef.current) snapGuideRef.current.style.display = 'none'
   }
 
   // Imperative, ref-mutation update for the shared snap-guide line -- passed
@@ -951,6 +1442,16 @@ export function Timeline(): JSX.Element {
   // the window itself, with no way to scroll to them.
   const rulerVisualDuration = Math.max(effectiveDuration, Math.max(0, timelineViewportWidth - trackHeaderWidth) / pixelsPerSecond)
 
+  // Same "visually fill the viewport" treatment as the ruler above (in
+  // pixels directly, since this feeds a track row's own DOM width instead of
+  // a duration prop) -- without it, a track row's own div (and its bottom
+  // divider) stopped exactly at `effectiveDuration * pixelsPerSecond`, short
+  // of the viewport on a short project, while the header column's own
+  // (always full-column-width) row divider kept going the rest of the way:
+  // the two columns' divider lines looked continuous on the header side and
+  // just stopped, mid-row, on the content side.
+  const trackRowVisualMinWidthPx = Math.max(0, timelineViewportWidth - trackHeaderWidth)
+
   // Attached as a real native listener rather than JSX onWheel -- see
   // handleWheel's own doc comment for why. `isEmpty` has to be a dependency:
   // `.timeline-scroll-2d` (and therefore scrollRef.current) doesn't exist in
@@ -997,7 +1498,23 @@ export function Timeline(): JSX.Element {
       rafId = null
       const start = Math.max(0, (scrollEl.scrollLeft - marginPx) / pixelsPerSecond)
       const end = (scrollEl.scrollLeft + scrollEl.clientWidth + marginPx) / pixelsPerSecond
-      setViewportRange({ start, end })
+      // ResizeObserver/layout effects can legitimately report the same
+      // rectangle more than once. Reusing the previous object prevents an
+      // identical measurement from scheduling another render and makes this
+      // tracker resilient if any upstream layout dependency changes identity.
+      setViewportRange((previous) =>
+        previous && previous.start === start && previous.end === end ? previous : { start, end }
+      )
+
+      // CSS can pin a sticky row but cannot expose whether it is currently
+      // pinned. Derive that state from the Main Track's natural layout
+      // position so the stronger colour/shadow appears ONLY while the row
+      // is floating at the viewport bottom, never in its normal position.
+      const mainTrack = sortedTracks.find((track) => track.isMain)
+      const mainTop = mainTrack ? trackTopById[mainTrack.id] : undefined
+      const mainHeight = mainTrack ? trackHeightById[mainTrack.id] : undefined
+      const floating = mainTop !== undefined && mainHeight !== undefined && mainTop + mainHeight > scrollEl.scrollTop + scrollEl.clientHeight + 1
+      timelineRootRef.current?.classList.toggle('timeline-main-track-floating', floating)
     }
     const onScroll = (): void => {
       if (rafId === null) rafId = requestAnimationFrame(update)
@@ -1011,7 +1528,7 @@ export function Timeline(): JSX.Element {
       observer.disconnect()
       if (rafId !== null) cancelAnimationFrame(rafId)
     }
-  }, [pixelsPerSecond, isEmpty])
+  }, [pixelsPerSecond, isEmpty, sortedTracks, trackTopById, trackHeightById])
 
   // Scrolls the Timeline the moment a new clip or scene first appears --
   // covers every insertion path (Add to Timeline, drag-drop from Media,
@@ -1052,7 +1569,7 @@ export function Timeline(): JSX.Element {
   if (isEmpty) {
     return (
       <div className="timeline-root">
-        <TimelineToolbar onZoom={zoomAroundPlayhead} />
+        <TimelineToolbar onZoom={zoomAroundPlayhead} timelineDuration={effectiveDuration} onDeleteSelection={deleteAllSelectedTimelineItems} hasAdditionalSelection={selectedCaptionSegmentIds.length > 0} />
         <div
           className="timeline-empty"
           onDragOver={(e) => {
@@ -1105,8 +1622,27 @@ export function Timeline(): JSX.Element {
   })()
 
   return (
-    <div className="timeline-root">
-      <TimelineToolbar onZoom={zoomAroundPlayhead} />
+    // Overriding --timeline-top-safe-zone here (rather than only using
+    // safeZonePx in the JS geometry) is what actually shrinks the rendered
+    // band: both the content column's .timeline-top-safe-zone and the header
+    // column's .timeline-header-safe-zone-spacer size themselves off this
+    // variable, and --timeline-content-start is defined as a calc() over it,
+    // so every sticky offset derived from it follows along automatically.
+    <div ref={timelineRootRef} className="timeline-root" style={{ ['--timeline-top-safe-zone' as string]: `${safeZonePx}px` } as CSSProperties}>
+      <TimelineToolbar onZoom={zoomAroundPlayhead} timelineDuration={effectiveDuration} onDeleteSelection={deleteAllSelectedTimelineItems} hasAdditionalSelection={selectedCaptionSegmentIds.length > 0} />
+      {/* Remove Vocal runs for seconds to minutes (a real separation
+          model); before this the only sign anything was happening was a
+          greyed-out menu item nobody could see once the menu closed. */}
+      {removingVocalsClipId && (
+        <div className="timeline-job-pill" role="status" aria-live="polite">
+          <span className="timeline-job-pill-spinner" />
+          <span className="timeline-job-pill-label">Removing vocals · {vocalProgress?.stage ?? 'Starting'}</span>
+          <span className="timeline-job-pill-track">
+            <span className="timeline-job-pill-fill" style={{ width: `${vocalProgress?.percent ?? 0}%` }} />
+          </span>
+          <span className="timeline-job-pill-percent">{Math.round(vocalProgress?.percent ?? 0)}%</span>
+        </div>
+      )}
       <div
         className="timeline-header-resize-handle"
         style={{ left: trackHeaderWidth }}
@@ -1119,7 +1655,13 @@ export function Timeline(): JSX.Element {
       />
       <div className="timeline-scroll-2d editor-scroll" ref={scrollRef}>
         <div className="timeline-header-column" style={{ width: trackHeaderWidth }}>
-          <TimelineTrackHeaders tracks={sortedTracks} trackHasContent={trackHasContent} topSpacerHeight={topSpacerHeight} />
+          <TimelineTrackHeaders
+            tracks={sortedTracks}
+            iconKindByTrackId={trackIconKindById}
+            trackHasContent={trackHasContent}
+            topSpacerHeight={topSpacerHeight}
+            bottomSpacerHeight={bottomSpacerHeight}
+          />
         </div>
         <div className="timeline-content-column">
           <div
@@ -1129,7 +1671,7 @@ export function Timeline(): JSX.Element {
             onMouseDown={handlePointerDown}
             onMouseMove={handlePointerMove}
             onMouseUp={stopDragging}
-            onMouseLeave={cancelDragging}
+            onMouseLeave={handleContentMouseLeave}
             onDragOver={handleTimelineDragOver}
             onDragLeave={handleTimelineDragLeave}
             onDrop={handleTimelineDrop}
@@ -1174,10 +1716,12 @@ export function Timeline(): JSX.Element {
                     markers={sequence.markers}
                     playheadTime={currentTime}
                     duration={effectiveDuration}
+                    visualMinWidthPx={trackRowVisualMinWidthPx}
                     pixelsPerSecond={pixelsPerSecond}
                     selectedSceneId={selectedSceneId}
+                    selectedSceneIds={selectedSceneIds}
                     onSelect={handleSelectScene}
-                    onRetime={(sceneId, start, end) => retimeScene(sceneMediaIdById[sceneId] ?? '', sceneId, start, end)}
+                    onRetime={(sceneId, start, end, options) => retimeScene(sceneMediaIdById[sceneId] ?? '', sceneId, start, end, options)}
                     onSnapGuide={updateSnapGuide}
                   />
                 )
@@ -1188,9 +1732,34 @@ export function Timeline(): JSX.Element {
                     key={track.id}
                     segments={segments}
                     duration={effectiveDuration}
+                    visualMinWidthPx={trackRowVisualMinWidthPx}
                     pixelsPerSecond={pixelsPerSecond}
                     activeSegmentId={activeSegmentId}
+                    selectedSegmentIds={selectedCaptionSegmentIds}
+                    onSelect={selectCaptionSegment}
                     onSeek={seekTo}
+                    onMove={
+                      selectedId
+                        ? (segmentId, newStartTime) => {
+                            // A subtitle the AI Dubber has dubbed drags its
+                            // voice clip along with it; any other transcript
+                            // just moves the caption.
+                            if (aiDubber.state.videoMediaId === selectedId) aiDubber.moveSubtitle(segmentId, newStartTime)
+                            else moveSegment(selectedId, segmentId, newStartTime)
+                          }
+                        : undefined
+                    }
+                    onMoveSet={
+                      selectedId
+                        ? (segmentIds, draggedSegmentId, newStartTime) => {
+                            if (aiDubber.state.videoMediaId === selectedId) {
+                              aiDubber.moveSubtitles(segmentIds, draggedSegmentId, newStartTime)
+                            } else {
+                              moveSegments(selectedId, segmentIds, draggedSegmentId, newStartTime)
+                            }
+                          }
+                        : undefined
+                    }
                     height={trackDisplayHeight(track, trackHeightMode)}
                     hidden={track.hidden}
                   />
@@ -1198,29 +1767,35 @@ export function Timeline(): JSX.Element {
               }
               // video / audio
               const clips = clipsByTrackId[track.id] ?? []
-              const visibleClips = viewportRange ? clips.filter((c) => isInViewport(c.startTime, c.duration, viewportRange.start, viewportRange.end)) : clips
+              const visibleClips = visibleClipsByTrackId[track.id] ?? clips
               return (
-                <div key={track.id}>
+                <div
+                  key={track.id}
+                  className={`timeline-track-row-wrapper${track.isMain ? ' timeline-track-row-wrapper-sticky-main' : ''}`}
+                >
                   <ClipTrack
                     track={track}
                     clips={visibleClips}
                     allClips={sequence.clips}
                     tracks={sequence.tracks}
                     markers={sequence.markers}
-                    playheadTime={currentTime}
                     mediaById={mediaById}
                     duration={effectiveDuration}
+                    visualMinWidthPx={trackRowVisualMinWidthPx}
                     pixelsPerSecond={pixelsPerSecond}
                     selectedClipIds={selectedTimelineClipIds}
-                    onSelect={selectClip}
+                    onSelect={handleSelectClip}
                     onDoubleClick={handleDoubleClickClip}
                     onMove={moveClip}
+                    onMoveSet={moveClipSet}
                     onTrim={trimClip}
                     onBladeSplit={handleBladeSplit}
                     onRollEdit={rollEditClips}
                     onSnapGuide={updateSnapGuide}
                     draggingClipId={draggingClipId}
                     onDraggingChange={setDraggingClipId}
+                    takeLabels={isNarrationTrackId(track.id) ? narrationTakeLabels : undefined}
+                    liveRecordingRegion={track.id === NARRATION_TRACK_ID ? narrationLiveRecordingRegion : null}
                   />
                   {track.kind === 'audio' && clips.length === 0 && (
                     <span className="timeline-track-empty-label">No audio on this track</span>
@@ -1231,7 +1806,7 @@ export function Timeline(): JSX.Element {
               <div className="timeline-tracks-spacer" style={{ height: bottomSpacerHeight }} />
             </div>
 
-            <div className="timeline-playhead" style={{ left: currentTime * pixelsPerSecond }}>
+            <div className="timeline-playhead" style={{ transform: `translate3d(${currentTime * pixelsPerSecond}px, 0, 0)` }}>
               <div className="timeline-playhead-handle" title="Drag to scrub" />
               <span className={`timeline-playhead-badge${playheadBadgeEdgeClass}`}>{formatDuration(currentTime)}</span>
             </div>

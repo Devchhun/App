@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useTranscript } from '../transcript/TranscriptContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useScenes } from '../scenes/SceneContext'
 import { useLocalAi } from './LocalAiContext'
@@ -43,7 +43,7 @@ function countConflicting(scenes: ScenePlanScene[]): number {
 export function LocalAiPanel(): JSX.Element {
   const { items, selectedId } = useMedia()
   const { transcripts } = useTranscript()
-  const { seekTo } = usePlayback()
+  const { seekTo } = usePlaybackControls()
   const { sequence, ensureTrack } = useSequence()
   const { scenesByMedia, insertScenes } = useScenes()
   const {

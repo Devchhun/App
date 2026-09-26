@@ -576,6 +576,49 @@ def cmd_transcribe(msg_id, args):
         _unlink_with_retry(args_path)
 
 
+def cmd_diarize(msg_id, args):
+    """Runs acoustic embedding extraction in a cancellable child process.
+    Clustering stays in shared TypeScript so it is deterministic/unit-tested
+    and the persisted data model is owned by the app rather than Python."""
+    set_active_job(msg_id)
+    args_fd, args_path = tempfile.mkstemp(suffix='.json', prefix='diarize-args-')
+    with os.fdopen(args_fd, 'w', encoding='utf-8') as handle:
+        json.dump(args, handle)
+    child_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'diarize_child.py')
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, '-u', child_script, args_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+        )
+        active_transcribe_procs[msg_id] = proc
+        got_final = False
+        for line in proc.stdout:
+            try:
+                child_msg = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+            if child_msg.get('type') == 'progress':
+                emit(msg_id, 'progress', data=child_msg.get('data'))
+            elif child_msg.get('type') == 'result':
+                emit(msg_id, 'result', data=child_msg.get('data'))
+                got_final = True
+            elif child_msg.get('type') == 'error':
+                emit(msg_id, 'error', message=child_msg.get('message', 'error'), canceled=bool(child_msg.get('canceled')))
+                got_final = True
+        proc.wait(timeout=10)
+        if not got_final:
+            stderr_tail = (proc.stderr.read() or '').strip()[-2000:]
+            emit(msg_id, 'error', message=stderr_tail or f'Diarization worker exited unexpectedly (code {proc.returncode})')
+    finally:
+        active_transcribe_procs.pop(msg_id, None)
+        set_active_job(None)
+        _unlink_with_retry(args_path)
+
+
 def _unlink_with_retry(path, attempts=5, delay_seconds=0.2):
     # Windows/antivirus can briefly hold a lock on a just-closed file right
     # after the child process that read it exits; retry a few times rather
@@ -703,6 +746,7 @@ HANDLERS = {
     'list_models': cmd_list_models,
     'download_model': cmd_download_model,
     'transcribe': cmd_transcribe,
+    'diarize': cmd_diarize,
     'align': cmd_align,
 }
 

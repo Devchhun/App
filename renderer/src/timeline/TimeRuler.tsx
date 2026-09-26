@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import type { Marker } from '@shared/project'
 import { formatDuration } from '../media/format'
 import { useSequence } from '../sequence/SequenceContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useHistory } from '../history/HistoryContext'
 import { computeRulerTicks } from './rulerTicks'
 
@@ -31,7 +31,7 @@ const MARKER_DRAG_THRESHOLD_PX = 4
 
 export function TimeRuler({ duration, pixelsPerSecond, markers, viewStart, viewEnd }: Props): JSX.Element {
   const { moveMarkerTo, updateMarkerFields, removeMarkerById } = useSequence()
-  const { seekTo } = usePlayback()
+  const { seekTo } = usePlaybackControls()
   const { beginTransaction, endTransaction } = useHistory()
   const rulerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ markerId: string; moved: boolean; pointerId: number } | null>(null)

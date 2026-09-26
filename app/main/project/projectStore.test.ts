@@ -427,14 +427,14 @@ describe('project persistence', () => {
     const path = await saveProjectAtomic(legacyProject)
 
     const loaded = await loadProject(path)
-    expect(loaded.schemaVersion).toBe(7)
+    expect(loaded.schemaVersion).toBe(11)
     expect(loaded.scenes[0].contentTransform).toEqual({ xPercent: 50, yPercent: 50, widthPercent: 60, heightPercent: 50, rotation: 0, lockAspectRatio: false })
 
     // Re-saving persists the repaired (center-based) value, not the raw file's old one.
     const resavedPath = await saveProjectAtomic(loaded)
     const reloaded = await loadProject(resavedPath)
     expect(reloaded.scenes[0].contentTransform).toEqual({ xPercent: 50, yPercent: 50, widthPercent: 60, heightPercent: 50, rotation: 0, lockAspectRatio: false })
-    expect(reloaded.schemaVersion).toBe(7)
+    expect(reloaded.schemaVersion).toBe(11)
   })
 
   it('getOrCreateStartupProject reopens the most recently saved project', async () => {

@@ -1,5 +1,6 @@
+import { useRef } from 'react'
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackTime } from '../playback/PlaybackContext'
 import { useScenes } from '../scenes/SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useHistory } from '../history/HistoryContext'
@@ -10,6 +11,7 @@ import { ToggleButton } from './ToggleButton'
 import { SelectionToolButton } from './SelectionToolButton'
 import { TimelineViewOptionsMenu } from './TimelineViewOptionsMenu'
 import { VoiceoverRecorder } from './VoiceoverRecorder'
+import { useNarration } from '../narration/NarrationContext'
 import { canFreezeFrame as canFreezeFrameCheck, useFreezeFrame } from './useFreezeFrame'
 import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
 import {
@@ -62,11 +64,16 @@ interface Props {
    * use this (it deliberately resets the view to show everything, so there's
    * nothing to anchor). */
   onZoom: (newPps: number) => void
+  timelineDuration?: number
+  /** Timeline owns cross-type selection (including caption blocks). */
+  onDeleteSelection?: () => void
+  hasAdditionalSelection?: boolean
 }
 
-export function TimelineToolbar({ onZoom }: Props): JSX.Element {
+export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, hasAdditionalSelection = false }: Props): JSX.Element {
+  const zoomSliderRef = useRef<HTMLDivElement | null>(null)
   const { items, selectedId } = useMedia()
-  const { currentTime } = usePlayback()
+  const { currentTime } = usePlaybackTime()
   const { scenesByMedia, selectedSceneId, deleteScene, splitScene, insertScene } = useScenes()
   const {
     sequence,
@@ -82,12 +89,11 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   } = useSequence()
   const { canUndo, canRedo, undo, redo } = useHistory()
   const { triggerFreezeFrame } = useFreezeFrame()
+  const narration = useNarration()
   const {
     pixelsPerSecond,
     setPixelsPerSecond,
     timelineViewportWidth,
-    magnetOn,
-    toggleMagnet,
     rippleOn,
     toggleRipple,
     linkageOn,
@@ -118,12 +124,12 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   const canSplitClipSelection = canSplitClip(selectedClip, currentTime)
   const canSplitSceneSelection = !!selectedScene && !selectedScene.locked && currentTime > selectedScene.startTime && currentTime < selectedScene.endTime
   const canSplit = canSplitClipSelection || canSplitSceneSelection
-  const canDelete = !!selectedClip || !!selectedScene
+  const canDelete = !!selectedClip || !!selectedScene || hasAdditionalSelection
   const canTrimToPlayhead = !!selectedClip && !selectedClip.locked && currentTime > selectedClip.startTime && currentTime < selectedClip.startTime + selectedClip.duration
   const canFreezeFrame = canFreezeFrameCheck(selectedClip, currentTime)
   const canTransformClip = !!selectedClip && !selectedClip.locked && (selectedClip.type === 'video' || selectedClip.type === 'image')
   const sceneMaxEnd = allScenes.reduce((max, s) => Math.max(max, s.endTime), 0)
-  const effectiveDuration = Math.max(sequence.duration, sceneMaxEnd > 0 ? sceneMaxEnd + 5 : 0)
+  const effectiveDuration = timelineDuration ?? Math.max(sequence.duration, sceneMaxEnd > 0 ? sceneMaxEnd + 5 : 0)
 
   const handleFreezeFrame = (): void => {
     if (!selectedClip) return
@@ -166,6 +172,10 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   }
 
   const handleDelete = (): void => {
+    if (onDeleteSelection) {
+      onDeleteSelection()
+      return
+    }
     if (selectedClip) {
       // Not gated by Linkage (a movement-coupling toggle) -- a linked pair
       // is one logical clip for deletion, so this always takes the linked
@@ -191,9 +201,20 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   const handleInsertText = (): void => {
     if (!media) return
     const occupied: OccupiedRange[] = allScenes.map((s) => ({ trackId: s.track, startTime: s.startTime, endTime: s.endTime }))
-    const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, NEW_SCENE_DURATION_SECONDS, 'graphic')
+    // The toolbar's Add Text action owns a real text-kind track. This keeps
+    // it above Main Track and gives both its row and item the text glyph,
+    // instead of incorrectly presenting user text as an image/graphic.
+    const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, NEW_SCENE_DURATION_SECONDS, 'text')
     if (routing.newTrack) ensureTrack(routing.newTrack)
-    insertScene(media.id, currentTime, routing.trackId)
+    // The Text toolbar creates a generic editable text box, so its first
+    // position should be centered on the canvas. The underlying lower-third
+    // template keeps its traditional bottom-left default when chosen from
+    // the Template Library; only this Add Text shortcut supplies a layout.
+    insertScene(media.id, currentTime, routing.trackId, 'lower-third', {
+      position: { xPct: 25, yPct: 40, widthPct: 50, heightPct: 20 },
+      textAlign: 'center',
+      lockAspectRatio: false
+    })
   }
 
   const zoomToFit = (): void => {
@@ -205,6 +226,15 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
   const zoomStep = (factor: number): void => {
     onZoom(Math.max(MIN_PPS, Math.min(MAX_PPS, pixelsPerSecond * factor)))
   }
+
+  const zoomFromPointer = (clientX: number): void => {
+    const bounds = zoomSliderRef.current?.getBoundingClientRect()
+    if (!bounds || bounds.width <= 0) return
+    const value = Math.max(0, Math.min(ZOOM_SLIDER_MAX, ((clientX - bounds.left) / bounds.width) * ZOOM_SLIDER_MAX))
+    onZoom(Math.min(MAX_PPS, Math.max(MIN_PPS, sliderToPps(value))))
+  }
+
+  const zoomSliderValue = Math.max(0, Math.min(ZOOM_SLIDER_MAX, ppsToSlider(pixelsPerSecond)))
 
   return (
     <div className="timeline-toolbar">
@@ -249,8 +279,22 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
       </div>
 
       <div className="timeline-tool-group timeline-tool-group-right">
+        {narration.active && (
+          <span className="narration-mode-indicator">
+            ● Story Narration
+            <button className="narration-mode-indicator-exit" onClick={narration.exitStoryNarration} title="Exit Story Narration and return to Media/AI panels">
+              ✕
+            </button>
+          </span>
+        )}
+        {/* Accepting a take (and its move to the next segment) happens from
+            the Recording Assistant panel's own Redo/Accept & Next buttons,
+            shown only once there's actually a take to review -- a second
+            copy pinned here sat disabled/grayed-out through the whole
+            record step, which read as an inert leftover control rather than
+            something to use. */}
         <VoiceoverRecorder />
-        <ToggleButton icon={<MagnetIcon />} label="Main Track Magnet" active={magnetOn} onClick={toggleMagnet} />
+        <ToggleButton icon={<MagnetIcon />} label="Main Track Auto Magnet — always on" active disabled onClick={() => {}} />
         <ToggleButton icon={<RippleIcon />} label="Auto Ripple" active={rippleOn} onClick={toggleRipple} />
         <ToggleButton icon={<LinkIcon />} label="Linkage" active={linkageOn} onClick={toggleLinkage} />
         <ToggleButton icon={<span className="timeline-toolbar-snap-glyph">◆</span>} label="Snapping" active={snappingOn} onClick={toggleSnapping} />
@@ -268,16 +312,46 @@ export function TimelineToolbar({ onZoom }: Props): JSX.Element {
           <button className="timeline-tool-button" onClick={() => zoomStep(1 / 1.4)} title="Zoom out">
             <ZoomOutGlyphIcon />
           </button>
-          <input
-            type="range"
+          <div
+            ref={zoomSliderRef}
             className="timeline-zoom-slider"
-            min={0}
-            max={ZOOM_SLIDER_MAX}
-            step={0.1}
-            value={ppsToSlider(pixelsPerSecond)}
-            onChange={(e) => onZoom(Math.min(MAX_PPS, Math.max(MIN_PPS, sliderToPps(Number(e.target.value)))))}
-            title="Zoom"
-          />
+            role="slider"
+            tabIndex={0}
+            aria-valuemin={0}
+            aria-valuemax={ZOOM_SLIDER_MAX}
+            aria-valuenow={Math.round(zoomSliderValue)}
+            aria-label="Timeline zoom"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              event.currentTarget.setPointerCapture(event.pointerId)
+              zoomFromPointer(event.clientX)
+            }}
+            onPointerMove={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) zoomFromPointer(event.clientX)
+            }}
+            onPointerUp={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+                event.preventDefault()
+                onZoom(sliderToPps(Math.max(0, zoomSliderValue - 2)))
+              } else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                onZoom(sliderToPps(Math.min(ZOOM_SLIDER_MAX, zoomSliderValue + 2)))
+              } else if (event.key === 'Home') {
+                event.preventDefault()
+                onZoom(MIN_PPS)
+              } else if (event.key === 'End') {
+                event.preventDefault()
+                onZoom(MAX_PPS)
+              }
+            }}
+            title="Timeline zoom — drag the larger handle, or use arrow keys"
+          >
+            <span className="timeline-zoom-slider-track"><span className="timeline-zoom-slider-fill" style={{ width: `${zoomSliderValue}%` }} /></span>
+            <span className="timeline-zoom-slider-thumb" style={{ left: `${zoomSliderValue}%` }} />
+          </div>
           <button className="timeline-tool-button" onClick={() => zoomStep(1.4)} title="Zoom in">
             <ZoomInGlyphIcon />
           </button>

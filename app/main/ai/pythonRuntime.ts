@@ -25,6 +25,15 @@ function bundledPythonPath(): string | null {
   return existsSync(exe) ? exe : null
 }
 
+/** The app's OWN bundled Python, or null when this build doesn't ship one.
+ * Exposed separately from resolvePythonRuntime because Edge TTS only needs
+ * the interpreter (it has no worker script and no venv fallback -- if the
+ * bundled runtime isn't there, the caller falls back to a user-provided
+ * install instead of provisioning anything). */
+export function getBundledPythonPath(): string | null {
+  return bundledPythonPath()
+}
+
 export function getVenvDir(): string {
   return join(app.getPath('userData'), 'python-env')
 }

@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
-import { usePlayback } from '../playback/PlaybackContext'
+import { usePlaybackTime, usePlaybackControls } from '../playback/PlaybackContext'
 import { useTranscript } from './TranscriptContext'
 import { SegmentRow } from './SegmentRow'
 import { CorrectionDictionaryModal } from '../dictionary/CorrectionDictionaryModal'
-import type { TranscriptionLanguage, WhisperModelSize, GpuVerificationResult } from '@shared/transcription'
+import { useConfirm } from '../ui/ConfirmDialog'
+import type { TranscriptionLanguage } from '@shared/transcription'
+import { useUiState } from '../nav/UiStateContext'
 
 const LANGUAGE_OPTIONS: Array<{ value: TranscriptionLanguage; label: string }> = [
   { value: 'auto', label: 'Auto-detect' },
@@ -16,17 +18,17 @@ const ACTIVE_STAGES = new Set(['queued', 'preparing-audio', 'loading-model', 'do
 
 export function TranscriptPanel(): JSX.Element {
   const { items, selectedId } = useMedia()
-  const { currentTime, seekTo } = usePlayback()
+  const { currentTime } = usePlaybackTime()
+  const { seekTo } = usePlaybackControls()
+  const confirm = useConfirm()
+  const { openSettings } = useUiState()
   const {
     deviceInfo,
-    retryGpuDetection,
-    verifyGpu,
     models,
     selectedModelId,
-    setSelectedModelId,
+    language,
     modelDownloadProgress,
     workerStatus,
-    downloadModel,
     cancelModelDownload,
     transcripts,
     transcriptStatus,
@@ -40,12 +42,9 @@ export function TranscriptPanel(): JSX.Element {
     alignScript
   } = useTranscript()
 
-  const [language, setLanguage] = useState<TranscriptionLanguage>('auto')
   const [scriptText, setScriptText] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [replaceTerm, setReplaceTerm] = useState('')
-  const [gpuVerifying, setGpuVerifying] = useState(false)
-  const [gpuVerifyResult, setGpuVerifyResult] = useState<GpuVerificationResult | null>(null)
   const [dictionaryOpen, setDictionaryOpen] = useState(false)
   const [selectedSegmentText, setSelectedSegmentText] = useState('')
 
@@ -74,24 +73,18 @@ export function TranscriptPanel(): JSX.Element {
     return seg?.id ?? null
   }, [transcript, currentTime])
 
-  const handleVerifyGpu = async (): Promise<void> => {
-    setGpuVerifying(true)
-    setGpuVerifyResult(null)
-    try {
-      const result = await verifyGpu()
-      setGpuVerifyResult(result)
-    } finally {
-      setGpuVerifying(false)
-    }
-  }
-
   if (!media) {
     return <div className="transcript-empty">Select a media item to transcribe.</div>
   }
 
-  const handleReplaceAll = (): void => {
+  const handleReplaceAll = async (): Promise<void> => {
     if (!transcript || !searchTerm) return
-    if (!window.confirm(`Replace ${matchCount} occurrence(s) of "${searchTerm}"? This cannot be undone here.`)) return
+    const confirmed = await confirm({
+      title: `Replace ${matchCount} occurrence${matchCount === 1 ? '' : 's'}?`,
+      message: `Every "${searchTerm}" in the transcript becomes "${replaceTerm}". This can't be undone from here.`,
+      confirmLabel: 'Replace all'
+    })
+    if (!confirmed) return
     for (const seg of transcript.segments) {
       const text = seg.editedText ?? seg.text
       if (text.includes(searchTerm)) {
@@ -107,37 +100,22 @@ export function TranscriptPanel(): JSX.Element {
   return (
     <div className="transcript-panel">
       <div className="panel-fixed-head">
+      {/* Language / model / GPU setup moved to Settings > Transcription
+          (TranscriptionSettingsCard.tsx); this caption is the one-line
+          summary and the way there. */}
+      <button className="transcript-setup-caption" title="Open Settings > Transcription" onClick={() => openSettings('transcription')}>
+        <span>{LANGUAGE_OPTIONS.find((o) => o.value === language)?.label ?? language}</span>
+        <span className="transcript-setup-sep">&middot;</span>
+        <span>{selectedModel ? `${selectedModel.label}${modelReady ? ' \u2713' : ' (not downloaded)'}` : 'No model'}</span>
+        <span className="transcript-setup-sep">&middot;</span>
+        <span>{deviceInfo ? (deviceInfo.device === 'cuda' ? 'GPU' : 'CPU') : '\u2026'}</span>
+      </button>
+
       <div className="transcript-toolbar">
-        <label>
-          Language
-          <select value={language} onChange={(e) => setLanguage(e.target.value as TranscriptionLanguage)} disabled={isActive}>
-            {LANGUAGE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Model
-          <select
-            value={selectedModelId}
-            onChange={(e) => setSelectedModelId(e.target.value as WhisperModelSize)}
-            disabled={isActive}
-          >
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} ({m.approxSizeMb} MB){m.downloaded ? ' ✓' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <div className="transcript-toolbar-actions">
           {!modelReady && (
-            <button onClick={() => void downloadModel(selectedModelId)} disabled={modelDownloadProgress?.stage === 'downloading'}>
-              Download model
+            <button onClick={() => openSettings('transcription')} disabled={modelDownloadProgress?.stage === 'downloading'}>
+              {modelDownloadProgress?.stage === 'downloading' ? 'Downloading model\u2026' : 'Download model\u2026'}
             </button>
           )}
 
@@ -157,33 +135,6 @@ export function TranscriptPanel(): JSX.Element {
         <button className="transcript-toolbar-secondary" onClick={() => setDictionaryOpen(true)}>
           Dictionary…
         </button>
-      </div>
-
-      <div className="gpu-status-bar">
-        <span className="device-badge" title={deviceInfo?.reason}>
-          {deviceInfo ? (deviceInfo.device === 'cuda' ? `GPU: ${deviceInfo.cudaDeviceName ?? 'CUDA'}` : 'CPU') : '…'}
-          {deviceInfo?.computeType ? ` · ${deviceInfo.computeType}` : ''}
-          {deviceInfo?.verified ? ' · verified' : ''}
-        </span>
-        {deviceInfo?.driverVersion && <span className="gpu-detail">driver {deviceInfo.driverVersion}</span>}
-        {deviceInfo?.cublasVersion && <span className="gpu-detail">cuBLAS {deviceInfo.cublasVersion}</span>}
-        {deviceInfo?.cudnnVersion && <span className="gpu-detail">cuDNN {deviceInfo.cudnnVersion}</span>}
-        {deviceInfo?.ctranslate2Version && <span className="gpu-detail">CTranslate2 {deviceInfo.ctranslate2Version}</span>}
-        <span className="gpu-status-links">
-          <button className="inline-link-button" onClick={() => void retryGpuDetection()}>
-            Retry GPU Detection
-          </button>
-          <button className="inline-link-button" onClick={() => void handleVerifyGpu()} disabled={gpuVerifying}>
-            {gpuVerifying ? 'Testing GPU (up to ~2 min on first use)…' : 'Run real GPU test'}
-          </button>
-        </span>
-        {gpuVerifyResult && (
-          <span className={gpuVerifyResult.ok ? 'gpu-verify-ok' : 'gpu-verify-fail'}>
-            {gpuVerifyResult.ok
-              ? `OK: load ${gpuVerifyResult.loadTimeSeconds?.toFixed(1)}s, infer ${gpuVerifyResult.inferenceTimeSeconds?.toFixed(2)}s`
-              : `Failed: ${gpuVerifyResult.error}`}
-          </span>
-        )}
       </div>
 
       {workerStatus && workerStatus.stage !== 'ready' && (
@@ -238,7 +189,7 @@ export function TranscriptPanel(): JSX.Element {
       <div className="transcript-search-bar">
         <input placeholder="Search…" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         <input placeholder="Replace with…" value={replaceTerm} onChange={(e) => setReplaceTerm(e.target.value)} />
-        <button onClick={handleReplaceAll} disabled={!searchTerm}>
+        <button onClick={() => void handleReplaceAll()} disabled={!searchTerm}>
           Replace All {searchTerm ? `(${matchCount})` : ''}
         </button>
         {selectedSegmentText && (

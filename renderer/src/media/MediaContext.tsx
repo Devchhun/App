@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode, useRef } from 'react'
 import type { FfmpegAvailability, MediaItem } from '@shared/media'
 import { updateMediaSelection, clearMediaSelection, selectAllMedia, type ClickModifiers } from './mediaSelection'
 
@@ -13,11 +13,18 @@ interface MediaContextValue {
   selectedIds: string[]
   selectMedia: (id: string, modifiers?: ClickModifiers) => void
   clearMediaSelection: () => void
-  selectAllMedia: () => void
+  /** Selects every item, or only `ids` (e.g. the currently filtered ones) when given. */
+  selectAllMedia: (ids?: string[]) => void
   importFromDialog: () => Promise<void>
   importPaths: (paths: string[]) => Promise<void>
   cancel: (id: string) => void
   retry: (id: string) => void
+  /** Removes an imported item from the project's media list entirely (never
+   * touches the real source file on disk -- this app never deletes user
+   * files). Any Timeline clips still referencing it are the caller's
+   * responsibility to handle first (see ImportPanel.tsx's confirm-before-
+   * delete flow) -- this alone doesn't know about `sequence.clips`. */
+  removeMedia: (id: string) => void
   ffmpegStatus: FfmpegAvailability | null
   /** Bulk-replaces the whole media list -- used once, on project load, to
    * reconstruct already-ready MediaItems from the saved project's
@@ -64,6 +71,24 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
     return unsubscribe
   }, [])
 
+  // Self-repair: an audio-bearing item that is done processing but has no
+  // waveform (its background job failed, or it was saved before one was
+  // made) gets one generated now -- asked once per item, so a file that
+  // truly can't be decoded doesn't loop.
+  const waveformAskedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const item of Object.values(items)) {
+      if (item.waveform || !item.metadata?.hasAudio || !item.readyToUse || !item.originalPath) continue
+      if (item.stage !== 'ready' && item.stage !== 'error') continue
+      if (waveformAskedRef.current.has(item.id)) continue
+      waveformAskedRef.current.add(item.id)
+      void window.api.media.ensureWaveform(item.id, item.originalPath).then((waveform) => {
+        if (!waveform) return
+        setItems((prev) => (prev[item.id] ? { ...prev, [item.id]: { ...prev[item.id], waveform } } : prev))
+      })
+    }
+  }, [items])
+
   const importPaths = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return
     await window.api.media.importPaths(paths)
@@ -97,9 +122,23 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
     setSelectedIds((prev) => clearMediaSelection(prev))
   }, [])
 
-  const selectAllMediaCb = useCallback(() => {
-    setSelectedIds(selectAllMedia(orderedIds))
-  }, [orderedIds])
+  const selectAllMediaCb = useCallback(
+    (ids?: string[]) => {
+      setSelectedIds(selectAllMedia(ids ? orderedIds.filter((id) => ids.includes(id)) : orderedIds))
+    },
+    [orderedIds]
+  )
+
+  const removeMedia = useCallback((id: string) => {
+    setItems((prev) => {
+      if (!(id in prev)) return prev
+      const { [id]: _removed, ...rest } = prev
+      return rest
+    })
+    setOrder((prev) => prev.filter((existingId) => existingId !== id))
+    setSelectedId((prev) => (prev === id ? null : prev))
+    setSelectedIds((prev) => prev.filter((existingId) => existingId !== id))
+  }, [])
 
   const hydrateFromSaved = useCallback((saved: MediaItem[]) => {
     if (saved.length === 0) return
@@ -120,6 +159,7 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
       importPaths,
       cancel,
       retry,
+      removeMedia,
       ffmpegStatus,
       hydrateFromSaved
     }),
@@ -136,6 +176,7 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
       importPaths,
       cancel,
       retry,
+      removeMedia,
       ffmpegStatus,
       hydrateFromSaved
     ]

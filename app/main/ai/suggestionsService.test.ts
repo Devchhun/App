@@ -21,6 +21,7 @@ vi.mock('./providers/AnthropicProvider', () => ({
     this.model = 'claude-sonnet-5'
     this.classifySegments = classifySegmentsMock
     this.simplifyText = vi.fn()
+    this.transformScript = vi.fn()
   })
 }))
 

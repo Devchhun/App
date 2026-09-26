@@ -72,8 +72,9 @@ export function TimelineViewOptionsMenu({
       </button>
       {open && (
         <div className="track-menu-popover track-menu-popover-fixed" style={{ top: pos.top, right: pos.right }}>
-          <button className="track-menu-item" onClick={onToggleShowWaveforms}>
+          <button className="track-menu-item" onClick={onToggleShowWaveforms} title="Draw each audio clip's waveform on the Timeline">
             {showWaveforms ? '✓ ' : ''}Show waveforms
+            {!showWaveforms && <span className="track-menu-item-hint">off -- audio clips draw plain</span>}
           </button>
           <div className="context-menu-separator" />
           {HEIGHT_MODES.map((h) => (

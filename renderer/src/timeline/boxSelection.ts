@@ -26,6 +26,13 @@ export function normalizeRect(x0: number, y0: number, x1: number, y1: number): S
   return { left: Math.min(x0, x1), right: Math.max(x0, x1), top: Math.min(y0, y1), bottom: Math.max(y0, y1) }
 }
 
+/** Keeps a marquee corner inside the part of the Timeline that can actually
+ * contain items. The ruler may visually fill a much wider viewport, but an
+ * empty future must not produce a giant selection rectangle. */
+export function clampBoxSelectionX(x: number, itemEndX: number): number {
+  return Math.max(0, Math.min(x, Math.max(0, itemEndX)))
+}
+
 function intersects(rect: ScreenRect, geo: ClipGeometry): boolean {
   return rect.left < geo.right && rect.right > geo.left && rect.top < geo.bottom && rect.bottom > geo.top
 }

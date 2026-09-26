@@ -91,3 +91,23 @@ export function usedTrackIds(clips: readonly { trackId: string }[], scenes: read
 export function pruneEmptyTracks(tracks: readonly TimelineTrack[], usedIds: ReadonlySet<string>): TimelineTrack[] {
   return tracks.filter((t) => usedIds.has(t.id) || t.isMain || !t.removable)
 }
+
+/** Resolves whether a track's audio should be silenced, given the whole
+ * sequence's tracks -- standard DAW-style Mute/Solo semantics: once ANY
+ * track is soloed, every non-soloed track is silenced regardless of its own
+ * `muted` flag, while the soloed track(s) themselves stay audible even if
+ * also explicitly muted (soloing always wins for that same track);
+ * otherwise (nothing soloed) a track is silenced only by its own `muted`
+ * flag. Lives in shared/ (not renderer/timeline/trackModel.ts, which
+ * re-exports it for backward compatibility) so both Preview (renderer) and
+ * the export compositor (shared/export.ts, used by the main process) apply
+ * the exact same Mute/Solo semantics -- exporting used to ignore track
+ * Mute/Solo entirely, so a soloed/muted track's audio was silent in Preview
+ * but still mixed into the exported file. */
+export function isTrackAudioMuted(tracks: readonly TimelineTrack[], trackId: string): boolean {
+  const track = tracks.find((t) => t.id === trackId)
+  if (!track) return false
+  const anySoloed = tracks.some((t) => t.solo)
+  if (anySoloed) return !track.solo
+  return !!track.muted
+}

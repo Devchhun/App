@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   clampLeftWidth,
   clampRightWidth,
+  defaultPanelWidthsForWindow,
   fitPanelWidthsToWindow,
   parseStoredPanelWidths,
   serializePanelWidths,
@@ -37,6 +38,40 @@ describe('1. clampLeftWidth / clampRightWidth', () => {
   it('the Templates panel default is wider than the Properties panel default (redistributed from the Preview column, not the reverse)', () => {
     expect(LEFT_PANEL_DEFAULT).toBeGreaterThan(400)
     expect(RIGHT_PANEL_DEFAULT).toBeGreaterThan(350)
+  })
+})
+
+describe('defaultPanelWidthsForWindow (regression: a fixed pixel default gave a 3440/3840px monitor the exact same side-panel width as a laptop, so 100% of the extra room went to the Player column alone)', () => {
+  it('scales up on a wider window, not just the fixed old default', () => {
+    const typical = defaultPanelWidthsForWindow(1920)
+    const wide = defaultPanelWidthsForWindow(3440)
+    expect(wide.leftWidth).toBeGreaterThan(typical.leftWidth)
+    expect(wide.rightWidth).toBeGreaterThan(typical.rightWidth)
+  })
+
+  it('never exceeds each panel\'s own MAX even on a very large monitor', () => {
+    const huge = defaultPanelWidthsForWindow(5120)
+    expect(huge.leftWidth).toBe(LEFT_PANEL_MAX)
+    expect(huge.rightWidth).toBe(RIGHT_PANEL_MAX)
+  })
+
+  it('never drops below each panel\'s own MIN on a small window', () => {
+    const small = defaultPanelWidthsForWindow(1000)
+    expect(small.leftWidth).toBe(LEFT_PANEL_MIN)
+    expect(small.rightWidth).toBe(RIGHT_PANEL_MIN)
+  })
+
+  it('falls back to the plain fixed defaults for non-finite/invalid window widths', () => {
+    expect(defaultPanelWidthsForWindow(NaN)).toEqual(DEFAULT_PANEL_WIDTHS)
+    expect(defaultPanelWidthsForWindow(0)).toEqual(DEFAULT_PANEL_WIDTHS)
+    expect(defaultPanelWidthsForWindow(-100)).toEqual(DEFAULT_PANEL_WIDTHS)
+  })
+
+  it('the left panel is still wider than the right at every window size', () => {
+    for (const width of [1000, 1920, 2560, 3440, 3840]) {
+      const result = defaultPanelWidthsForWindow(width)
+      expect(result.leftWidth).toBeGreaterThan(result.rightWidth)
+    }
   })
 })
 

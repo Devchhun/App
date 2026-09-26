@@ -8,8 +8,10 @@
 // transactions, it doesn't reimplement any of this math.
 import type { ProjectSequence, TimelineClip, Marker } from '@shared/project'
 import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
+import { clipRate, sourceEnd } from '@shared/clipTiming'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
-import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry } from '../timeline/trackModel'
+import type { KeyframeableProperty, KeyframeEasing } from '@shared/keyframes'
+import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry, findOrCreateNarrationTrack, findOrCreateDubbingTrack, type OccupiedRange } from '../timeline/trackModel'
 import { closeGap } from '../timeline/reflow'
 import { planRippleInsert, extendRippleInsertWithLinkedPartners } from '../timeline/rippleCollision'
 
@@ -27,14 +29,27 @@ export interface InsertableAsset {
   /** The underlying media asset's real duration -- ignored for images
    * (image clips are never source-bounded). */
   sourceDurationSeconds: number
-  hasAudio?: boolean
 }
 
 /** Builds the clip(s) a freshly-inserted asset becomes, per the insertion
- * rules: video gets a full-source V1 clip (+ a linked A1 clip if it has
- * audio), image gets a fixed 5s V1 clip (`sourceOut` stays undefined --
- * never source-bounded), audio gets a full-source clip on the given track. */
-export function buildInsertedClips(asset: InsertableAsset, atTime: number, trackId: string, makeId: IdFactory = defaultMakeId): TimelineClip[] {
+ * rules: video gets a single full-source clip on `trackId` (its own embedded
+ * audio plays through that SAME clip's existing volume/mute/fade-in/fade-out
+ * controls, exactly like any other video clip -- no separate audio clip is
+ * auto-created), image gets a fixed 5s clip (`sourceOut` stays undefined --
+ * never source-bounded), audio gets a full-source clip on the given track.
+ * A video's audio is only ever split onto its own linked clip when the user
+ * explicitly asks for it (the "Extract to Audio" context menu item, see
+ * SequenceContext.extractAudio) -- matching the reference editor's own
+ * default (one clip per imported file, audio embedded, until you explicitly
+ * detach it) instead of always producing two clips for one imported video,
+ * which read as confusing/redundant clutter for the common case. */
+export function buildInsertedClips(
+  asset: InsertableAsset,
+  atTime: number,
+  trackId: string,
+  makeId: IdFactory = defaultMakeId,
+  overrides?: Partial<Pick<TimelineClip, 'muted'>>
+): TimelineClip[] {
   const startTime = Math.max(0, atTime)
 
   if (asset.type === 'image') {
@@ -48,7 +63,8 @@ export function buildInsertedClips(asset: InsertableAsset, atTime: number, track
         duration: DEFAULT_IMAGE_DURATION_SECONDS,
         sourceIn: 0,
         sourceOut: undefined,
-        locked: false
+        locked: false,
+        ...overrides
       }
     ]
   }
@@ -64,40 +80,26 @@ export function buildInsertedClips(asset: InsertableAsset, atTime: number, track
         duration: asset.sourceDurationSeconds,
         sourceIn: 0,
         sourceOut: asset.sourceDurationSeconds,
-        locked: false
+        locked: false,
+        ...overrides
       }
     ]
   }
 
-  const videoId = makeId()
-  const videoClip: TimelineClip = {
-    id: videoId,
-    mediaId: asset.mediaId,
-    type: 'video',
-    trackId,
-    startTime,
-    duration: asset.sourceDurationSeconds,
-    sourceIn: 0,
-    sourceOut: asset.sourceDurationSeconds,
-    locked: false
-  }
-  if (!asset.hasAudio) return [videoClip]
-
-  const audioId = makeId()
-  videoClip.linkedClipId = audioId
-  const audioClip: TimelineClip = {
-    id: audioId,
-    mediaId: asset.mediaId,
-    type: 'audio',
-    trackId: 'A1',
-    startTime,
-    duration: asset.sourceDurationSeconds,
-    sourceIn: 0,
-    sourceOut: asset.sourceDurationSeconds,
-    linkedClipId: videoId,
-    locked: false
-  }
-  return [videoClip, audioClip]
+  return [
+    {
+      id: makeId(),
+      mediaId: asset.mediaId,
+      type: 'video',
+      trackId,
+      startTime,
+      duration: asset.sourceDurationSeconds,
+      sourceIn: 0,
+      sourceOut: asset.sourceDurationSeconds,
+      locked: false,
+      ...overrides
+    }
+  ]
 }
 
 export function insertClip(
@@ -105,11 +107,97 @@ export function insertClip(
   asset: InsertableAsset,
   atTime: number,
   trackId: string,
-  makeId: IdFactory = defaultMakeId
+  makeId: IdFactory = defaultMakeId,
+  overrides?: Partial<Pick<TimelineClip, 'muted'>>
 ): ProjectSequence {
-  const inserted = buildInsertedClips(asset, atTime, trackId, makeId)
-  const clips = [...sequence.clips, ...inserted]
+  const inserted = buildInsertedClips(asset, atTime, trackId, makeId, overrides)
+  // Whatever already sits where a new clip lands (on each track it touches)
+  // is pushed right -- an insert never stacks on an existing clip.
+  let clips = sequence.clips
+  for (const clip of inserted) {
+    const plan = planRippleInsert(clips, clip.trackId, clip.startTime, clip.duration)
+    const pushes = extendRippleInsertWithLinkedPartners(clips, plan.pushes)
+    if (pushes.size > 0) clips = clips.map((c) => (pushes.has(c.id) ? { ...c, startTime: pushes.get(c.id)! } : c))
+  }
+  clips = [...clips, ...inserted]
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
+}
+
+/** Story Narration Workspace's "Accept & Next" -- inserts an accepted take
+ * at the segment's *exact* SRT start time onto `preferredTrackId` (VO1) if
+ * it's actually free there, replacing (never duplicating alongside)
+ * whichever clip was previously accepted for this same segment.
+ * `previousClipId`, when given, is removed first -- this is what guarantees
+ * "one accepted clip per segment" regardless of how many times the user
+ * re-records and re-accepts. Runs the result through sanitizeLinkedClips
+ * (matching every other clip-removing op in this file) so removing a
+ * previous take can never leave a dangling linkedClipId reference on
+ * anything else, even though narration takes themselves are never linked to
+ * another clip.
+ *
+ * The preferred track can be occupied: recording is never forcibly cut off
+ * at the segment's own SRT boundary (see NarrationContext.tsx), so a take
+ * that ran long can genuinely overlap an adjacent segment's own already-
+ * accepted clip on the same track. Routed collision-aware (see
+ * findOrCreateNarrationTrack) onto whichever VO-numbered track actually has
+ * room, creating a new one (VO2, VO3, ...) if none does, rather than
+ * silently producing two overlapping clips on VO1. */
+export function acceptNarrationTake(
+  sequence: ProjectSequence,
+  preferredTrackId: string,
+  startTime: number,
+  asset: InsertableAsset,
+  previousClipId?: string,
+  makeId: IdFactory = defaultMakeId
+): { sequence: ProjectSequence; clipId: string } {
+  const withoutPrevious = previousClipId ? sanitizeLinkedClips(sequence.clips.filter((c) => c.id !== previousClipId)) : sequence.clips
+
+  // findOrCreateNarrationTrack always prefers the lowest-numbered VO track
+  // with room, which is VO1 (== preferredTrackId at every real call site)
+  // whenever it's actually free -- preferredTrackId itself only documents
+  // that intent at call sites, since the collision-aware routing below is
+  // what actually decides.
+  const occupied: OccupiedRange[] = withoutPrevious.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
+  const routing = findOrCreateNarrationTrack(sequence.tracks, occupied, startTime, asset.sourceDurationSeconds)
+  const tracks = routing.newTrack ? [...sequence.tracks, routing.newTrack] : sequence.tracks
+
+  const inserted = buildInsertedClips(asset, startTime, routing.trackId, makeId)
+  const clips = [...withoutPrevious, ...inserted]
+  return {
+    sequence: { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) },
+    clipId: inserted[0].id
+  }
+}
+
+/** AI Dubber's "Generate Dubbing" -- inserts a generated (today: placeholder)
+ * clip at a subtitle's *exact* start time onto `preferredTrackId` (DUB1) if
+ * it's actually free there, replacing (never duplicating alongside)
+ * whichever clip was previously generated for this same subtitle.
+ * `previousClipId`, when given, is removed first -- this is what guarantees
+ * "one generated clip per subtitle" across regenerations. Structurally
+ * identical to acceptNarrationTake, using findOrCreateDubbingTrack instead
+ * of findOrCreateNarrationTrack -- see that function's own doc comment for
+ * the full reasoning (collision-aware routing, sanitizeLinkedClips safety). */
+export function acceptDubbingClip(
+  sequence: ProjectSequence,
+  preferredTrackId: string,
+  startTime: number,
+  asset: InsertableAsset,
+  previousClipId?: string,
+  makeId: IdFactory = defaultMakeId
+): { sequence: ProjectSequence; clipId: string } {
+  const withoutPrevious = previousClipId ? sanitizeLinkedClips(sequence.clips.filter((c) => c.id !== previousClipId)) : sequence.clips
+
+  const occupied: OccupiedRange[] = withoutPrevious.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
+  const routing = findOrCreateDubbingTrack(sequence.tracks, occupied, startTime, asset.sourceDurationSeconds)
+  const tracks = routing.newTrack ? [...sequence.tracks, routing.newTrack] : sequence.tracks
+
+  const inserted = buildInsertedClips(asset, startTime, routing.trackId, makeId)
+  const clips = [...withoutPrevious, ...inserted]
+  return {
+    sequence: { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) },
+    clipId: inserted[0].id
+  }
 }
 
 /** Moves a clip so its startTime becomes `newStartTime` (clamped >= 0).
@@ -163,9 +251,17 @@ export function moveClipToTrack(sequence: ProjectSequence, clipId: string, newSt
   const clampedStart = Math.max(0, newStartTime)
   const linkedId = linked ? target.linkedClipId : undefined
   const delta = clampedStart - target.startTime
+  // Same "stay here, make room" collision policy as moveClip, applied on
+  // the DESTINATION track: a clip dropped onto another track lands in
+  // front of or behind what is there (pushing the rest right), never on
+  // top of it -- two clips overlapping on one track is never valid.
+  const excludeIds = new Set([clipId, ...(linkedId ? [linkedId] : [])])
+  const ripplePlan = planRippleInsert(sequence.clips, trackId, clampedStart, target.duration, excludeIds)
+  const pushes = extendRippleInsertWithLinkedPartners(sequence.clips, ripplePlan.pushes)
   const clips = sequence.clips.map((c) => {
     if (c.id === clipId) return { ...c, startTime: clampedStart, trackId }
     if (linkedId && c.id === linkedId && !c.locked) return { ...c, startTime: Math.max(0, c.startTime + delta) }
+    if (pushes.has(c.id)) return { ...c, startTime: pushes.get(c.id)! }
     return c
   })
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
@@ -239,12 +335,35 @@ export function trimClip(
   edge: TrimEdge,
   pointerTime: number,
   sourceDurationSeconds?: number,
-  linked = true
+  linked = true,
+  partnerSourceDurationSeconds?: number
 ): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
 
-  const clips = sequence.clips.map((c) => (c.id === clipId ? applyTrim(c, edge, pointerTime, sourceDurationSeconds) : c))
+  // A plain (non-ripple) trim never grows a clip INTO its neighbour on the
+  // same track: the edge stops at the previous clip's end / the next
+  // clip's start. (Ripple trims -- ripple.ts -- move the neighbours
+  // instead, so they don't come through here.)
+  const linkedId = linked ? target.linkedClipId : undefined
+  const partner = linkedId ? sequence.clips.find((c) => c.id === linkedId) : undefined
+  if (partner?.locked) return sequence
+  const partnerSourceLimit = partner ? partnerSourceDurationSeconds ?? sourceEnd(partner) : undefined
+  let boundedPointerTime = clampTrimToNeighbours(sequence.clips, target, edge, pointerTime)
+  if (edge === 'right' && Number.isFinite(sourceDurationSeconds)) {
+    boundedPointerTime = Math.min(boundedPointerTime, target.startTime + ((sourceDurationSeconds as number) - target.sourceIn) / clipRate(target))
+  }
+  if (partner && !partner.locked) {
+    const partnerBound = clampTrimToNeighbours(sequence.clips, partner, edge, boundedPointerTime)
+    boundedPointerTime = edge === 'left' ? Math.max(boundedPointerTime, partnerBound) : Math.min(boundedPointerTime, partnerBound)
+    if (edge === 'left') {
+      boundedPointerTime = Math.max(boundedPointerTime, target.startTime - target.sourceIn / clipRate(target), partner.startTime - partner.sourceIn / clipRate(partner))
+    } else if (Number.isFinite(partnerSourceLimit)) {
+      boundedPointerTime = Math.min(boundedPointerTime, partner.startTime + ((partnerSourceLimit as number) - partner.sourceIn) / clipRate(partner))
+    }
+  }
+
+  const clips = sequence.clips.map((c) => (c.id === clipId ? applyTrim(c, edge, boundedPointerTime, sourceDurationSeconds) : c))
 
   // Linked partner (e.g. this clip's own A1 audio) gets the SAME edge
   // trimmed to the SAME pointerTime -- since both clips share one
@@ -252,15 +371,22 @@ export function trimClip(
   // without needing separate per-clip source-duration bookkeeping here.
   // Gated behind `linked` (the Linkage toggle at the call site) same as
   // moveClip/moveClipToTrack.
-  // Known limitation: the partner's own source-duration bound isn't passed
-  // in (the caller only has the PRIMARY clip's), so a right-edge trim that
-  // EXTENDS past the partner's real source length isn't clamped here --
-  // left-edge trims and any shortening are always safe regardless.
-  const linkedId = linked ? target.linkedClipId : undefined
-  const partner = linkedId ? sequence.clips.find((c) => c.id === linkedId) : undefined
-  const finalClips = partner && !partner.locked ? clips.map((c) => (c.id === partner.id ? applyTrim(c, edge, pointerTime) : c)) : clips
+  const finalClips = partner && !partner.locked ? clips.map((c) => (c.id === partner.id ? applyTrim(c, edge, boundedPointerTime, partnerSourceLimit) : c)) : clips
 
   return { ...sequence, clips: finalClips, duration: computeSequenceDuration(finalClips) }
+}
+
+/** The furthest `pointerTime` a trim of `edge` may reach before `clip`
+ * would overlap the nearest other clip on its own track. */
+export function clampTrimToNeighbours(clips: TimelineClip[], clip: TimelineClip, edge: TrimEdge, pointerTime: number): number {
+  const others = clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id)
+  if (edge === 'left') {
+    const prevEnd = Math.max(-Infinity, ...others.filter((c) => c.startTime + c.duration <= clip.startTime + 1e-6).map((c) => c.startTime + c.duration))
+    return Number.isFinite(prevEnd) ? Math.max(pointerTime, prevEnd) : pointerTime
+  }
+  const clipEnd = clip.startTime + clip.duration
+  const nextStart = Math.min(Infinity, ...others.filter((c) => c.startTime >= clipEnd - 1e-6).map((c) => c.startTime))
+  return Number.isFinite(nextStart) ? Math.min(pointerTime, nextStart) : pointerTime
 }
 
 /** Exported (not just used internally by trimClip) so ripple.ts's rippleTrim
@@ -275,27 +401,27 @@ export function applyTrim(clip: TimelineClip, edge: TrimEdge, pointerTime: numbe
     if (!isImage) {
       // Can't pull the start earlier than the source has frames available
       // before the current sourceIn.
-      newStart = Math.max(newStart, clip.startTime - clip.sourceIn)
+      newStart = Math.max(newStart, clip.startTime - clip.sourceIn / clipRate(clip))
     }
     const deltaStart = newStart - clip.startTime
     return {
       ...clip,
       startTime: newStart,
       duration: clip.duration - deltaStart,
-      sourceIn: isImage ? clip.sourceIn : clip.sourceIn + deltaStart
+      sourceIn: isImage ? clip.sourceIn : clip.sourceIn + deltaStart * clipRate(clip)
     }
   }
 
   // right edge
   let newDuration = Math.max(MIN_CLIP_DURATION_SECONDS, pointerTime - clip.startTime)
   if (!isImage && Number.isFinite(sourceDurationSeconds)) {
-    const maxDuration = Math.max(MIN_CLIP_DURATION_SECONDS, (sourceDurationSeconds as number) - clip.sourceIn)
+    const maxDuration = Math.max(MIN_CLIP_DURATION_SECONDS, ((sourceDurationSeconds as number) - clip.sourceIn) / clipRate(clip))
     newDuration = Math.min(newDuration, maxDuration)
   }
   return {
     ...clip,
     duration: newDuration,
-    sourceOut: isImage ? undefined : clip.sourceIn + newDuration
+    sourceOut: isImage ? undefined : clip.sourceIn + newDuration * clipRate(clip)
   }
 }
 
@@ -304,9 +430,8 @@ export function applyTrim(clip: TimelineClip, edge: TrimEdge, pointerTime: numbe
  * undefined on the left piece, right piece's `sourceIn` is 0 (same still
  * image, independently editable from here on). Video/audio:
  * `sourceOut`/`sourceIn` computed from the split offset so source timing is
- * preserved across the cut. `linkedClipId` is cleared on both pieces (the
- * original link no longer resolves to a single clip on each side -- see
- * `splitClipAndLinked` for keeping a linked pair split together). */
+ * preserved across the cut. `linkedClipId` is cleared on both pieces;
+ * splitClip reconnects matching pieces when a linked pair is split. */
 export function splitOneClip(clips: TimelineClip[], clipId: string, atTime: number, makeId: IdFactory): TimelineClip[] {
   const idx = clips.findIndex((c) => c.id === clipId)
   if (idx === -1) return clips
@@ -321,7 +446,7 @@ export function splitOneClip(clips: TimelineClip[], clipId: string, atTime: numb
     ...clip,
     id: makeId(),
     duration: offset,
-    sourceOut: isImage ? undefined : clip.sourceIn + offset,
+    sourceOut: isImage ? undefined : clip.sourceIn + offset * clipRate(clip),
     linkedClipId: undefined
   }
   const rightClip: TimelineClip = {
@@ -329,7 +454,7 @@ export function splitOneClip(clips: TimelineClip[], clipId: string, atTime: numb
     id: makeId(),
     startTime: atTime,
     duration: clip.duration - offset,
-    sourceIn: isImage ? 0 : clip.sourceIn + offset,
+    sourceIn: isImage ? 0 : clip.sourceIn + offset * clipRate(clip),
     linkedClipId: undefined
   }
 
@@ -356,11 +481,25 @@ export function splitClip(
   const splitLinked = options.linked ?? true
   const linkedTarget = splitLinked && target!.linkedClipId ? sequence.clips.find((c) => c.id === target!.linkedClipId) : undefined
 
-  let clips = splitOneClip(sequence.clips, clipId, atTime, makeId)
-  if (linkedTarget && canSplitClip(linkedTarget, atTime)) {
-    clips = splitOneClip(clips, linkedTarget.id, atTime, makeId)
+  const newIds: string[] = []
+  const trackedMakeId = (): string => {
+    const id = makeId()
+    newIds.push(id)
+    return id
   }
-  return { ...sequence, clips, duration: computeSequenceDuration(clips) }
+  let clips = splitOneClip(sequence.clips, clipId, atTime, trackedMakeId)
+  if (linkedTarget && canSplitClip(linkedTarget, atTime)) {
+    clips = splitOneClip(clips, linkedTarget.id, atTime, trackedMakeId)
+    const [leftId, rightId, linkedLeftId, linkedRightId] = newIds
+    clips = clips.map((c) => {
+      if (c.id === leftId) return { ...c, linkedClipId: linkedLeftId }
+      if (c.id === rightId) return { ...c, linkedClipId: linkedRightId }
+      if (c.id === linkedLeftId) return { ...c, linkedClipId: leftId }
+      if (c.id === linkedRightId) return { ...c, linkedClipId: rightId }
+      return c
+    })
+  }
+  return { ...sequence, clips: sanitizeLinkedClips(clips), duration: computeSequenceDuration(clips) }
 }
 
 /** Removes every clip whose id is in `clipIds` and is not locked. When
@@ -473,11 +612,21 @@ export function setClipsMuted(sequence: ProjectSequence, clipIds: string[], mute
 
 /** The subset of TimelineClip's fields "Paste Attributes" (Ctrl+Shift+V,
  * spec section 10) copies -- appearance/speed/audio properties, never
- * timing/track/media/link identity. */
-export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform'>>
+ * timing/track/media/link identity. Includes `keyframes` so pasting a
+ * keyframed clip's attributes onto another carries its animation too,
+ * consistent with every other appearance property here. */
+export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform' | 'keyframes'>>
 
 export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
-  return { playbackRate: clip.playbackRate, opacity: clip.opacity, volume: clip.volume, fadeIn: clip.fadeIn, fadeOut: clip.fadeOut, transform: clip.transform }
+  return {
+    playbackRate: clip.playbackRate,
+    opacity: clip.opacity,
+    volume: clip.volume,
+    fadeIn: clip.fadeIn,
+    fadeOut: clip.fadeOut,
+    transform: clip.transform,
+    keyframes: clip.keyframes
+  }
 }
 
 /** Applies a property patch (not timing) to every given unlocked clip --
@@ -485,7 +634,41 @@ export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
  * edits. */
 export function applyClipProperties(sequence: ProjectSequence, clipIds: string[], patch: ClipPropertyPatch): ProjectSequence {
   const idSet = new Set(clipIds)
-  const clips = sequence.clips.map((c) => (idSet.has(c.id) && !c.locked ? { ...c, ...patch } : c))
+  const speedChanged = patch.playbackRate !== undefined
+  const speedSet = new Set<string>()
+  if (speedChanged) {
+    const blockedByLockedClip = (clip: TimelineClip): boolean => {
+      const nextDuration = Math.max(MIN_CLIP_DURATION_SECONDS, (sourceEnd(clip) - clip.sourceIn) / clipRate({ ...clip, playbackRate: patch.playbackRate }))
+      if (nextDuration <= clip.duration) return false
+      return sequence.clips.some((other) => other.id !== clip.id && other.trackId === clip.trackId && other.locked && other.startTime < clip.startTime + nextDuration && other.startTime + other.duration > clip.startTime + clip.duration)
+    }
+    for (const clip of sequence.clips) {
+      if (!idSet.has(clip.id) || clip.locked || clip.type === 'image') continue
+      const partner = sequence.clips.find((c) => c.id === clip.linkedClipId)
+      if (partner?.locked || blockedByLockedClip(clip) || (partner && blockedByLockedClip(partner))) continue
+      speedSet.add(clip.id)
+      if (partner) speedSet.add(partner.id)
+    }
+  }
+  let clips = sequence.clips.map((c) => {
+    const selected = idSet.has(c.id) && !c.locked
+    const retime = speedSet.has(c.id) && c.type !== 'image'
+    if (!selected && !retime) return c
+    const properties = selected ? { ...c, ...patch } : { ...c, playbackRate: patch.playbackRate }
+    if (!retime) return speedChanged ? { ...properties, playbackRate: c.playbackRate } : properties
+    const sourceWindow = Math.max(0, sourceEnd(c) - c.sourceIn)
+    return { ...properties, sourceOut: sourceEnd(c), duration: Math.max(MIN_CLIP_DURATION_SECONDS, sourceWindow / clipRate(properties)) }
+  })
+  // Slowing a clip down makes it longer. Make room on its own track and
+  // carry any pushed clip's linked partner along, just like an insert.
+  for (const original of sequence.clips) {
+    const changed = clips.find((c) => c.id === original.id)
+    if (!changed || changed.duration <= original.duration + 1e-6) continue
+    const exclude = new Set([changed.id, ...(changed.linkedClipId ? [changed.linkedClipId] : [])])
+    const plan = planRippleInsert(clips, changed.trackId, changed.startTime, changed.duration, exclude)
+    const pushes = extendRippleInsertWithLinkedPartners(clips, plan.pushes)
+    clips = clips.map((c) => pushes.has(c.id) ? { ...c, startTime: pushes.get(c.id)! } : c)
+  }
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
 
@@ -502,7 +685,8 @@ export function resetClipProperties(sequence: ProjectSequence, clipIds: string[]
     volume: 1,
     fadeIn: 0,
     fadeOut: 0,
-    transform: undefined
+    transform: undefined,
+    keyframes: undefined
   })
 }
 
@@ -582,6 +766,39 @@ export function resolveMoveSet(clips: TimelineClip[], clickedClipId: string, sel
   }
 
   return [...moveSet]
+}
+
+/** Drag a selection/group as one unit. An external neighbour blocks the
+ * entire set, keeping every clip at the same relative offset and avoiding
+ * accidental overlaps or a partial move of a linked pair. */
+export function moveClipSet(sequence: ProjectSequence, clickedClipId: string, selectedClipIds: string[], newStartTime: number, linkageOn: boolean): ProjectSequence {
+  const target = sequence.clips.find((c) => c.id === clickedClipId)
+  if (!target) return sequence
+  const ids = new Set(resolveMoveSet(sequence.clips, clickedClipId, selectedClipIds, linkageOn))
+  if (ids.size <= 1) return moveClip(sequence, clickedClipId, newStartTime, linkageOn)
+  const delta = clampClipSetDelta(sequence.clips, [...ids], newStartTime - target.startTime)
+  if (Math.abs(delta) < 1e-6) return sequence
+  const clips = sequence.clips.map((c) => ids.has(c.id) ? { ...c, startTime: c.startTime + delta } : c)
+  return { ...sequence, clips, duration: computeSequenceDuration(clips) }
+}
+
+export function clampClipSetDelta(clips: TimelineClip[], clipIds: string[], requestedDelta: number): number {
+  const ids = new Set(clipIds)
+  const moving = clips.filter((c) => ids.has(c.id))
+  if (moving.length === 0 || moving.some((c) => c.locked)) return 0
+  let delta = requestedDelta
+  delta = Math.max(delta, -Math.min(...moving.map((c) => c.startTime)))
+  for (const clip of moving) {
+    const others = clips.filter((c) => c.trackId === clip.trackId && !ids.has(c.id))
+    if (delta > 0) {
+      const next = Math.min(Infinity, ...others.filter((c) => c.startTime >= clip.startTime + clip.duration - 1e-6).map((c) => c.startTime))
+      if (Number.isFinite(next)) delta = Math.min(delta, next - clip.startTime - clip.duration)
+    } else if (delta < 0) {
+      const previous = Math.max(-Infinity, ...others.filter((c) => c.startTime + c.duration <= clip.startTime + 1e-6).map((c) => c.startTime + c.duration))
+      if (Number.isFinite(previous)) delta = Math.max(delta, previous - clip.startTime)
+    }
+  }
+  return delta
 }
 
 /** Enable/Disable (clip context menu) -- see findActiveClips. Locked clips
@@ -665,6 +882,7 @@ export function extractAudio(sequence: ProjectSequence, clipId: string, trackId:
     duration: target.duration,
     sourceIn: target.sourceIn,
     sourceOut: target.sourceOut,
+    playbackRate: target.playbackRate,
     linkedClipId: clipId,
     locked: false
   }
@@ -722,14 +940,30 @@ export function moveClipsToTrack(sequence: ProjectSequence, clipIds: string[], t
  * new source's own length (never longer than what the replacement asset
  * actually has). Image clips are untouched by the duration clamp (never
  * source-bounded). A no-op for a missing or locked clip. */
+/** Sets exact start times on many clips at once, with NO collision or
+ * ripple handling. AI Dubber's Auto-Sync uses this to put every generated
+ * line back on its own subtitle's timestamp: the caller already knows
+ * precisely where each clip belongs, and moveClip's gap-aware rippling
+ * would fight that by pushing the very clips being positioned. Locked clips
+ * are left alone, same as every other mutator here. */
+export function setClipStartTimes(sequence: ProjectSequence, updates: { clipId: string; startTime: number }[]): ProjectSequence {
+  if (updates.length === 0) return sequence
+  const byId = new Map(updates.map((u) => [u.clipId, Math.max(0, u.startTime)]))
+  const clips = sequence.clips.map((c) => {
+    const next = byId.get(c.id)
+    return next === undefined || c.locked ? c : { ...c, startTime: next }
+  })
+  return { ...sequence, clips, duration: computeSequenceDuration(clips) }
+}
+
 export function replaceClipMedia(sequence: ProjectSequence, clipId: string, newMediaId: string, newSourceDurationSeconds: number): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
   const clips = sequence.clips.map((c) => {
     if (c.id !== clipId) return c
     if (c.type === 'image') return { ...c, mediaId: newMediaId, sourceIn: 0, sourceOut: undefined }
-    const duration = Math.min(c.duration, Math.max(MIN_CLIP_DURATION_SECONDS, newSourceDurationSeconds))
-    return { ...c, mediaId: newMediaId, sourceIn: 0, sourceOut: duration, duration }
+    const duration = Math.min(c.duration, Math.max(MIN_CLIP_DURATION_SECONDS, newSourceDurationSeconds / clipRate(c)))
+    return { ...c, mediaId: newMediaId, sourceIn: 0, sourceOut: duration * clipRate(c), duration }
   })
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
@@ -771,5 +1005,62 @@ export function addClipMarker(sequence: ProjectSequence, clipId: string, offsetS
 
 export function removeClipMarker(sequence: ProjectSequence, clipId: string, markerId: string): ProjectSequence {
   const clips = sequence.clips.map((c) => (c.id === clipId ? { ...c, markers: (c.markers ?? []).filter((m) => m.id !== markerId) } : c))
+  return { ...sequence, clips }
+}
+
+// ---- Keyframe animation (see shared/keyframes.ts) -- one array per
+// keyframeable property, keyed on TimelineClip.keyframes. Same
+// locked-clip guard as applyClipProperties: a locked clip's animation
+// can't be edited any more than its other properties can. ----
+
+/** Adds a new keyframe for `property` at `time` (clamped to the clip's own
+ * [0, duration] range, matching addClipMarker's own clamping), or -- if one
+ * already sits at that exact clamped time -- overwrites its value/easing
+ * instead of creating a duplicate. This is what backs both "seed the first
+ * keyframe from the current static value" and "add/update a keyframe at the
+ * playhead" from the Clip Properties panel. */
+export function addOrUpdateKeyframe(
+  sequence: ProjectSequence,
+  clipId: string,
+  property: KeyframeableProperty,
+  time: number,
+  value: number,
+  easing?: KeyframeEasing,
+  makeId: IdFactory = defaultMakeId
+): ProjectSequence {
+  const target = sequence.clips.find((c) => c.id === clipId)
+  if (!target || target.locked) return sequence
+  const clampedTime = Math.max(0, Math.min(target.duration, time))
+  const existingForProperty = target.keyframes?.[property] ?? []
+  const existingAtTime = existingForProperty.find((k) => k.time === clampedTime)
+  const nextForProperty = existingAtTime
+    ? existingForProperty.map((k) => (k.id === existingAtTime.id ? { ...k, value, easing } : k))
+    : [...existingForProperty, { id: makeId(), time: clampedTime, value, easing }]
+  const clips = sequence.clips.map((c) => (c.id === clipId ? { ...c, keyframes: { ...c.keyframes, [property]: nextForProperty } } : c))
+  return { ...sequence, clips }
+}
+
+/** Repositions one keyframe in time (dragging its diamond marker on the
+ * Timeline) -- clamped to the clip's own [0, duration] range, same as
+ * addOrUpdateKeyframe. Never changes its value/easing. */
+export function moveKeyframe(sequence: ProjectSequence, clipId: string, property: KeyframeableProperty, keyframeId: string, newTime: number): ProjectSequence {
+  const target = sequence.clips.find((c) => c.id === clipId)
+  if (!target || target.locked) return sequence
+  const clampedTime = Math.max(0, Math.min(target.duration, newTime))
+  const existingForProperty = target.keyframes?.[property] ?? []
+  const nextForProperty = existingForProperty.map((k) => (k.id === keyframeId ? { ...k, time: clampedTime } : k))
+  const clips = sequence.clips.map((c) => (c.id === clipId ? { ...c, keyframes: { ...c.keyframes, [property]: nextForProperty } } : c))
+  return { ...sequence, clips }
+}
+
+/** Deletes one keyframe (the clip context menu's "Delete Keyframe"). Down to
+ * 0 or 1 remaining keyframes for that property, the property simply reads
+ * as a constant (or falls back to its plain static field at 0) -- see
+ * interpolateKeyframes -- no special-casing needed here. */
+export function removeKeyframe(sequence: ProjectSequence, clipId: string, property: KeyframeableProperty, keyframeId: string): ProjectSequence {
+  const clips = sequence.clips.map((c) => {
+    if (c.id !== clipId || c.locked || !c.keyframes?.[property]) return c
+    return { ...c, keyframes: { ...c.keyframes, [property]: c.keyframes[property]!.filter((k) => k.id !== keyframeId) } }
+  })
   return { ...sequence, clips }
 }

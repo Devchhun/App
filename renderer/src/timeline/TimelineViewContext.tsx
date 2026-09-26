@@ -14,6 +14,7 @@ import {
   type OverwriteMode,
   type TrackHeightMode
 } from './timelineViewPrefs'
+import type { KeyframeableProperty } from '@shared/keyframes'
 
 export { MIN_PPS, MAX_PPS }
 export type { RippleScope, TimelineTool, OverwriteMode, TrackHeightMode }
@@ -62,6 +63,16 @@ interface TimelineViewContextValue {
    * playhead position), NOT persisted to localStorage or the project file. */
   rangeSelection: { start: number; end: number } | null
   setRangeSelection: (range: { start: number; end: number } | null) => void
+
+  /** Keyframe Animation: whichever ONE property's keyframes are currently
+   * shown as diamond markers on the selected clip's Timeline body overlay --
+   * set by clicking a property's ◇ toggle in ClipPropertiesPanel.tsx. Not a
+   * full multi-lane graph editor by design (see the feature's own plan) --
+   * only one property's keyframes are visible/editable on the Timeline at a
+   * time. Deliberately transient, like `rangeSelection` above -- never
+   * persisted or written to the project file. */
+  activeKeyframeProperty: KeyframeableProperty | null
+  setActiveKeyframeProperty: (property: KeyframeableProperty | null) => void
 }
 
 const TimelineViewContext = createContext<TimelineViewContextValue | null>(null)
@@ -93,6 +104,7 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
   const [showWaveforms, setShowWaveforms] = useState(initial.showWaveforms)
   const [trackHeightMode, setTrackHeightMode] = useState<TrackHeightMode>(initial.trackHeightMode)
   const [rangeSelection, setRangeSelection] = useState<{ start: number; end: number } | null>(null)
+  const [activeKeyframeProperty, setActiveKeyframeProperty] = useState<KeyframeableProperty | null>(null)
 
   // One persistence effect for the whole preference set, mirroring
   // useWorkspaceLayout.ts's exact pattern (no debounce, try/catch around a
@@ -115,6 +127,7 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
           tool,
           overwriteMode,
           showWaveforms,
+          showWaveformsV2: true,
           trackHeightMode
         })
       )
@@ -138,7 +151,23 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
   ])
 
   const setTrackHeaderWidth = useCallback((px: number) => setTrackHeaderWidthState(clampTrackHeaderWidth(px)), [])
-  const setTimelinePanelHeightPx = useCallback((px: number) => setTimelinePanelHeightPxState(clampTimelinePanelHeight(px)), [])
+  const setTimelinePanelHeightPx = useCallback(
+    (px: number) => setTimelinePanelHeightPxState(clampTimelinePanelHeight(px, typeof window === 'undefined' ? undefined : window.innerHeight)),
+    []
+  )
+  // A saved height can exceed what a smaller window allows, so the height
+  // actually used is clamped to the CURRENT window -- but the preference
+  // itself is never rewritten by a resize. It used to be: the Home screen
+  // shows in a small launcher window, whose resize clamped the stored
+  // height down to the minimum, so every entry into the editor came up
+  // with the Timeline squashed to 220px no matter how it had been left.
+  const [windowHeight, setWindowHeight] = useState(() => (typeof window === 'undefined' ? undefined : window.innerHeight))
+  useEffect(() => {
+    const onResize = (): void => setWindowHeight(window.innerHeight)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  const effectiveTimelinePanelHeightPx = clampTimelinePanelHeight(timelinePanelHeightPx, windowHeight)
   const toggleMagnet = useCallback(() => setMagnetOn((v) => !v), [])
   const toggleRipple = useCallback(() => setRippleOn((v) => !v), [])
   const toggleLinkage = useCallback(() => setLinkageOn((v) => !v), [])
@@ -154,7 +183,7 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
       setTimelineViewportWidth,
       trackHeaderWidth,
       setTrackHeaderWidth,
-      timelinePanelHeightPx,
+      timelinePanelHeightPx: effectiveTimelinePanelHeightPx,
       setTimelinePanelHeightPx,
       magnetOn,
       toggleMagnet,
@@ -177,14 +206,16 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
       trackHeightMode,
       setTrackHeightMode,
       rangeSelection,
-      setRangeSelection
+      setRangeSelection,
+      activeKeyframeProperty,
+      setActiveKeyframeProperty
     }),
     [
       pixelsPerSecond,
       timelineViewportWidth,
       trackHeaderWidth,
       setTrackHeaderWidth,
-      timelinePanelHeightPx,
+      effectiveTimelinePanelHeightPx,
       setTimelinePanelHeightPx,
       magnetOn,
       toggleMagnet,
@@ -203,7 +234,8 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
       toggleShowWaveforms,
       trackHeightMode,
       setTrackHeightMode,
-      rangeSelection
+      rangeSelection,
+      activeKeyframeProperty
     ]
   )
 

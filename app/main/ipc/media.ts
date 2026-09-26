@@ -1,15 +1,17 @@
-import { ipcMain, dialog, type BrowserWindow, type WebContents } from 'electron'
+import { existsSync } from 'fs'
+import { ipcMain, dialog, type BrowserWindow, type WebContents, app } from 'electron'
 import { spawn } from 'child_process'
 import { mkdir, writeFile, rm, rename, readFile } from 'fs/promises'
 import { join } from 'path'
 import { SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
-import type { MediaItem, WaveformData } from '@shared/media'
+import type { MediaItem, MediaProgressUpdate, WaveformData } from '@shared/media'
 import type { MediaSource } from '@shared/project'
 import { detectFfmpeg, ffmpegPath } from '../media/ffmpeg'
 import { processMediaFile } from '../media/pipeline'
 import { cancelJob, CanceledError } from '../media/jobRunner'
 import { registerMediaToken } from '../media/protocol'
-import { getMediaCacheRoot, cacheKeyForFile, pathExists } from '../media/cache'
+import { getMediaCacheRoot, cacheKeyForFile, ensureCacheDir, pathExists } from '../media/cache'
+import { generateWaveform, WAVEFORM_CACHE_FILE } from '../media/waveform'
 
 /** Waveform data lives in the same per-file cache directory as the
  * thumbnail/proxy (see pipeline.ts's shared `cacheDir`), but -- unlike those
@@ -23,7 +25,7 @@ import { getMediaCacheRoot, cacheKeyForFile, pathExists } from '../media/cache'
 async function tryReadCachedWaveform(originalPath: string): Promise<WaveformData | undefined> {
   try {
     const key = await cacheKeyForFile(originalPath)
-    const waveformPath = join(getMediaCacheRoot(), key, 'waveform.json')
+    const waveformPath = join(getMediaCacheRoot(), key, WAVEFORM_CACHE_FILE)
     if (!(await pathExists(waveformPath))) return undefined
     return JSON.parse(await readFile(waveformPath, 'utf-8')) as WaveformData
   } catch {
@@ -122,6 +124,32 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
     return cancelJob(mediaId)
   })
 
+  ipcMain.handle(MEDIA_IPC.ensureWaveform, async (_event, args: { mediaId: string; originalPath: string }): Promise<WaveformData | null> => {
+    try {
+      const key = await cacheKeyForFile(args.originalPath)
+      const cacheDir = await ensureCacheDir(key)
+      return await generateWaveform(`waveform-${args.mediaId}`, args.originalPath, cacheDir)
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle(MEDIA_IPC.getDefaultStillDir, async () => app.getPath('videos'))
+
+  ipcMain.handle(MEDIA_IPC.saveStillFrame, async (_event, args: { dirPath: string; fileName: string; data: Uint8Array }): Promise<string> => {
+    const dir = args.dirPath.trim() || app.getPath('videos')
+    await mkdir(dir, { recursive: true })
+    const safeName = args.fileName.replace(/[\\/:*?"<>|]+/g, '-')
+    const dot = safeName.lastIndexOf('.')
+    const stem = dot > 0 ? safeName.slice(0, dot) : safeName
+    const ext = dot > 0 ? safeName.slice(dot) : ''
+    // "name (1).jpg", "name (2).jpg"... rather than overwriting.
+    let candidate = join(dir, safeName)
+    for (let n = 1; existsSync(candidate); n++) candidate = join(dir, `${stem} (${n})${ext}`)
+    await writeFile(candidate, Buffer.from(args.data))
+    return candidate
+  })
+
   ipcMain.handle(MEDIA_IPC.saveGeneratedFile, async (_event, fileName: string, data: Uint8Array) => {
     const dir = join(getMediaCacheRoot(), 'generated')
     await mkdir(dir, { recursive: true })
@@ -166,21 +194,27 @@ function remuxToFixDuration(src: string, dest: string): Promise<void> {
 
 function runPipeline(sender: WebContents, filePath: string, existingMediaId?: string): void {
   let capturedId = existingMediaId
+  // Proxy/waveform jobs outlive a window close or reload; sending to a
+  // destroyed WebContents throws "Object has been destroyed" and, from a
+  // stream callback, takes the whole main process down with it.
+  const send = (update: MediaProgressUpdate): void => {
+    if (!sender.isDestroyed()) sender.send(MEDIA_IPC.progress, update)
+  }
 
   processMediaFile(
     filePath,
     (update) => {
       capturedId = update.mediaId
       if (update.originalPath) retryPaths.set(update.mediaId, update.originalPath)
-      sender.send(MEDIA_IPC.progress, update)
+      send(update)
     },
     existingMediaId
   ).catch((err) => {
     const mediaId = capturedId ?? existingMediaId ?? 'unknown'
     if (err instanceof CanceledError) {
-      sender.send(MEDIA_IPC.progress, { mediaId, stage: 'canceled', percent: 0 })
+      send({ mediaId, stage: 'canceled', percent: 0 })
     } else {
-      sender.send(MEDIA_IPC.progress, {
+      send({
         mediaId,
         stage: 'error',
         percent: 0,

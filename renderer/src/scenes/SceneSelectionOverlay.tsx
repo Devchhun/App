@@ -17,6 +17,7 @@ import {
   type PixelRect
 } from './contentTransformMath'
 import { resolveEffectiveContentTransform } from './contentTransformReflow'
+import { brandFontFamily } from '../templates/templateShared'
 
 interface Props {
   stageRef: RefObject<HTMLDivElement>
@@ -90,6 +91,9 @@ export function SceneSelectionOverlay({ stageRef, currentTime, brand }: Props): 
   const { beginTransaction, endTransaction } = useHistory()
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
   const [domRect, setDomRect] = useState<PixelRect | null>(null)
+  const [editingText, setEditingText] = useState(false)
+  const textEditorRef = useRef<HTMLTextAreaElement>(null)
+  const previousSceneIdRef = useRef<string | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const contentDragRef = useRef<ContentDragState | null>(null)
 
@@ -106,6 +110,26 @@ export function SceneSelectionOverlay({ stageRef, currentTime, brand }: Props): 
   const mediaId = scene?.mediaId ?? ''
   const isFullFrame = scene ? getEffectivePresentationMode(scene.templateId, scene.presentationMode) === 'full-frame' : false
   const needsDomMeasurement = Boolean(scene) && !isFullFrame && !scene?.position
+
+  // Add Text should be immediately typeable instead of creating a silent
+  // empty-looking rectangle. Other existing scenes remain in normal move /
+  // resize mode until the user double-clicks them.
+  useEffect(() => {
+    if (selectedSceneId === previousSceneIdRef.current) return
+    // Scene insertion and selection normally land in one React batch, but
+    // do not consume the id early if the scene bucket is still catching up.
+    if (selectedSceneId && !scene) return
+    previousSceneIdRef.current = selectedSceneId
+    setEditingText(Boolean(scene && !scene.locked && scene.visualText === 'New text'))
+  }, [selectedSceneId, scene])
+
+  useEffect(() => {
+    if (!editingText) return
+    const editor = textEditorRef.current
+    if (!editor) return
+    editor.focus()
+    editor.select()
+  }, [editingText, scene?.id])
 
   // Track the stage's own pixel size -- every computed-bounds path needs it,
   // and the DOM-measurement fallback needs to re-measure on layout resize.
@@ -299,11 +323,47 @@ export function SceneSelectionOverlay({ stageRef, currentTime, brand }: Props): 
     <div className="scene-selection-overlay" style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}>
       <div
         className={`scene-selection-box${scene.locked ? ' scene-selection-box-locked' : ''}`}
+        onDoubleClick={(e) => {
+          if (scene.locked) return
+          e.stopPropagation()
+          setEditingText(true)
+        }}
         onPointerDown={(e) => handlePointerDown(e, 'move')}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       />
+      {editingText && !scene.locked && (
+        <textarea
+          ref={textEditorRef}
+          className="scene-inline-text-editor"
+          lang="km"
+          aria-label="Edit text"
+          value={scene.visualText}
+          style={{
+            color: scene.textColor ?? '#ffffff',
+            fontFamily: brandFontFamily(brand, scene.brandOverrides),
+            fontSize: scene.fontSizePx ?? 20,
+            fontWeight: scene.fontWeight === 'bold' ? 800 : scene.fontWeight === 'semibold' ? 600 : 400,
+            textAlign: scene.textAlign ?? 'center'
+          }}
+          onFocus={beginTransaction}
+          onChange={(e) => updateScene(mediaId, scene.id, { visualText: e.target.value })}
+          onBlur={() => {
+            setEditingText(false)
+            endTransaction()
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+              e.preventDefault()
+              e.currentTarget.blur()
+            }
+          }}
+        />
+      )}
       {!scene.locked &&
         HANDLES.map((h) => (
           <div

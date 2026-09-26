@@ -120,6 +120,18 @@ describe('rippleDelete', () => {
 })
 
 describe('rippleTrim', () => {
+  it('trims a linked audio partner and ripples both tracks together', () => {
+    const clips = [
+      clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 10, sourceOut: 10, linkedClipId: 'a' }),
+      clip({ id: 'a', trackId: 'A1', type: 'audio', startTime: 0, duration: 10, sourceOut: 10, linkedClipId: 'v' }),
+      clip({ id: 'next-v', trackId: 'V1', startTime: 10, duration: 3 }),
+      clip({ id: 'next-a', trackId: 'A1', type: 'audio', startTime: 10, duration: 3 })
+    ]
+    const result = rippleTrim(seq(tracks, clips), 'v', 'right', 6, 'current', 10, true, 10)
+    expect(result.clips.map((c) => [c.id, c.startTime, c.duration])).toEqual([
+      ['v', 0, 6], ['a', 0, 6], ['next-v', 6, 3], ['next-a', 6, 3]
+    ])
+  })
   it('shortening the right edge pulls later clips left', () => {
     const clips = [clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 10 }), clip({ id: 'b', trackId: 'V1', startTime: 10, duration: 5 })]
     const result = rippleTrim(seq(tracks, clips), 'a', 'right', 6, 'current', 100)

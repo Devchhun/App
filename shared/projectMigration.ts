@@ -5,6 +5,8 @@
 import type { ProjectFile, Scene, TimelineClip } from './project'
 import { computeSequenceDuration, sanitizeLinkedClips } from './project'
 import { createDefaultTracks } from './timelineTracks'
+import { createDefaultNarrationWorkspaceState } from './narration'
+import { createDefaultDubbingWorkspaceState } from './dubbing'
 
 /** schemaVersion 1 -> 2: `SceneContentTransform.xPercent/yPercent` changed
  * from the box's top-left corner to its normalized CENTER (see
@@ -177,6 +179,56 @@ function migrateToStoryVisualization(project: ProjectFile): ProjectFile {
   }
 }
 
+/** schemaVersion 7 -> 8: adds the optional `narrationWorkspace` field for
+ * the Story Narration Workspace (see shared/narration.ts). A missing value
+ * always means the workspace has never been used in this project -- there
+ * is nothing to backfill, so this step is purely the version bump plus
+ * defaulting to an inactive/empty state, matching
+ * migrateToStoryVisualization's own "purely additive" style. */
+function migrateToNarrationWorkspace(project: ProjectFile): ProjectFile {
+  return {
+    ...project,
+    schemaVersion: 8,
+    narrationWorkspace: project.narrationWorkspace ?? createDefaultNarrationWorkspaceState()
+  }
+}
+
+/** schemaVersion 8 -> 9: adds the optional `keyframes` field on
+ * `TimelineClip` (see shared/keyframes.ts). A missing value means "this
+ * property has no keyframes, use its plain static field" -- there is
+ * nothing to backfill on any existing clip, so this step is purely the
+ * version bump, matching migrateToClipProperties's own precedent exactly. */
+function migrateToKeyframes(project: ProjectFile): ProjectFile {
+  return { ...project, schemaVersion: 9 }
+}
+
+/** schemaVersion 9 -> 10: adds the optional `dubbingWorkspace` field for AI
+ * Dubber (see shared/dubbing.ts). A missing value always means the feature
+ * has never been used in this project -- there is nothing to backfill, so
+ * this step is purely the version bump plus defaulting to an
+ * inactive/empty state, matching migrateToNarrationWorkspace's own
+ * precedent exactly. */
+function migrateToDubbingWorkspace(project: ProjectFile): ProjectFile {
+  return {
+    ...project,
+    schemaVersion: 10,
+    dubbingWorkspace: project.dubbingWorkspace ?? createDefaultDubbingWorkspaceState()
+  }
+}
+
+/** schemaVersion 10 -> 11: speaker diarization adds persisted character
+ * profiles and acoustic embeddings inside the existing AI Dubber workspace. */
+function migrateToDubbingSpeakers(project: ProjectFile): ProjectFile {
+  return {
+    ...project,
+    schemaVersion: 11,
+    dubbingWorkspace: {
+      ...(project.dubbingWorkspace ?? createDefaultDubbingWorkspaceState()),
+      speakers: project.dubbingWorkspace?.speakers ?? {}
+    }
+  }
+}
+
 /** Upgrades a loaded project file to the current schema, forward-only,
  * chaining every applicable step in order. Idempotent to call on an
  * already-current file. Never mutates the input. */
@@ -205,6 +257,22 @@ export function migrateProjectFile(project: ProjectFile): ProjectFile {
 
   if (result.schemaVersion < 7 || !result.narrativeGraph || !result.entityBible || !result.visualPlan || !result.sceneGroups || !result.theme) {
     result = migrateToStoryVisualization(result)
+  }
+
+  if (result.schemaVersion < 8 || !result.narrationWorkspace) {
+    result = migrateToNarrationWorkspace(result)
+  }
+
+  if (result.schemaVersion < 9) {
+    result = migrateToKeyframes(result)
+  }
+
+  if (result.schemaVersion < 10 || !result.dubbingWorkspace) {
+    result = migrateToDubbingWorkspace(result)
+  }
+
+  if (result.schemaVersion < 11 || !result.dubbingWorkspace?.speakers) {
+    result = migrateToDubbingSpeakers(result)
   }
 
   // Data-integrity safety net, independent of any particular schema version

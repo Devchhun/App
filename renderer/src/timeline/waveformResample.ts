@@ -3,6 +3,12 @@ import type { WaveformData } from '@shared/media'
 export interface WaveformBar {
   min: number
   max: number
+  /** Mean per-bucket peak across the buckets this bar covers -- what the
+   * bar's height is drawn from. When many buckets fall under one pixel
+   * (zoomed out) this is the loudness of that stretch rather than its
+   * single loudest sample, so a long clip reads as dynamics, not a wall;
+   * when a pixel is narrower than a bucket it equals the peak. */
+  avg: number
 }
 
 /** Resamples a full-file WaveformData down to exactly `widthPx` bars, one per
@@ -34,13 +40,17 @@ export function computeWaveformBars(
     const bEnd = Math.min(totalBuckets - 1, Math.floor(tEnd / bucketDuration))
     let min = 0
     let max = 0
+    let sum = 0
+    let count = 0
     for (let b = bStart; b <= bEnd; b++) {
       const bMin = waveform.peaks[b * 2]
       const bMax = waveform.peaks[b * 2 + 1]
       if (bMin < min) min = bMin
       if (bMax > max) max = bMax
+      sum += Math.max(Math.abs(bMin), Math.abs(bMax))
+      count++
     }
-    bars.push({ min, max })
+    bars.push({ min, max, avg: count > 0 ? sum / count : 0 })
   }
 
   return bars
