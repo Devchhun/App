@@ -4,6 +4,8 @@ import {
   computeExportDurationSeconds,
   activeExportClips,
   buildExportFilterGraph,
+  planExportWindows,
+  sliceClipsToWindow,
   DEFAULT_EXPORT_OPTIONS,
   type ResolvedExportClip
 } from './export'
@@ -190,6 +192,11 @@ describe('activeExportClips', () => {
   })
 })
 
+/** Frames of each stretch laid end to end on the bottom track. */
+function stretchFrames(graph: string): number[] {
+  return [...graph.matchAll(/trim=(start_frame=1:)?end_frame=(\d+)(,setpts=PTS-STARTPTS)?\[(?!z\d)/g)].map((m) => Number(m[2]) - (m[1] ? 1 : 0))
+}
+
 describe('buildExportFilterGraph', () => {
   const dims = { width: 640, height: 360 }
 
@@ -200,8 +207,7 @@ describe('buildExportFilterGraph', () => {
     const graph = result.args[result.args.indexOf('-filter_complex') + 1]
     expect(graph).toContain('setpts=PTS/4')
     expect(graph).toContain('atempo=2,atempo=2')
-    expect(graph).toContain('overlay=x=')
-    expect(graph).toContain('2.5)')
+    expect(stretchFrames(graph)).toEqual([75]) // 2.5 s at 30 fps
   })
 
   it('reports isEmpty when there are no clips at all', () => {
@@ -296,10 +302,123 @@ describe('buildExportFilterGraph', () => {
     expect(result.isEmpty).toBe(true)
   })
 
-  it('gates each video clip\'s overlay visibility to its own [start, end] window', () => {
+  it('lays the bottom track end to end: black, the clip, black -- each exactly its frames', () => {
     const rc: ResolvedExportClip = { clip: clip({ id: 'a', trackId: 'V1', startTime: 3, duration: 4 }), sourcePath: '/a.mp4', trackOrder: 0 }
     const result = buildExportFilterGraph([rc], [], 10, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4')
     const graph = result.args[result.args.indexOf('-filter_complex') + 1]
+    expect(stretchFrames(graph)).toEqual([90, 120, 90])
+    expect(graph).toContain('concat=n=3:v=1:a=0[lane]')
+    expect(graph).not.toContain('enable=')
+  })
+
+  it('never drifts: hundreds of odd-length clips add up to the run\'s exact frame count', () => {
+    const clips: ResolvedExportClip[] = Array.from({ length: 300 }, (_, i) => ({ clip: clip({ id: `c${i}`, trackId: 'V1', startTime: i * 0.377 + (i % 3 === 0 ? 0.05 : 0), duration: 0.3 + (i % 3 === 0 ? 0 : 0.05) }), sourcePath: '/f.mp4', trackOrder: 0 }))
+    const total = 300 * 0.377
+    const graph = buildExportFilterGraph(clips, [], total, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4').args.join(' ')
+    expect(stretchFrames(graph).reduce((a, b) => a + b, 0)).toBe(Math.round(total * 30))
+  })
+
+  it('shows a higher track\'s clip over the bottom one for its own time only', () => {
+    const base: ResolvedExportClip = { clip: clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 10 }), sourcePath: '/a.mp4', trackOrder: 0 }
+    const top: ResolvedExportClip = { clip: clip({ id: 'b', trackId: 'V2', startTime: 3, duration: 4 }), sourcePath: '/b.mp4', trackOrder: 1 }
+    const graph = buildExportFilterGraph([top, base], [], 10, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4').args.join(' ')
     expect(graph).toContain("enable='between(t,3,7)'")
+    expect(stretchFrames(graph)).toEqual([300])
+  })
+
+  it('places a moved or see-through clip over black; a plain one is padded, never overlaid', () => {
+    const plain: ResolvedExportClip = { clip: clip({ id: 'a', trackId: 'V1', startTime: 0, duration: 2 }), sourcePath: '/a.mp4', trackOrder: 0 }
+    const faded: ResolvedExportClip = { clip: clip({ id: 'b', trackId: 'V1', startTime: 2, duration: 2, opacity: 0.5 }), sourcePath: '/b.mp4', trackOrder: 0 }
+    const graph = buildExportFilterGraph([plain, faded], [], 4, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4').args.join(' ')
+    expect(graph.match(/overlay=/g)).toHaveLength(1)
+    expect(graph).toContain('pad=640:360:(ow-iw)/2:(oh-ih)/2')
+    expect(stretchFrames(graph)).toEqual([60, 60])
+  })
+
+  it('never seeks inside a still image, even in a later window of its clip', () => {
+    const img: ResolvedExportClip = { clip: clip({ id: 'i', trackId: 'V1', startTime: 0, duration: 4, sourceIn: 3, sourceOut: 7, type: 'image' }), sourcePath: '/p.png', trackOrder: 0 }
+    const { args } = buildExportFilterGraph([img], [], 4, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4', undefined, { seekInputs: true })
+    const i = args.indexOf('/p.png')
+    expect(args[i - 2]).not.toBe('3')
+    expect(args.slice(0, i)).not.toContain('-ss')
+  })
+})
+
+describe('planExportWindows', () => {
+  const span = (startTime: number, duration: number, isAudio = false, fades: { fadeIn?: number; fadeOut?: number } = {}) => ({ startTime, duration, isAudio, ...fades })
+  it('keeps a small Timeline in one window', () => {
+    expect(planExportWindows([span(0, 10), span(2, 1, true)], 10, 30)).toEqual([{ start: 0, end: 10 }])
+  })
+  it('splits a Timeline of many clips so no window touches more than the limit, end to end', () => {
+    const clips = Array.from({ length: 400 }, (_, i) => span(i * 1.8, 1.8)).concat(Array.from({ length: 1500 }, (_, i) => span(i * 0.48, 0.4, true)))
+    const windows = planExportWindows(clips, 720, 30)
+    expect(windows.length).toBeGreaterThan(1)
+    expect(windows[0].start).toBe(0)
+    expect(windows[windows.length - 1].end).toBe(720)
+    for (let i = 1; i < windows.length; i++) expect(windows[i].start).toBe(windows[i - 1].end)
+    for (const w of windows) {
+      expect(clips.filter((c) => c.startTime < w.end && c.startTime + c.duration > w.start).length).toBeLessThanOrEqual(40)
+      // On the frame grid (30 fps).
+      expect(Math.abs(w.end * 30 - Math.round(w.end * 30))).toBeLessThan(1e-6)
+    }
+  })
+  it('never cuts through an audio fade', () => {
+    const clips = Array.from({ length: 100 }, (_, i) => span(i, 1, false)).concat([span(0, 100, true, { fadeOut: 60 })])
+    const windows = planExportWindows(clips, 100, 25, 20)
+    for (const w of windows.slice(0, -1)) expect(w.end <= 40 || w.end >= 100).toBe(true)
+  })
+})
+
+describe('sliceClipsToWindow', () => {
+  it('cuts clips to the window, timed from its start, further into the file by the playback rate', () => {
+    const rc = { clip: clip({ id: 'c', trackId: 'V1', startTime: 10, duration: 10, sourceIn: 100, sourceOut: 108.5, playbackRate: 0.85 }), sourcePath: 'f.mp4', trackOrder: 0 }
+    const [part] = sliceClipsToWindow([rc], { start: 14, end: 30 })
+    expect(part.clip.startTime).toBe(0)
+    expect(part.clip.duration).toBe(6)
+    expect(part.clip.sourceIn).toBeCloseTo(100 + 4 * 0.85, 9)
+    expect(part.clip.sourceOut).toBeCloseTo(100 + 10 * 0.85, 9)
+    expect(sliceClipsToWindow([rc], { start: 30, end: 40 })).toEqual([])
+  })
+})
+
+describe('buildExportFilterGraph with seekInputs', () => {
+  it('opens each input at its own stretch instead of trimming from the start of the file', () => {
+    const v = { clip: clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 2, sourceIn: 4800, sourceOut: 4802 }), sourcePath: 'film.mp4', trackOrder: 0 }
+    const { args } = buildExportFilterGraph([v], [], 2, { width: 854, height: 480 }, 30, { ...DEFAULT_EXPORT_OPTIONS, includeAudio: false }, 'out.mp4', undefined, { seekInputs: true })
+    const i = args.indexOf('film.mp4')
+    expect(args.slice(i - 5, i + 1)).toEqual(['-ss', '4800', '-t', '2', '-i', 'film.mp4'])
+    expect(args.join(' ')).not.toContain('trim=start=4800')
+  })
+})
+
+describe('buildExportFilterGraph with gpuDecode', () => {
+  it('decodes and fits a video on the GPU, then brings it back for the rest; a cropped one stays on the CPU', () => {
+    const plain = { clip: clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 2 }), sourcePath: 'film.mp4', trackOrder: 0 }
+    const cropped = { clip: clip({ id: 'c', trackId: 'V1', startTime: 2, duration: 2, transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0.1, cropRight: 0, cropBottom: 0, cropLeft: 0 } }), sourcePath: 'crop.mp4', trackOrder: 0 }
+    const { args } = buildExportFilterGraph([plain, cropped], [], 4, { width: 854, height: 480 }, 30, { ...DEFAULT_EXPORT_OPTIONS, includeAudio: false }, 'out.mp4', undefined, { seekInputs: true, gpuDecode: true, decoderThreads: 2 })
+    const film = args.indexOf('film.mp4')
+    const crop = args.indexOf('crop.mp4')
+    expect(args.slice(0, film).join(' ')).toContain('-hwaccel cuda -hwaccel_output_format cuda')
+    expect(args.slice(film, crop).join(' ')).not.toContain('-hwaccel')
+    expect(args.slice(film, crop)).toContain('-threads')
+    const graph = args[args.indexOf('-filter_complex') + 1]
+    expect(graph.match(/scale_cuda=854:480:force_original_aspect_ratio=decrease:format=yuv420p,hwdownload,format=yuv420p/g)).toHaveLength(1)
+  })
+})
+
+describe('buildExportFilterGraph for a piece of a longer export', () => {
+  const piece = { seekInputs: true, silentBed: true, pcmAudio: true, forceVideo: true }
+  it('still draws a black picture (and silence) for a stretch with no clips at all', () => {
+    const result = buildExportFilterGraph([], [], 3, { width: 854, height: 480 }, 30, DEFAULT_EXPORT_OPTIONS, 'p.mov', undefined, piece)
+    expect(result.isEmpty).toBe(false)
+    expect(result.args).toContain('[vout]')
+    expect(result.args.join(' ')).toContain('anullsrc')
+    expect(result.args[result.args.indexOf('-filter_complex') + 1]).toContain('trim=end_frame=90[gap0]')
+  })
+  it('keeps the picture for a stretch with only dub lines in it', () => {
+    const line: ResolvedExportClip = { clip: clip({ id: 'a', trackId: 'A1', startTime: 0, duration: 2, type: 'audio' }), sourcePath: '/a.wav', trackOrder: 0 }
+    const { args } = buildExportFilterGraph([], [line], 3, { width: 854, height: 480 }, 30, DEFAULT_EXPORT_OPTIONS, 'p.mov', undefined, piece)
+    expect(args).toContain('[vout]')
+    expect(args).toContain('[aout]')
   })
 })

@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, safeStorage: { isEncryptionAvailable: () => false } }))
 
-const { buildGeminiCueTextPrompt, buildGeminiSpeakerDetectionPrompt, buildGeminiSrtPrompt, buildGeminiTimedTranscriptPrompt, cleanGeminiSrt, extractGeminiJsonObject, parseGeminiCueText, parseGeminiTimedTranscript, restoreChunkLines, splitSpan, MIN_SPLIT_SECONDS, TruncatedTranscriptionError, parseTimestampSeconds, unreadableTranscriptMessage } = await import('./speakerDiarizationService')
+const { cleanPartLines, isTooSparse, timesLookCompressed, repairMinuteSecondTimes, salvageCoversPart, buildGeminiCueTextPrompt, buildGeminiSpeakerDetectionPrompt, buildGeminiSrtPrompt, buildGeminiTimedTranscriptPrompt, cleanGeminiSrt, extractGeminiJsonObject, parseGeminiCueText, parseGeminiTimedTranscript, restoreChunkLines, splitSpan, MIN_SPLIT_SECONDS, TruncatedTranscriptionError, parseTimestampSeconds, unreadableTranscriptMessage } = await import('./speakerDiarizationService')
 
 describe('Gemini timestamped transcript mode', () => {
   it('requests literal timestamp rows without translation or story narration', () => {
     const prompt = buildGeminiTimedTranscriptPrompt('auto', 60)
-    expect(prompt).toContain('START_SECONDS<TAB>END_SECONDS<TAB>EXACT_SPOKEN_TEXT')
+    expect(prompt).toContain('START_SECONDS<TAB>END_SECONDS<TAB>VOICE<TAB>EXACT_SPOKEN_TEXT')
+    // The voice is judged by ear, not by pitch alone (a shouting man is still a man).
+    expect(prompt).toContain('M = a man (also when he shouts, cries or is angry)')
     expect(prompt).toContain('Audio is the only source')
     expect(prompt).toContain('Never translate, summarize, paraphrase')
     expect(prompt).toContain('NO_SPEECH')
@@ -29,6 +31,55 @@ describe('Gemini timestamped transcript mode', () => {
   it('accepts normal SRT as a safe Gemini fallback', () => {
     const result = parseGeminiTimedTranscript('1\n00:00:01,100 --> 00:00:02,300\nspoken text')
     expect(result[0]).toMatchObject({ startTime: 1.1, endTime: 2.3, verbatimText: 'spoken text' })
+  })
+
+  it('reads the VOICE column, and still reads rows without one', () => {
+    const result = parseGeminiTimedTranscript(['1.000\t2.000\tM\t你好', '3.000 | 4.000 | F | 你去哪里', '5.000\t6.000\tU\t啊', '7.000\t8.000\tno voice column'].join('\n'))
+    expect(result.map(({ verbatimText, voice }) => ({ verbatimText, voice }))).toEqual([
+      { verbatimText: '你好', voice: 'male' },
+      { verbatimText: '你去哪里', voice: 'female' },
+      { verbatimText: '啊', voice: 'unknown' },
+      { verbatimText: 'no voice column', voice: undefined }
+    ])
+  })
+
+  it('takes a VOICE put after the text off the text, so it is never spoken', () => {
+    expect(parseGeminiTimedTranscript('1.000\t2.000\t你好\tM')[0]).toMatchObject({ verbatimText: '你好', voice: 'male' })
+  })
+
+  it('reads M* / F* as an inner voice (a thought), plain M/F as speech', () => {
+    const result = parseGeminiTimedTranscript(['1.000\t2.000\tM*\t他到底想干什么', '3.000\t4.000\tF\t你好', '5.000\t6.000\t怎么办\tF*'].join('\n'))
+    expect(result.map(({ verbatimText, voice, innerVoice }) => ({ verbatimText, voice, innerVoice }))).toEqual([
+      { verbatimText: '他到底想干什么', voice: 'male', innerVoice: true },
+      { verbatimText: '你好', voice: 'female', innerVoice: undefined },
+      { verbatimText: '怎么办', voice: 'female', innerVoice: true }
+    ])
+    expect(buildGeminiTimedTranscriptPrompt('auto', 60)).toContain('INNER VOICE')
+  })
+
+  it('keeps a row whose VOICE came before the times (it used to be dropped -- a missing line)', () => {
+    const result = parseGeminiTimedTranscript(['M\t1.000\t2.000\t你好', 'F* | 3.000 | 4.000 | 怎么办', '5.000\t6.000\tU\t走吧'].join('\n'))
+    expect(result.map(({ startTime, verbatimText, voice, innerVoice }) => ({ startTime, verbatimText, voice, innerVoice }))).toEqual([
+      { startTime: 1, verbatimText: '你好', voice: 'male', innerVoice: undefined },
+      { startTime: 3, verbatimText: '怎么办', voice: 'female', innerVoice: true },
+      { startTime: 5, verbatimText: '走吧', voice: 'unknown', innerVoice: undefined }
+    ])
+  })
+
+  it('cleans a part: repetition loops, lines past its end, implausible inner-voice marks', () => {
+    const at = (t: number, text: string, innerVoice?: boolean) => ({ startTime: t, endTime: t + 0.5, verbatimText: text, speakerNumber: 1, language: 'zh', transcriptionConfidence: 1, identityConfidence: 0, ...(innerVoice ? { innerVoice } : {}) })
+    // "啊!" 69 times, one every half second (a real fallback answer): one kept.
+    const loop = Array.from({ length: 69 }, (_, i) => at(i * 0.5, '啊!'))
+    expect(cleanPartLines(loop, 64).map((l) => l.verbatimText)).toEqual(['啊!'])
+    // Three real repeats stay.
+    expect(cleanPartLines([at(1, '走!'), at(2, '走!'), at(3, '走!'), at(5, '好')], 64)).toHaveLength(4)
+    // A nonsense time past the part is dropped.
+    expect(cleanPartLines([at(119.9, '出'), at(3, '好')], 64).map((l) => l.verbatimText)).toEqual(['好'])
+    // Every line "inner voice": the marks go; a few marked lines keep theirs.
+    const allMarked = [at(1, '一', true), at(3, '二', true), at(5, '三', true), at(7, '四', true)]
+    expect(cleanPartLines(allMarked, 64).some((l) => l.innerVoice)).toBe(false)
+    const oneMarked = [at(1, '一', true), at(3, '二'), at(5, '三'), at(7, '四')]
+    expect(cleanPartLines(oneMarked, 64).filter((l) => l.innerVoice)).toHaveLength(1)
   })
 
   it('treats NO_SPEECH as an empty result', () => {
@@ -87,6 +138,18 @@ describe('long-audio chunk timestamp restoration', () => {
   it('restores chunk-relative timestamps to the original video timeline', () => {
     const restored = restoreChunkLines([line(3.2, 4.8, 'hello')], 118, 120, 240, false)
     expect(restored[0]).toMatchObject({ startTime: 121.2, endTime: 122.8, verbatimText: 'hello' })
+  })
+
+  it('puts back a part Gemini wrote in absolute video times (its lines used to be dropped)', () => {
+    // Part 5: file 238..302, core 240..300. Gemini wrote 245 s / 280 s
+    // instead of 7 s / 42 s.
+    const restored = restoreChunkLines([line(245, 247, 'a'), line(280, 282.5, 'b')], 238, 240, 300, false)
+    expect(restored.map((item) => [item.startTime, item.endTime, item.verbatimText])).toEqual([[245, 247, 'a'], [280, 282.5, 'b']])
+  })
+
+  it('leaves ordinary part-relative times alone', () => {
+    const restored = restoreChunkLines([line(7, 9, 'a'), line(42, 44, 'b')], 238, 240, 300, false)
+    expect(restored.map((item) => item.startTime)).toEqual([245, 280])
   })
 
   it('uses the core midpoint so overlap context never duplicates subtitles', () => {
@@ -219,5 +282,74 @@ describe('unreadable transcript message', () => {
     const message = unreadableTranscriptMessage('x'.repeat(300), 'STOP')
     expect(message).toContain('x'.repeat(120) + '…')
     expect(message).not.toContain('x'.repeat(121))
+  })
+})
+
+describe('salvageCoversPart', () => {
+  it('a loop after the first rows of a minute does not cover it', () => {
+    expect(salvageCoversPart([{ endTime: 3 }, { endTime: 6.5 }], 64)).toBe(false)
+  })
+  it('lines reaching near the end do', () => {
+    expect(salvageCoversPart([{ endTime: 10 }, { endTime: 50 }], 64)).toBe(true)
+  })
+  it('a short part always counts as covered, so halving stops', () => {
+    expect(salvageCoversPart([], 16)).toBe(true)
+    expect(salvageCoversPart([], 32)).toBe(false)
+  })
+})
+
+describe('cleanPartLines drops rows that are not speech', () => {
+  it('NO_SPEECH written as a row, sound tags and music notes', () => {
+    const row = (startTime: number, verbatimText: string) => ({ startTime, endTime: startTime + 1, verbatimText, speakerNumber: 1, language: 'zh', transcriptionConfidence: 1, identityConfidence: 0 })
+    const kept = cleanPartLines([row(1, '什么东西?'), row(2, 'NO_SPEECH'), row(3, '[音乐]'), row(4, '(sighs)'), row(5, '♪ ♪'), row(6, '传送阵。'), row(7, 'no speech.')], 60)
+    expect(kept.map((line) => line.verbatimText)).toEqual(['什么东西?', '传送阵。'])
+  })
+})
+
+describe('repairMinuteSecondTimes', () => {
+  const at = (startTime: number, endTime: number) => ({ startTime, endTime })
+  it('reads m.ss(s) times Gemini wrote as plain seconds (measured on a real part)', () => {
+    const fixed = repairMinuteSecondTimes([at(0, 0.009), at(0.009, 0.056), at(0.056, 0.199), at(0.565, 0.584), at(0.584, 1.04)], 64)
+    expect(fixed.map((l) => [l.startTime, l.endTime])).toEqual([[0, 0.9], [0.9, 5.6], [5.6, 19.9], [56.5, 58.4], [58.4, 64]])
+  })
+  it('keeps ordinary times', () => {
+    const lines = [at(0.5, 2), at(3, 5.5), at(40, 44)]
+    expect(repairMinuteSecondTimes(lines, 64)).toBe(lines)
+  })
+  it('keeps a short burst at the start of a long part when it is not a valid m.ss reading', () => {
+    const lines = [at(0.1, 0.7), at(0.7, 1.2), at(1.2, 2.9)]
+    expect(repairMinuteSecondTimes(lines, 64)).toBe(lines)
+  })
+  it('cleanPartLines applies it', () => {
+    const row = (startTime: number, endTime: number, verbatimText: string) => ({ startTime, endTime, verbatimText, speakerNumber: 1, language: 'km', transcriptionConfidence: 1, identityConfidence: 0 })
+    const kept = cleanPartLines([row(0, 0.06, 'ក'), row(0.06, 0.2, 'ខ'), row(0.2, 0.25, 'គ'), row(0.25, 0.4, 'ង'), row(0.61, 0.64, 'ឃ')], 64)
+    expect(kept.map((l) => l.startTime)).toEqual([0, 6, 20, 25, 61])
+  })
+})
+
+describe('answers with unusable timing or too little in them', () => {
+  const at = (startTime: number, endTime: number) => ({ startTime, endTime })
+  it('stretches a compressed part in proportion when no reading fits (measured: 0 .. 1.160 for a 64 s part)', () => {
+    const lines = [at(0, 0.02), at(0.02, 0.05), at(0.05, 0.08), at(0.5, 0.55), at(0.99, 1.03), at(1.13, 1.16)]
+    expect(timesLookCompressed(lines, 64)).toBe(true)
+    const fixed = repairMinuteSecondTimes(lines, 64)
+    expect(fixed[fixed.length - 1].endTime).toBeCloseTo(64)
+    expect(fixed[3].startTime).toBeCloseTo(0.5 * 64 / 1.16)
+  })
+  it('real seconds are not compressed', () => {
+    expect(timesLookCompressed([at(1, 2), at(10, 12), at(20, 22), at(30, 33), at(50, 60)], 64)).toBe(false)
+  })
+  it('one 0.07 s line for a minute is too sparse; a few lines across it are not', () => {
+    expect(isTooSparse([at(0, 0.067)], 64)).toBe(true)
+    expect(isTooSparse([], 20)).toBe(true)
+    expect(isTooSparse([at(2, 5), at(40, 50)], 64)).toBe(false)
+    expect(isTooSparse([at(2, 5), at(6, 8), at(9, 11)], 64)).toBe(false)
+    expect(isTooSparse([at(2, 5)], 30)).toBe(false)
+  })
+  it('reads minutes.seconds.milliseconds rows ("1.02.400")', () => {
+    const lines = parseGeminiTimedTranscript('1.02.400	1.03.500	M	ភ្លាមៗ នោះ')
+    expect(lines).toHaveLength(1)
+    expect(lines[0].startTime).toBeCloseTo(62.4)
+    expect(lines[0].endTime).toBeCloseTo(63.5)
   })
 })

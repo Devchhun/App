@@ -14,7 +14,7 @@ import type { AnimationIpcResult, AnimationProgress, AnimationRequest } from '@s
 import type { CrashReport } from '@shared/crash'
 import type { DetectSpeakerResult, NarrationOptimizationSettings } from '@shared/narration'
 import type { RefitClipAudioResult, PrepareReferenceClipResult, VoxCpmDevice } from '@shared/dubbing'
-import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent } from '@shared/dubbing'
+import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent, AnalyzePerformanceLine, AnalyzePerformanceResult } from '@shared/dubbing'
 import type { RemoveVocalsResult, VocalRemovalProgress } from '@shared/vocalRemoval'
 import type { TranslateSubtitlesResult, TranslationError } from '@shared/translation'
 import type { RegenerateNarrationSceneRequest, StoryLibrary, StoryOutlineIpcResult, StoryOutlineRequest, StoryScriptRequest, VideoStoryNarrationIpcResult, VideoStoryNarrationProgress, VideoStoryNarrationRequest, VideoStoryNarrationScene } from '@shared/videoStoryNarration'
@@ -73,6 +73,12 @@ declare global {
       getAppVersion: () => Promise<string>
       media: {
         pickFiles: () => Promise<string[]>
+        /** A URL for an imported still image's own file (see MEDIA_IPC.imageUrl). */
+        imageUrl: (filePath: string) => Promise<string | null>
+        /** Remove Background on a still image (see MEDIA_IPC.removeBackground). */
+        removeBackground: (jobId: string, imagePath: string) => Promise<import('@shared/media').RemoveBackgroundResult>
+        cancelRemoveBackground: (jobId: string) => Promise<boolean>
+        onRemoveBackgroundProgress: (callback: (progress: import('@shared/media').RemoveBackgroundProgress) => void) => () => void
         importPaths: (paths: string[]) => Promise<void>
         cancelJob: (mediaId: string) => Promise<boolean>
         retryJob: (mediaId: string) => Promise<void>
@@ -112,10 +118,11 @@ declare global {
           canceled: boolean
           entries?: CorrectionDictionaryEntry[]
         }>
-        importSrtFile: () => Promise<{
+        importSrtFile: (options?: { multiple?: boolean }) => Promise<{
           canceled: boolean
           fileName?: string
           srtText?: string
+          files?: { fileName: string; srtText: string }[]
         }>
         detectSpeakers: (request: DetectSpeakersRequest) => Promise<DetectSpeakersResult>
         cancelDetectSpeakers: (jobId: string) => Promise<boolean>
@@ -169,7 +176,7 @@ declare global {
         getCapabilities: () => Promise<ExportCapabilities>
         startExport: (requestId: string, sequence: ProjectSequence, mediaById: Record<string, {
           originalPath: string
-        }>, aspectRatio: "16:9" | "9:16" | "1:1", options: ExportOptions) => Promise<void>
+        }>, aspectRatio: "16:9" | "9:16" | "1:1", options: ExportOptions, overlay?: import('@shared/videoOverlay').ExportOverlay) => Promise<void>
         cancelExport: (requestId: string) => Promise<boolean>
         openOutput: (outputPath: string) => Promise<boolean>
         writeTextFile: (dir: string, name: string, extension: string, content: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
@@ -205,12 +212,23 @@ declare global {
         validateInstall: (installDir: string) => Promise<ValidateVoxCpmInstallResult>
         detectInstalls: (knownPath?: string) => Promise<string[]>
         pickInstallFolder: () => Promise<string | null>
+        /** AI Dubber's Add button: one dialog for video(s) and/or an .srt. */
+        pickVideosAndSrt: () => Promise<{ videoPaths: string[]; srt: { fileName: string; srtText: string } | null; srts: { fileName: string; srtText: string }[] }>
+        /** Echo/reverb score (0..1) of each line in the video's own audio -- inner-voice detection. */
+        detectEchoLines: (args: { originalPath: string; lines: { id: string; startTime: number; endTime: number }[] }) => Promise<{ id: string; score: number }[]>
+        /** Playable URL for a generated audio file (the voice test). */
+        audioUrl: (filePath: string) => Promise<string | null>
+        renderAudioEffect: (jobId: string, inputPath: string, start: number, end: number, filter: string) => Promise<{ ok: true; outputPath: string } | { ok: false; error: string }>
+        detectBurnedSubtitles: (videoPath: string, lineMiddles: number[]) => Promise<{ x: number; y: number; w: number; h: number; score: number } | null>
+        /** Series mode: folder picker, then one `<video name>.srt` per episode. */
+        saveEpisodeSrts: (files: { fileName: string; srtText: string }[]) => Promise<{ folder: string; written: number } | null>
         /** Runs real VoxCPM2 generation over every voice group in `request`,
          * sequentially. Resolves once every group has been attempted per-line
          * results stream separately via `onGenerationProgress` as they complete
          * (see that channel's own doc comment in shared/dubbing.ts for why). */
         generateBatch: (request: DubbingGenerationRequest) => Promise<void>
         cancelGeneration: (batchId?: string) => Promise<boolean>
+        analyzePerformance: (jobId: string, lines: AnalyzePerformanceLine[]) => Promise<AnalyzePerformanceResult>
         stitchAudio: (inputPaths: string[], gapSeconds: number, level?: boolean) => Promise<{
           ok: true
           outputPath: string
@@ -221,6 +239,14 @@ declare global {
         refitClipAudio: (jobId: string, sourcePath: string, speed: number) => Promise<RefitClipAudioResult>
         prepareReferenceClip: (jobId: string, sourcePath: string, installDir?: string, level?: boolean) => Promise<PrepareReferenceClipResult>
         onGenerationProgress: (callback: (event: DubbingGenerationProgressEvent) => void) => (() => void)
+      }
+      kiri: {
+        hasKey: () => Promise<boolean>
+        setKey: (key: string) => Promise<void>
+        clearKey: () => Promise<void>
+        listVoices: () => Promise<import('@shared/kiriTts').KiriListResult>
+        cloneVoice: (name: string, sourcePath?: string, options?: import('@shared/kiriTts').KiriCloneOptions) => Promise<import('@shared/kiriTts').KiriCloneResult>
+        pickCloneSource: () => Promise<import('@shared/kiriTts').KiriCloneSource>
       }
       videoStoryNarration: {
         hasApiKey: () => Promise<boolean>
@@ -251,6 +277,7 @@ declare global {
       }
       vocalRemoval: {
         removeVocals: (jobId: string, sourcePath: string, installDir?: string, device?: VoxCpmDevice) => Promise<RemoveVocalsResult>
+        cancel: (jobId: string) => Promise<boolean>
         onProgress: (callback: (progress: VocalRemovalProgress) => void) => (() => void)
       }
       license: {

@@ -28,6 +28,18 @@ export interface VoxCpmSettings {
   pitchMatch: boolean
   /** How hard VoxCPM2 is pushed -- see shared/dubbing.ts's VoiceTone. */
   tone: VoiceTone
+  /** Steady voice speed: every line at the voice's own pace -- never sped
+   * up to fit its subtitle's time, and no slower/faster pace from the
+   * line's emotion. Lines that run long push the next ones later (Video
+   * Sync makes room in the picture). On by default: lines sped up by
+   * different amounts, next to lines asked to be slow or fast, made one
+   * voice sound fast on one line and slow on the next. */
+  steadyPace: boolean
+  /** KiriTTS only: send each line's emotion as `instructions` ("very
+   * angry, hard, forceful"). Off by default: on a cloned voice the acting
+   * words made takes fail more often (babble, a tail) and, by ear, the
+   * plain voice sounded better. */
+  kiriActing: boolean
 }
 
 // installDir starts EMPTY on purpose. It used to be hardcoded to one
@@ -41,12 +53,14 @@ export const DEFAULT_VOXCPM_SETTINGS: VoxCpmSettings = {
   installDir: '',
   device: 'auto',
   pitchMatch: true,
-  tone: DEFAULT_VOICE_TONE
+  tone: DEFAULT_VOICE_TONE,
+  steadyPace: true,
+  kiriActing: false
 }
 
 const DEVICES: VoxCpmDevice[] = ['auto', 'cuda', 'cpu']
 const TONES: VoiceTone[] = ['natural', 'balanced', 'locked']
-const ENGINES: DubbingEngine[] = ['voxcpm2', 'edge-tts']
+const ENGINES: DubbingEngine[] = ['voxcpm2', 'edge-tts', 'kiritts']
 
 const STORAGE_KEY = 'cae-voxcpm-settings-v1'
 
@@ -66,7 +80,9 @@ export function parseStoredVoxCpmSettings(raw: string | null): VoxCpmSettings {
       installDir: typeof parsed.installDir === 'string' && parsed.installDir.trim() ? parsed.installDir : DEFAULT_VOXCPM_SETTINGS.installDir,
       device: DEVICES.includes(parsed.device as VoxCpmDevice) ? (parsed.device as VoxCpmDevice) : DEFAULT_VOXCPM_SETTINGS.device,
       pitchMatch: typeof parsed.pitchMatch === 'boolean' ? parsed.pitchMatch : DEFAULT_VOXCPM_SETTINGS.pitchMatch,
-      tone: TONES.includes(parsed.tone as VoiceTone) ? (parsed.tone as VoiceTone) : DEFAULT_VOXCPM_SETTINGS.tone
+      tone: TONES.includes(parsed.tone as VoiceTone) ? (parsed.tone as VoiceTone) : DEFAULT_VOXCPM_SETTINGS.tone,
+      steadyPace: typeof parsed.steadyPace === 'boolean' ? parsed.steadyPace : DEFAULT_VOXCPM_SETTINGS.steadyPace,
+      kiriActing: typeof parsed.kiriActing === 'boolean' ? parsed.kiriActing : DEFAULT_VOXCPM_SETTINGS.kiriActing
     }
   } catch {
     return DEFAULT_VOXCPM_SETTINGS

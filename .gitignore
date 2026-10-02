@@ -23,3 +23,7 @@ license-server/.env
 
 # The license-issuing admin tool stays private (kept on this machine only).
 admin-panel/
+
+# Creative AI Downloader: binaries staged by downloader/scripts/fetch-bin.cjs, and its installer output.
+downloader/bin/
+dist-downloader/

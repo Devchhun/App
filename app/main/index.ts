@@ -13,6 +13,7 @@ import { registerDubbingIpc } from './ipc/dubbing'
 import { registerVideoStoryNarrationIpc } from './ipc/videoStoryNarration'
 import { registerAiAnimationIpc } from './ipc/aiAnimation'
 import { registerVocalRemovalIpc } from './ipc/vocalRemoval'
+import { registerKiriIpc } from './ipc/kiri'
 import { registerTranslationIpc } from './ipc/translation'
 import { registerExportIpc } from './ipc/export'
 import { registerWindowIpc, HOME_WINDOW_WIDTH, HOME_WINDOW_HEIGHT } from './ipc/window'
@@ -155,6 +156,7 @@ app.whenReady().then(() => {
   registerVideoStoryNarrationIpc()
   registerAiAnimationIpc()
   registerVocalRemovalIpc()
+  registerKiriIpc()
   registerTranslationIpc()
   registerExportIpc()
   registerWindowIpc(() => mainWindow)

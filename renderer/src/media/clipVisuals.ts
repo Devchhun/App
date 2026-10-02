@@ -5,12 +5,14 @@
 // duplicated, nearly verbatim, in both PreviewPlayer.tsx call sites.
 import type { TimelineClip } from '@shared/project'
 import { interpolateKeyframes, isAnimated } from '@shared/keyframes'
+import { clipMotionAt } from '@shared/clipMotion'
 
 /** True if ANY property on this clip has enough keyframes to actually vary
  * over time -- lets a caller decide whether its style/volume computation
  * needs to re-run every frame (keyframed) or can stay memoized on clip
  * identity alone (today's exact behavior for a plain, unkeyframed clip). */
 export function clipHasAnimatedProperties(clip: TimelineClip | undefined): boolean {
+  if (clip?.motion) return true
   if (!clip?.keyframes) return false
   return Object.values(clip.keyframes).some((keyframes) => isAnimated(keyframes))
 }
@@ -21,7 +23,16 @@ export function clipHasAnimatedProperties(clip: TimelineClip | undefined): boole
  * derives). Each field falls back to its plain static value when
  * unkeyframed, so a clip with no keyframes at all produces byte-for-byte
  * the same style object as before this feature existed. */
-export function computeClipVisualStyle(clip: TimelineClip | undefined, timeWithinClip: number): React.CSSProperties {
+export function computeClipVisualStyle(
+  clip: TimelineClip | undefined,
+  timeWithinClip: number,
+  /** The Player's picture in pixels: a clip's motion (shared/clipMotion.ts)
+   * moves by fractions of it, as Export moves by fractions of the frame. */
+  frame?: { width: number; height: number } | null,
+  /** The media's own pixel size: the picture is fitted into the frame
+   * (object-fit: contain) and scaled -- what edge-to-edge motion needs. */
+  mediaSize?: { width?: number; height?: number }
+): React.CSSProperties {
   if (!clip) return {}
   const kf = clip.keyframes
   const t = clip.transform
@@ -30,7 +41,14 @@ export function computeClipVisualStyle(clip: TimelineClip | undefined, timeWithi
   const opacity = interpolateKeyframes(kf?.opacity, timeWithinClip, clip.opacity ?? 1)
   if (clip.opacity !== undefined || isAnimated(kf?.opacity)) style.opacity = opacity
 
+  let picture: { width: number; height: number } | undefined
+  if (frame && mediaSize?.width && mediaSize.height) {
+    const fit = Math.min(frame.width / mediaSize.width, frame.height / mediaSize.height)
+    picture = { width: mediaSize.width * fit * Math.abs(t?.scaleX ?? 1), height: mediaSize.height * fit * Math.abs(t?.scaleY ?? 1) }
+  }
+  const motion = clip.motion && frame ? clipMotionAt(clip.motion, timeWithinClip, frame, picture) : null
   const hasTransform =
+    !!motion ||
     !!t ||
     isAnimated(kf?.x) ||
     isAnimated(kf?.y) ||
@@ -47,7 +65,8 @@ export function computeClipVisualStyle(clip: TimelineClip | undefined, timeWithi
     const scaleX = interpolateKeyframes(kf?.scaleX, timeWithinClip, t?.scaleX ?? 1)
     const scaleY = interpolateKeyframes(kf?.scaleY, timeWithinClip, t?.scaleY ?? 1)
     const rotation = interpolateKeyframes(kf?.rotation, timeWithinClip, t?.rotation ?? 0)
-    style.transform = `translate(${x}px, ${y}px) scale(${scaleX}, ${scaleY}) rotate(${rotation}deg)`
+    const m = motion ?? { dx: 0, dy: 0, scale: 1, rotate: 0 }
+    style.transform = `translate(${x + m.dx}px, ${y + m.dy}px) scale(${scaleX * m.scale}, ${scaleY * m.scale}) rotate(${rotation + m.rotate}deg)`
 
     const top = interpolateKeyframes(kf?.cropTop, timeWithinClip, t?.cropTop ?? 0) * 100
     const right = interpolateKeyframes(kf?.cropRight, timeWithinClip, t?.cropRight ?? 0) * 100

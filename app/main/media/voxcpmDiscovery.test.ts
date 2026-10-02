@@ -4,7 +4,7 @@ import { join } from 'path'
 
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmpdir() } }))
 
-import { looksLikeVoxCpmFolder, candidateInstallPaths, searchRoots } from './voxcpmDiscovery'
+import { looksLikeVoxCpmFolder, candidateInstallPaths, searchRoots, isSystemFolder } from './voxcpmDiscovery'
 
 describe('looksLikeVoxCpmFolder', () => {
   it('matches the names a portable install actually ships under', () => {
@@ -55,5 +55,12 @@ describe('searchRoots', () => {
 
   it('stays a short, bounded list rather than a disk walk', () => {
     expect(roots.length).toBeLessThan(20)
+  })
+})
+
+describe('drive-root search one folder down', () => {
+  it('skips system folders but not ordinary ones like a misspelled Downloads', () => {
+    for (const name of ['Windows', 'Program Files', 'Program Files (x86)', 'ProgramData', '$Recycle.Bin', 'System Volume Information', 'Recovery', 'Users']) expect(isSystemFolder(name), name).toBe(true)
+    for (const name of ['Donwload', 'Downloads', 'AI', 'Tools', 'APP']) expect(isSystemFolder(name), name).toBe(false)
   })
 })

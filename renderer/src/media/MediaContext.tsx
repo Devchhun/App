@@ -15,7 +15,8 @@ interface MediaContextValue {
   clearMediaSelection: () => void
   /** Selects every item, or only `ids` (e.g. the currently filtered ones) when given. */
   selectAllMedia: (ids?: string[]) => void
-  importFromDialog: () => Promise<void>
+  /** Resolves with the files picked (empty when the dialog was closed). */
+  importFromDialog: () => Promise<string[]>
   importPaths: (paths: string[]) => Promise<void>
   cancel: (id: string) => void
   retry: (id: string) => void
@@ -62,7 +63,15 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
     const unsubscribe = window.api.media.onProgress((update) => {
       setItems((prev) => {
         const existing = prev[update.mediaId]
-        const merged = { ...(existing ?? blankMediaItem(update.mediaId)), ...update } as MediaItem
+        const { dropProxy, ...fields } = update
+        const merged = { ...(existing ?? blankMediaItem(update.mediaId)), ...fields } as MediaItem
+        // A damaged proxy (see app/main/media/proxy.ts): everything that
+        // prefers the proxy falls back to the original until a new one is
+        // made.
+        if (dropProxy) {
+          delete merged.proxyUrl
+          delete merged.proxyPath
+        }
         return { ...prev, [update.mediaId]: merged }
       })
       setOrder((prev) => (prev.includes(update.mediaId) ? prev : [...prev, update.mediaId]))
@@ -94,9 +103,10 @@ export function MediaProvider({ children }: { children: ReactNode }): JSX.Elemen
     await window.api.media.importPaths(paths)
   }, [])
 
-  const importFromDialog = useCallback(async () => {
+  const importFromDialog = useCallback(async (): Promise<string[]> => {
     const paths = await window.api.media.pickFiles()
     await importPaths(paths)
+    return paths
   }, [importPaths])
 
   const cancel = useCallback((id: string) => {

@@ -4,6 +4,10 @@ import type { ClickModifiers } from '../sequence/sequenceSelection'
 
 interface Props {
   segments: TranscriptSegment[]
+  /** Only these are drawn (the ones in view); `segments` still drives drag
+   * logic. A whole series is thousands of subtitles -- drawing all of them
+   * on every frame of playback was most of what made it slow. */
+  visibleSegments?: TranscriptSegment[]
   duration: number
   /** Purely visual floor on this row's own DOM width -- see GraphicsTrack.tsx's
    * identical prop for the full reasoning. */
@@ -38,7 +42,7 @@ interface DragState {
   latestStartTime: number
 }
 
-export function CaptionsTrack({ segments, duration, visualMinWidthPx, pixelsPerSecond, activeSegmentId, selectedSegmentIds = [], onSelect, onSeek, onMove, onMoveSet, height, hidden }: Props): JSX.Element {
+export function CaptionsTrack({ segments, visibleSegments, duration, visualMinWidthPx, pixelsPerSecond, activeSegmentId, selectedSegmentIds = [], onSelect, onSeek, onMove, onMoveSet, height, hidden }: Props): JSX.Element {
   const widthPx = Math.max(1, Math.round(duration * pixelsPerSecond), visualMinWidthPx ?? 0)
 
   const dragRef = useRef<DragState | null>(null)
@@ -168,7 +172,7 @@ export function CaptionsTrack({ segments, duration, visualMinWidthPx, pixelsPerS
       style={{ width: widthPx, height }}
       data-track-kind="caption"
     >
-      {segments.map((seg) => {
+      {(visibleSegments ?? segments).map((seg) => {
         const left = seg.startTime * pixelsPerSecond
         const width = Math.max(2, (seg.endTime - seg.startTime) * pixelsPerSecond)
         const text = seg.editedText ?? seg.text

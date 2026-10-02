@@ -1,9 +1,18 @@
 import { ipcMain } from 'electron'
 import { VOCAL_REMOVAL_IPC, type RemoveVocalsResult, type VocalRemovalProgress } from '@shared/vocalRemoval'
 import type { VoxCpmDevice } from '@shared/dubbing'
-import { removeVocals, removeVocalsWithDemucs, hasStereoAudio, hasUsableStereoWidth } from '../media/vocalRemoval'
+import { removeVocals, removeVocalsWithDemucs, hasStereoAudio, hasUsableStereoWidth, VocalRemovalCanceledError } from '../media/vocalRemoval'
+
+/** Running jobs, so Cancel can stop one. */
+const running = new Map<string, AbortController>()
 
 export function registerVocalRemovalIpc(): void {
+  ipcMain.handle(VOCAL_REMOVAL_IPC.cancel, async (_event, jobId: string): Promise<boolean> => {
+    const controller = running.get(jobId)
+    controller?.abort()
+    return !!controller
+  })
+
   // Returns a discriminated result instead of throwing: Electron serializes
   // a thrown error down to a bare Error across IPC, so a caller could never
   // tell "this file is mono" (a normal, explainable outcome the UI should
@@ -22,14 +31,19 @@ export function registerVocalRemovalIpc(): void {
         // then only on a source it can actually work on, since on the
         // dual-mono audio most video carries it "removes" everything.
         if (args.installDir) {
+          const controller = new AbortController()
+          running.set(args.jobId, controller)
           try {
-            const outputPath = await removeVocalsWithDemucs(args.jobId, args.sourcePath, { installDir: args.installDir, device: args.device ?? 'auto', onProgress: send })
+            const outputPath = await removeVocalsWithDemucs(args.jobId, args.sourcePath, { installDir: args.installDir, device: args.device ?? 'auto', onProgress: send, signal: controller.signal })
             return { ok: true, outputPath }
           } catch (err) {
+            if (err instanceof VocalRemovalCanceledError) return { ok: false, error: 'Canceled', canceled: true }
             const message = err instanceof Error ? err.message : String(err)
             // A missing runtime is the one case the fallback is for; any
             // other failure is reported as-is rather than quietly degraded.
             if (!/runtime not found/i.test(message)) return { ok: false, error: message }
+          } finally {
+            running.delete(args.jobId)
           }
         }
         if (!(await hasStereoAudio(args.sourcePath))) {

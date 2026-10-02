@@ -14,6 +14,7 @@ import { ffmpegPath } from '../media/ffmpeg'
 import { runEdgeTtsLine, EdgeTtsCanceledError } from '../media/edgeTts'
 import { CanceledError } from '../media/jobRunner'
 import { RUNTIME_SCRIPTS, buildFilmHtml, buildVoiceJs, captionsFromCues, captionsToSrt, extractCode, failingFile, failingLines, groupChapters, sceneSeconds, scriptCoverage, xianxiaVocabulary, kitVocabulary, loudnessEnvelope, patchRuntime, sceneSlugs, stageMoods, vocabularyText, type VoiceScene } from './kuanimationKit'
+import { runInBackground } from '../media/processPriority'
 
 /** AI Animation: a topic -> a narrated Kuanimation film (MP4).
  *
@@ -557,7 +558,7 @@ async function renderVideo(folder: string, width: number, outPath: string, signa
   let proc: ChildProcessWithoutNullStreams | null = null
   try {
     const meta = await page.run<{ frames: number; cues: Array<{ file: string; t: number }>; duration: number }>('({ frames: DT.frames, cues: DT.cues || [], duration: DT.dur })')
-    const ffmpeg = spawn(ffmpegPath, ['-v', 'error', '-y', '-f', 'image2pipe', '-framerate', String(FPS), '-c:v', 'mjpeg', '-i', '-', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '18', '-movflags', '+faststart', outPath])
+    const ffmpeg = runInBackground(spawn(ffmpegPath, ['-v', 'error', '-y', '-f', 'image2pipe', '-framerate', String(FPS), '-c:v', 'mjpeg', '-i', '-', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '18', '-movflags', '+faststart', outPath]))
     proc = ffmpeg
     let stderr = ''
     ffmpeg.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })

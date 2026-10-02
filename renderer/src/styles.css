@@ -301,6 +301,30 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 260px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: text;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-project:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+  color: var(--text);
+}
+
+.titlebar-project-input {
+  width: 220px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent, #4f8cff);
+  border-radius: 4px;
+  outline: none;
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-history {
@@ -4547,6 +4571,13 @@ body {
 }
 
 .export-settings-scroll .export-field-row label { color: #f0f1f3; }
+
+.export-field-hint {
+  margin: -4px 0 4px 104px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #e8b45a;
+}
 
 .export-settings-scroll .export-field-row input,
 .export-settings-scroll .export-field-row select,
@@ -12115,6 +12146,10 @@ body {
   /* Wraps so the expanded settings block (width: 100%) drops onto its own
      line under the subtitle instead of squeezing the row. */
   flex-wrap: wrap;
+  /* The list is a column flexbox: without this, a row that grows (the
+     expanded settings, the Debug view) is shrunk back to min-height by
+     flexbox instead of the list scrolling -- its content was clipped. */
+  flex-shrink: 0;
   gap: 8px;
   min-height: 38px;
   padding: 6px 8px 6px 12px;
@@ -12274,13 +12309,22 @@ body {
   margin: 0;
 }
 
+/* Shown on hover only, so they float over the right end of the row instead
+   of taking layout space all the time -- in a narrow panel that space is
+   what the Khmer text and the emotion chip need. */
 .ai-dubber-row-actions {
-  position: relative;
-  z-index: 1;
-  flex-shrink: 0;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
   display: flex;
   gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
@@ -12292,6 +12336,7 @@ body {
 .ai-dubber-subtitle-row-active .ai-dubber-row-actions,
 .ai-dubber-subtitle-row:focus-within .ai-dubber-row-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .ai-dubber-subtitle-detail {
@@ -12318,6 +12363,226 @@ body {
 
 .ai-dubber-detail-field .ai-dubber-subtitle-voice {
   width: 96px;
+}
+
+/* ---- AI Dubber: per-line performance (emotion) ---- */
+
+.ai-dubber-emotion-chip {
+  flex-shrink: 0;
+  min-width: 34px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-dubber-emotion-chip:hover {
+  border-color: var(--border-strong);
+}
+
+.ai-dubber-emotion-chip-empty {
+  opacity: 0.45;
+}
+
+.ai-dubber-emotion-chip-manual {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ai-dubber-performance {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.ai-dubber-performance-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.ai-dubber-performance-source {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ai-dubber-performance-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.ai-dubber-performance-actions button {
+  white-space: nowrap;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ai-dubber-performance-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ai-dubber-performance-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-dubber-performance-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.ai-dubber-performance-grid select,
+.ai-dubber-performance-grid input[type='text'] {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.ai-dubber-performance-intensity input[type='range'] {
+  width: 90px;
+  accent-color: var(--accent);
+}
+
+.ai-dubber-performance-intensity span {
+  min-width: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ai-dubber-performance-wide {
+  flex: 1 1 100%;
+}
+
+.ai-dubber-performance-wide input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-dubber-performance-preview {
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  user-select: text;
+}
+
+.ai-dubber-performance-preview em {
+  color: var(--text-dim);
+}
+
+.ai-dubber-performance-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ai-dubber-performance-bar-label {
+  margin-right: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ai-dubber-analysis-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.ai-dubber-analysis-message button {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ai-dubber-debug-toggle-on {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+.ai-dubber-debug {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-muted);
+  user-select: text;
+}
+
+.ai-dubber-debug-empty {
+  font-style: italic;
+}
+
+.ai-dubber-debug-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+}
+
+.ai-dubber-debug-grid b {
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-dubber-debug-control {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 5px;
+}
+
+.ai-dubber-debug-control code {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 10px;
 }
 
 .ai-dubber-row-icon-button-active {
@@ -13200,6 +13465,10 @@ body {
 
 .ai-dubber-auto-button-speed {
   background: #d68a1f;
+}
+
+.ai-dubber-auto-button-video {
+  background: #8e4fb8;
 }
 
 .ai-dubber-auto-status {
@@ -15903,3 +16172,2197 @@ body {
 .ai-animation-script textarea { height: 180px; min-height: 180px !important; line-height: 1.7; }
 .ai-animation-script-meta .story-photo-add { flex: none; white-space: nowrap; }
 .ai-animation-script-meta small { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* AI Dubber series mode: the episode list (Add Video screen, and folded
+   into the subtitle editor's header behind EpisodeBar). */
+.ai-dubber-episodes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px;
+  background: var(--chrome-well);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.ai-dubber-episodes-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ai-dubber-episodes-head .ai-dubber-count-badge {
+  margin-left: 0;
+}
+
+.ai-dubber-episodes-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.ai-dubber-episodes-primary {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.ai-dubber-episodes-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.ai-dubber-episodes-primary:disabled,
+.ai-dubber-episodes .ai-dubber-remove-srt-button:disabled,
+.ai-dubber-episode-bar .ai-dubber-remove-srt-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-dubber-episodes .ai-dubber-remove-srt-button:hover:not(:disabled),
+.ai-dubber-episode-bar .ai-dubber-remove-srt-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ai-dubber-episodes-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-dubber-episodes-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ai-dubber-episode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ai-dubber-episode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-episode:hover {
+  background: var(--surface);
+}
+
+.ai-dubber-episode-open {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ai-dubber-episode-index {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-dubber-episode-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.ai-dubber-episode-status {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: 999px;
+  color: var(--text-dim);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-dubber-episode-status-done {
+  color: var(--success);
+}
+
+.ai-dubber-episode-status-transcribing {
+  color: var(--ai);
+}
+
+.ai-dubber-episode-status-failed {
+  color: var(--danger);
+  cursor: help;
+}
+
+.ai-dubber-episode .ai-dubber-remove-srt-button {
+  height: 22px;
+  padding: 0 8px;
+}
+
+.ai-dubber-episode-remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.ai-dubber-episode-remove:hover {
+  color: var(--danger);
+}
+
+.ai-dubber-episode-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ai-dubber-episode-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-episode-bar-toggle-on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ai-dubber-use-media-episodes {
+  align-self: flex-start;
+  margin-top: 10px;
+}
+
+/* AI Dubber's DUB1 lane: one clip per subtitle line, so an episode puts
+   dozens of them side by side. Drawn as one audio lane -- a faint baseline
+   through the gaps, borderless segments, and no per-clip file-name label
+   ("line_0001.master" says nothing; the name is still the hover title) --
+   instead of a row of separately boxed clips. Selection still outlines. */
+.clip-track-dubbing {
+  background-image: linear-gradient(
+    to bottom,
+    transparent calc(50% - 0.5px),
+    rgba(120, 170, 255, 0.22) calc(50% - 0.5px),
+    rgba(120, 170, 255, 0.22) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
+}
+
+.clip-track-dubbing .clip-track-clip {
+  border-color: transparent;
+  border-radius: 2px;
+}
+
+.clip-track-dubbing .clip-track-clip-label-audio {
+  display: none;
+}
+
+/* AI Dubber: a video opened with no subtitles yet. */
+.ai-dubber-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 10px;
+  padding: 12px;
+  font-size: 12px;
+  background: var(--chrome-well);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.ai-dubber-empty p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.ai-dubber-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* AI Dubber: Voice Model / Clip Properties switch over the right column,
+   shown while a Timeline clip is selected. */
+.ai-dubber-right-switch {
+  flex-shrink: 0;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--chrome-well);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.ai-dubber-right-switch button {
+  flex: 1;
+  height: 26px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ai-dubber-right-switch button:hover {
+  color: var(--text);
+}
+
+.ai-dubber-right-switch .ai-dubber-right-switch-active {
+  color: #fff;
+  background: var(--accent);
+}
+
+/* Voice cards: the name gets the card's whole width. The "All" pill used
+   to sit beside it permanently and cut every name to "Male…" / "Fem…" in
+   the narrow right panel; it now floats over the card's right end only
+   while the card is hovered or focused. */
+.ai-dubber-voice-card {
+  position: relative;
+}
+
+.ai-dubber-voice-card .ai-dubber-voice-card-all {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  margin: 0;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.ai-dubber-voice-card:hover .ai-dubber-voice-card-all,
+.ai-dubber-voice-card:focus-within .ai-dubber-voice-card-all {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ai-dubber-voice-card-main {
+  padding-right: 8px;
+}
+
+/* AI Dubber setup: the one Add Video & SRT button, in the header under
+   the title. */
+.ai-dubber-setup-header-add {
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* Auto SRT panel: over the app, dimmed backdrop behind. */
+.auto-srt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.auto-srt-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(560px, 100%);
+  max-height: min(640px, calc(100vh - 32px));
+  padding: 14px;
+  color: var(--text);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+
+.auto-srt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auto-srt-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.auto-srt-title strong {
+  font-size: 14px;
+}
+
+.auto-srt-title small {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.auto-srt-close {
+  width: 28px;
+  height: 28px;
+  font-size: 18px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.auto-srt-close:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.auto-srt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.auto-srt-batch-load {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: #9b59b6;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.auto-srt-batch-load:hover:not(:disabled) {
+  background: #a96bc4;
+}
+
+.auto-srt-batch-load:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.auto-srt-actions .ai-dubber-episodes-primary,
+.auto-srt-actions .ai-dubber-remove-srt-button {
+  height: 32px;
+}
+
+.auto-srt-actions .ai-dubber-remove-srt-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.auto-srt-actions .ai-dubber-remove-srt-button:disabled,
+.auto-srt-list .ai-dubber-remove-srt-button:disabled,
+.auto-srt-actions .ai-dubber-episodes-primary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.auto-srt-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.auto-srt-list {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+
+.auto-srt-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.auto-srt-empty,
+.auto-srt-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.auto-srt-empty {
+  padding: 18px 8px;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+/* AI Dubber right column: the Voice Model panel's wrapper fills the column
+   like the panel itself did; [hidden] while Clip Properties shows. */
+.ai-dubber-right-voices {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ai-dubber-right-voices[hidden] {
+  display: none;
+}
+
+.ai-dubber-right-voices > .panel {
+  flex: 1;
+  min-height: 0;
+}
+
+/* AI Dubber subtitle list: a whole series is thousands of rows. Rows out of
+   view skip layout and paint entirely (the browser keeps their last size),
+   so a change anywhere no longer re-lays-out 30 000 elements. */
+.ai-dubber-subtitle-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 46px;
+}
+
+/* AI Dubber: a line marked as inner voice (a thought, dubbed with an echo).
+   Off: faint, so the column stays quiet; on: lit. */
+.ai-dubber-inner-voice-button {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+
+.ai-dubber-inner-voice-button:hover {
+  opacity: 0.75;
+}
+
+.ai-dubber-inner-voice-button.ai-dubber-inner-voice-on {
+  opacity: 1;
+  filter: none;
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-inner-voice-badge {
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 1;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* AI Dubber voice test: a line to hear each voice with, and each card's
+   round icon as its play button (▶ on hover, … while it is made, ■ while it
+   plays -- click again to stop). */
+.ai-dubber-voice-test {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0 8px;
+  height: 30px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-voice-test:focus-within {
+  border-color: var(--accent);
+}
+
+.ai-dubber-voice-test-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.ai-dubber-voice-test input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.ai-dubber-voice-test-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: -2px 0 8px;
+  padding: 5px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-voice-test-status button {
+  margin-left: auto;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.ai-dubber-voice-test-error {
+  color: var(--danger);
+}
+
+.ai-dubber-voice-card .ai-dubber-voice-play {
+  position: relative;
+  align-self: center;
+  margin-left: 10px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+.ai-dubber-voice-play-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  opacity: 0;
+  border-radius: 50%;
+  background: inherit;
+}
+
+.ai-dubber-voice-play:hover .ai-dubber-voice-play-letter,
+.ai-dubber-voice-play-generating .ai-dubber-voice-play-letter,
+.ai-dubber-voice-play-playing .ai-dubber-voice-play-letter {
+  visibility: hidden;
+}
+
+.ai-dubber-voice-play:hover .ai-dubber-voice-play-icon,
+.ai-dubber-voice-play-generating .ai-dubber-voice-play-icon,
+.ai-dubber-voice-play-playing .ai-dubber-voice-play-icon {
+  opacity: 1;
+}
+
+.ai-dubber-voice-play-playing,
+.ai-dubber-voice-play-generating {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.ai-dubber-voice-card .ai-dubber-voice-card-main {
+  padding-left: 8px;
+}
+
+/* Auto SRT: a video with stretches of no lines -- the warning is also the
+   button that sends just those stretches back to Gemini. */
+.auto-srt-gaps {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warning);
+  background: rgba(242, 173, 24, 0.12);
+  border: 1px solid rgba(242, 173, 24, 0.45);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.auto-srt-gaps:hover:not(:disabled) {
+  background: rgba(242, 173, 24, 0.22);
+}
+
+.auto-srt-gaps:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- AI Dubber: subtitles on the video + blur over the original ones
+   (media/VideoOverlayLayer.tsx). The font is the one Export burns in
+   (resources/fonts), so the Player shows what the file will look like. */
+@font-face {
+  font-family: 'Battambang';
+  src: url('./assets/fonts/Battambang-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+.video-overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.video-overlay-blur {
+  position: absolute;
+  pointer-events: none;
+}
+
+.video-overlay-blur-editing {
+  pointer-events: auto;
+  cursor: move;
+  outline: 2px dashed rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  touch-action: none;
+}
+
+.video-overlay-blur-handle {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  border-radius: 2px;
+}
+
+.video-overlay-blur-handle-nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.video-overlay-blur-handle-ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.video-overlay-blur-handle-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.video-overlay-blur-handle-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+
+.video-overlay-blur-remove {
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #e5484d;
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.video-overlay-subtitle {
+  position: absolute;
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.video-overlay-subtitle-editing {
+  pointer-events: auto;
+  cursor: move;
+  outline: 1px dashed rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+  touch-action: none;
+}
+
+.video-overlay-subtitle-text {
+  font-weight: 700;
+  white-space: pre-line;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.subtitle-overlay-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.subtitle-overlay-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.subtitle-overlay-panel-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.subtitle-overlay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.subtitle-overlay-toggle-small {
+  font-weight: 400;
+  margin-top: 0;
+}
+
+.subtitle-overlay-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 20px;
+}
+
+.subtitle-overlay-group-off {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.subtitle-overlay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subtitle-overlay-label {
+  width: 72px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.subtitle-overlay-label-inline {
+  width: auto;
+  margin-left: 8px;
+}
+
+.subtitle-overlay-range {
+  flex: 1;
+  min-width: 0;
+}
+
+.subtitle-overlay-value {
+  width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.subtitle-overlay-panel input[type='color'] {
+  width: 28px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.subtitle-overlay-button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.subtitle-overlay-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.preview-overlay-toggles {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.preview-overlay-toggle {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preview-overlay-toggle-on {
+  background: var(--accent, #4f8cff);
+  border-color: var(--accent, #4f8cff);
+  color: #fff;
+}
+
+.subtitle-overlay-button-primary {
+  background: var(--accent, #4f8cff);
+  border-color: var(--accent, #4f8cff);
+  color: #fff;
+  font-weight: 600;
+}
+
+.subtitle-overlay-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Clip Properties > Audio Effects */
+.cp-fx-presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cp-fx-preset {
+  padding: 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp-fx-preset-active {
+  border-color: var(--accent, #4f8cff);
+  background: var(--accent, #4f8cff);
+  color: #fff;
+}
+
+.cp-fx-range {
+  flex: 1;
+  min-width: 0;
+}
+
+.cp-fx-value {
+  width: 48px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cp-fx-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.cp-fx-apply {
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent, #4f8cff);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cp-fx-apply-all {
+  background: #8e4fb8;
+}
+
+.cp-fx-apply:disabled,
+.cp-fx-preset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* AI Dubber > Voice Model, KiriTTS engine */
+.ai-dubber-kiri-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ai-dubber-kiri-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ai-dubber-kiri-error {
+  color: #e5484d;
+}
+
+.ai-dubber-kiri-clone {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-dubber-kiri-clone input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ai-dubber-kiri-clone-button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: #8e4fb8;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-dubber-kiri-clone-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-dubber-kiri-link {
+  border: none;
+  background: transparent;
+  color: var(--accent, #4f8cff);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-dubber-voice-card-narrator {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.ai-dubber-voice-card-narrator-on {
+  color: #f5b700;
+}
+
+.ai-dubber-kiri-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-dubber-kiri-copy select {
+  flex: 1;
+  min-width: 120px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* Detect Gender: Cloned / All voice lists */
+.detect-gender-voice-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Fixed: the "Now: …" note comes and goes between lines and must not
+     move the dialog. */
+  height: 26px;
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+
+.detect-gender-voice-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.detect-gender-voice-tab:hover {
+  color: var(--text);
+}
+
+.detect-gender-voice-tab-active {
+  border-color: #8e4fb8;
+  background: #8e4fb8;
+  color: #fff;
+}
+
+.detect-gender-voice-tab-active:hover {
+  color: #fff;
+}
+
+.detect-gender-voice-current {
+  margin-left: auto;
+  line-height: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Detect Gender: a voice detection suggested (not chosen by the user) --
+   never drawn like a pick, so the next line's suggestion is not mistaken
+   for the click that was just made. */
+.detect-gender-voice-button-suggested {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ai) 55%, var(--border));
+}
+
+.detect-gender-suggestion-tag {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px dashed color-mix(in srgb, var(--ai) 60%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.detect-gender-last-pick {
+  color: var(--ai) !important;
+  font-weight: 600;
+}
+
+.ai-dubber-steady-pace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -1px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ai-dubber-steady-pace input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.ai-dubber-steady-pace span {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.timeline-job-pill-cancel {
+  margin-left: 2px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timeline-job-pill-cancel:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+/* AI Dubber > Voice Model, KiriTTS: one row -- the clone dialog holds the rest */
+.ai-dubber-kiri-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-dubber-kiri-clone-open {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #8e4fb8, #6d3fd6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ai-dubber-kiri-clone-open:hover {
+  filter: brightness(1.08);
+}
+
+.ai-dubber-kiri-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* KiriTTS clone dialog */
+.kiri-clone-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.kiri-clone-panel {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.kiri-clone-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px 12px;
+}
+
+.kiri-clone-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #8e4fb8, #6d3fd6);
+  font-size: 16px;
+}
+
+.kiri-clone-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kiri-clone-title strong {
+  font-size: 15px;
+}
+
+.kiri-clone-title small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kiri-clone-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.kiri-clone-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 18px 18px;
+  overflow-y: auto;
+}
+
+.kiri-clone-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.kiri-clone-section-muted {
+  background: transparent;
+}
+
+.kiri-clone-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.kiri-clone-step small {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.kiri-clone-step-no {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #8e4fb8 30%, transparent);
+  color: #d7b8ff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.kiri-clone-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, #8e4fb8 60%, var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.kiri-clone-file:hover:not(:disabled) {
+  background: color-mix(in srgb, #8e4fb8 10%, transparent);
+}
+
+.kiri-clone-file-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kiri-clone-file-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kiri-clone-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kiri-clone-range label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 128px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kiri-clone-range strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.kiri-clone-start {
+  width: 64px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kiri-clone-slider {
+  flex: 1;
+  accent-color: #8e4fb8;
+}
+
+.kiri-clone-preview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kiri-clone-preview {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.kiri-clone-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.kiri-clone-check input {
+  margin: 0;
+  accent-color: #8e4fb8;
+}
+
+.kiri-clone-tip {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.kiri-clone-name-row,
+.kiri-clone-copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kiri-clone-name,
+.kiri-clone-copy-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.kiri-clone-go {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #8e4fb8, #6d3fd6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.kiri-clone-go:disabled,
+.kiri-clone-secondary:disabled,
+.kiri-clone-file:disabled,
+.kiri-clone-preview:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.kiri-clone-secondary {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.kiri-clone-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.kiri-clone-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kiri-clone-status-error {
+  color: #e5484d;
+}
+
+.kiri-clone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kiri-clone-chip {
+  max-width: 160px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #8e4fb8 18%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auto-srt-clear {
+  margin-left: auto;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, #e5484d 45%, var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: #ff8a8d;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auto-srt-clear:hover:not(:disabled) {
+  background: color-mix(in srgb, #e5484d 14%, transparent);
+}
+
+.auto-srt-clear:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.auto-srt-parts {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Voice Model: search as an icon at the end of the Test row */
+.ai-dubber-voice-search-toggle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 22px;
+  margin-right: -4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-dubber-voice-search-toggle:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.ai-dubber-voice-search-label {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.ai-dubber-voice-test-searching {
+  border-color: var(--accent);
+}
+
+/* AI Dubber: the subtitle list's blocks (AiDubberScriptPanel's LazyRowBlock)
+   lay their rows out exactly as the list itself does. */
+.ai-dubber-subtitle-block {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+/* Export dialog, compact: the same layout at about two-thirds the size --
+   it used to fill most of the window (920 x 680) for a handful of fields. */
+.export-modal {
+  width: min(760px, calc(100vw - 36px));
+  height: min(540px, calc(100vh - 36px));
+}
+
+.export-modal-head {
+  flex-basis: 38px;
+  font-size: 12px;
+}
+
+.export-form-layout,
+.export-success-layout,
+.export-progress-main {
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.export-form-layout {
+  padding: 14px 16px 10px;
+}
+
+.export-preview-frame-portrait {
+  max-height: 200px;
+}
+
+.export-preview-meta {
+  padding: 7px 2px;
+  font-size: 10px;
+}
+
+.export-settings-scroll {
+  padding: 0 8px 12px 0;
+}
+
+.export-settings-scroll .export-field-row {
+  grid-template-columns: 80px minmax(0, 1fr);
+  min-height: 31px;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.export-settings-scroll .export-field-row input,
+.export-settings-scroll .export-field-row select {
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.export-settings-scroll .export-section-title {
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 9px 0 5px;
+  font-size: 12px;
+}
+
+.export-settings-scroll .export-color-space {
+  padding: 8px 0 6px 90px;
+  font-size: 10px;
+}
+
+.export-path-row button {
+  width: 28px;
+}
+
+.export-modal > .export-modal-footer,
+.export-success-view > .export-modal-footer {
+  flex-basis: 46px;
+  padding: 8px 14px;
+  font-size: 11px;
+}
+
+.export-cancel-button,
+.export-open-folder,
+.export-primary-button {
+  min-height: 28px;
+  font-size: 12px;
+}
+
+/* Subtitle & Blur panel: two cards, each with a switch; a card's settings
+   show only while it is on. */
+.subtitle-overlay-panel {
+  gap: 8px;
+  padding: 10px;
+}
+
+.subtitle-overlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+
+.subtitle-overlay-card-on {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.subtitle-overlay-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subtitle-overlay-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.subtitle-overlay-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.subtitle-overlay-switch-text strong {
+  font-size: 12px;
+}
+
+.subtitle-overlay-switch-text small {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.subtitle-overlay-switch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 17px;
+  margin: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.subtitle-overlay-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.subtitle-overlay-switch:checked {
+  background: var(--accent);
+}
+
+.subtitle-overlay-switch:checked::after {
+  transform: translateX(13px);
+}
+
+.subtitle-overlay-colors {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.subtitle-overlay-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.subtitle-overlay-panel .subtitle-overlay-swatch input[type='color'] {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.subtitle-overlay-chip {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.subtitle-overlay-chip-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+
+.subtitle-overlay-detect {
+  width: 100%;
+  padding: 5px 8px;
+}
+
+.subtitle-overlay-footnote {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Subtitle quick editor -- type a subtitle and make its voice right on
+   the Timeline (SubtitleQuickEditor.tsx). */
+.subtitle-quick-editor {
+  position: fixed;
+  z-index: 60;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-size: 12px;
+  animation: subtitle-quick-editor-in 0.12s ease-out;
+}
+
+@keyframes subtitle-quick-editor-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.subtitle-quick-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -10px -12px 0;
+  padding: 8px 10px 4px 8px;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.subtitle-quick-editor-grip {
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: -2px;
+}
+
+.subtitle-quick-editor-title { font-weight: 600; }
+
+.subtitle-quick-editor-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.subtitle-quick-editor-close {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.subtitle-quick-editor-close:hover { background: var(--surface-hover); color: var(--text); }
+
+.subtitle-quick-editor-text {
+  resize: vertical;
+  min-height: 52px;
+  max-height: 160px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--chrome-well);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.subtitle-quick-editor-text:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+.subtitle-quick-editor-engines {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--chrome-well);
+}
+
+.subtitle-quick-editor-engine {
+  padding: 5px 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.subtitle-quick-editor-engine:hover { color: var(--text); }
+.subtitle-quick-editor-engine-active { background: var(--accent); color: #fff; }
+.subtitle-quick-editor-engine-active:hover { color: #fff; }
+
+.subtitle-quick-editor-voice {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+
+.subtitle-quick-editor-voice select {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--chrome-well);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.subtitle-quick-editor-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.subtitle-quick-editor-status-busy,
+.subtitle-quick-editor-status-info { background: var(--accent-soft); color: #bcdcff; }
+.subtitle-quick-editor-status-done { background: rgba(46, 204, 113, 0.14); color: #8ee6b0; }
+.subtitle-quick-editor-status-error { background: rgba(255, 82, 82, 0.13); color: #ff9a9a; }
+
+.subtitle-quick-editor-spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: subtitle-quick-editor-spin 0.7s linear infinite;
+}
+
+@keyframes subtitle-quick-editor-spin { to { transform: rotate(360deg); } }
+
+.subtitle-quick-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.subtitle-quick-editor-hint {
+  margin-right: auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.subtitle-quick-editor-save,
+.subtitle-quick-editor-generate {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.subtitle-quick-editor-save {
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--text);
+}
+
+.subtitle-quick-editor-save:hover:not(:disabled) { background: var(--surface-hover); }
+
+.subtitle-quick-editor-generate {
+  border: none;
+  background: var(--ai);
+  color: #fff;
+  font-weight: 600;
+}
+
+.subtitle-quick-editor-generate:hover:not(:disabled) { background: var(--ai-hover); }
+
+.subtitle-quick-editor-save:disabled,
+.subtitle-quick-editor-generate:disabled { opacity: 0.45; cursor: default; }
+
+/* Add Text's plain text: Properties > Design (PlainTextDesign.tsx). */
+.plain-text-design {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.plain-text-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-dim);
+}
+
+.plain-text-field textarea {
+  resize: vertical;
+  min-height: 48px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--chrome-well);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.plain-text-field textarea:focus { outline: none; border-color: var(--accent); }
+
+.plain-text-looks {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.plain-text-look {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #3a3d44;
+  cursor: pointer;
+}
+
+.plain-text-look:hover:not(:disabled) { border-color: var(--accent); }
+
+.plain-text-look-sample {
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: 'Battambang', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.plain-text-look small { color: #d7dbe0; font-size: 10px; }
+
+.plain-text-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plain-text-row input[type='range'] { flex: 1; min-width: 0; accent-color: var(--accent); }
+
+.plain-text-label { width: 42px; flex: none; color: var(--text-dim); }
+
+.plain-text-value {
+  width: 34px;
+  flex: none;
+  text-align: right;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.plain-text-color {
+  width: 30px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+}
+
+.plain-text-align {
+  display: flex;
+  margin-left: auto;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--chrome-well);
+}
+
+.plain-text-align-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.plain-text-align-button-active { background: var(--accent); color: #fff; }
+
+.plain-text-toggle-block {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.plain-text-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plain-text-sub { padding-left: 2px; }
+
+.plain-text-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Clip Properties > Animation: motion presets (MotionPicker.tsx). Each card
+   plays a tiny version of its motion. */
+.motion-picker { display: flex; flex-direction: column; gap: 12px; }
+
+.motion-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.motion-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.motion-card:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.motion-card-active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.motion-card small { font-size: 10px; }
+
+.motion-card-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 30px;
+  border-radius: 5px;
+  background: var(--chrome-well);
+  overflow: hidden;
+}
+
+.motion-card-dot {
+  width: 12px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.motion-card-active .motion-card-dot { background: #fff; }
+
+.motion-demo-float { animation: md-float 2s ease-in-out infinite; }
+.motion-demo-bounce { animation: md-bounce 0.9s infinite; }
+.motion-demo-sway { animation: md-sway 2s ease-in-out infinite; }
+.motion-demo-circle { animation: md-circle 2.4s linear infinite; }
+.motion-demo-figure8 { animation: md-figure8 3s linear infinite; }
+.motion-demo-zigzag { animation: md-zigzag 2.4s linear infinite; }
+.motion-demo-wander { animation: md-wander 3.2s linear infinite; }
+.motion-demo-pulse { animation: md-pulse 1.2s ease-in-out infinite; }
+.motion-demo-spin { animation: md-spin 2s linear infinite; }
+.motion-demo-swing { animation: md-swing 1.6s ease-in-out infinite; transform-origin: 50% -6px; }
+.motion-demo-shake { animation: md-shake 0.35s linear infinite; }
+
+@keyframes md-float { 0%, 100% { transform: translateY(4px); } 50% { transform: translateY(-4px); } }
+@keyframes md-bounce { 0%, 100% { transform: translateY(5px); animation-timing-function: ease-out; } 50% { transform: translateY(-6px); animation-timing-function: ease-in; } }
+@keyframes md-sway { 0%, 100% { transform: translateX(-9px); } 50% { transform: translateX(9px); } }
+@keyframes md-circle { 0% { transform: rotate(0deg) translateX(8px) rotate(0deg); } 100% { transform: rotate(360deg) translateX(8px) rotate(-360deg); } }
+@keyframes md-figure8 { 0% { transform: translate(0, 0); } 25% { transform: translate(10px, 4px); } 50% { transform: translate(0, 0); } 75% { transform: translate(-10px, -4px); } 100% { transform: translate(0, 0); } }
+@keyframes md-zigzag { 0% { transform: translate(-12px, 3px); } 25% { transform: translate(-6px, -3px); } 50% { transform: translate(0, 3px); } 75% { transform: translate(6px, -3px); } 100% { transform: translate(12px, 3px); } }
+@keyframes md-wander { 0% { transform: translate(-14px, -8px); } 25% { transform: translate(14px, 0); } 50% { transform: translate(0, 8px); } 75% { transform: translate(-14px, 2px); } 100% { transform: translate(-14px, -8px); } }
+@keyframes md-pulse { 0%, 100% { transform: scale(0.75); } 50% { transform: scale(1.3); } }
+@keyframes md-spin { to { transform: rotate(360deg); } }
+@keyframes md-swing { 0%, 100% { transform: rotate(-25deg); } 50% { transform: rotate(25deg); } }
+@keyframes md-shake { 0% { transform: translate(0, 0); } 25% { transform: translate(2px, -1px); } 50% { transform: translate(-2px, 1px); } 75% { transform: translate(1px, 1px); } 100% { transform: translate(0, 0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-card-dot { animation: none !important; }
+}
+
+.motion-picker-controls { display: flex; flex-direction: column; gap: 8px; }
+
+.motion-picker-hint { margin: 0; color: var(--text); font-size: 12px; }
+
+.motion-picker-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.motion-picker-row input[type='range'] { accent-color: var(--accent); }
+
+.motion-picker-value { text-align: right; font-variant-numeric: tabular-nums; }
+
+.motion-picker-note { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+
+/* Clip Properties > Background: Remove Background for a picture. */
+.cp-bg-remove { display: flex; flex-direction: column; gap: 6px; }
+
+.cp-bg-remove-button {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--ai);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cp-bg-remove-button:hover:not(:disabled) { background: var(--ai-hover); }
+.cp-bg-remove-button:disabled { opacity: 0.5; cursor: default; }
+
+.cp-bg-remove-note { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+
+.timeline-job-pill-error { border-color: rgba(255, 82, 82, 0.5); color: #ffb0b0; }

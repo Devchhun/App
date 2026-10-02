@@ -19,6 +19,9 @@ extraResources:
     to: python-worker
     filter:
       - '**/*'
+      # Tests and bytecode caches are not part of the runtime.
+      - '!test_*.py'
+      - '!**/__pycache__/**'
   - from: resources/python-runtime
     to: python-runtime
     filter:
@@ -36,6 +39,19 @@ extraResources:
     to: kuanimation
     filter:
       - '**/*'
+  # Reference clips of the Khmer drama voices, picked by ear (see
+  # app/main/media/voxcpmTts.ts's bundledVoiceReferencePath).
+  - from: resources/voice-refs
+    to: voice-refs
+    filter:
+      - '*.wav'
+  # The Khmer subtitle font Export burns in (Battambang, SIL OFL -- the
+  # licence travels with it); see app/main/media/export.ts subtitleFontsDir.
+  - from: resources/fonts
+    to: fonts
+    filter:
+      - '*.ttf'
+      - 'OFL.txt'
   - from: build/icon.ico
     to: icon.ico
 win:

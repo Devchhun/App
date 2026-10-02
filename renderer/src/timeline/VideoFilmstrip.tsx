@@ -17,6 +17,31 @@ const REGEN_DEBOUNCE_MS = 250
 const MEDIA_READY_TIMEOUT_MS = 8000
 const FRAME_SEEK_TIMEOUT_MS = 4000
 
+/** Filmstrips extracting at once. Video Sync can cut one long video into
+ * hundreds of clips; twenty of them on screen used to open twenty decoders
+ * on the same file together, and the slowest ran out of their timeouts. The
+ * rest wait their turn -- waiting does not count against any timeout. */
+const MAX_CONCURRENT_EXTRACTIONS = 4
+let runningExtractions = 0
+const waitingExtractions: (() => void)[] = []
+
+function acquireExtractionSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = (): void => {
+      runningExtractions++
+      let released = false
+      resolve(() => {
+        if (released) return
+        released = true
+        runningExtractions--
+        waitingExtractions.shift()?.()
+      })
+    }
+    if (runningExtractions < MAX_CONCURRENT_EXTRACTIONS) grant()
+    else waitingExtractions.push(grant)
+  })
+}
+
 function waitForMedia(video: HTMLVideoElement, successEvent: string, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const finish = (ok: boolean): void => {
@@ -103,8 +128,13 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
     // valid until better ones replace them.
     if (!isVisible) return
 
-    const timer = setTimeout(() => {
-      const requestId = ++requestIdRef.current
+    const extract = async (requestId: number): Promise<void> => {
+      const release = await acquireExtractionSlot()
+      // Scrolled away (or replaced) while waiting for a slot.
+      if (requestIdRef.current !== requestId) {
+        release()
+        return
+      }
       const video = document.createElement('video')
       videoRef.current = video
       video.src = src
@@ -118,7 +148,7 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
       const captureAt = async (time: number): Promise<string | null> => {
         const seeked = waitForMedia(video, 'seeked', FRAME_SEEK_TIMEOUT_MS)
         try { video.currentTime = time } catch { return null }
-        if (!await seeked || !ctx) return null
+        if (!await seeked || !ctx || video.error) return null
         try {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
           return canvas.toDataURL('image/jpeg', 0.6)
@@ -137,6 +167,9 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
         const results: string[] = [...(readFilmstripCache(key)?.frames ?? [])]
         for (let i = results.length; i < frameCount; i++) {
           if (requestIdRef.current !== requestId) return
+          // The file stopped decoding (a damaged file): every further seek
+          // would only wait out its timeout.
+          if (video.error) break
           const t = startOffset + Math.min(Math.max(0, duration - 0.05), (duration * (i + 0.5)) / frameCount)
           const frame = await captureAt(t)
           if (requestIdRef.current !== requestId) return
@@ -154,12 +187,15 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
         }
       }
 
-      void run().finally(() => {
+      await run().finally(() => {
+        release()
         // Only the run that's still current owns the element -- a superseded
         // one already had its own released by the cleanup that superseded it.
         if (requestIdRef.current === requestId) releaseVideo(videoRef)
       })
-    }, REGEN_DEBOUNCE_MS)
+    }
+
+    const timer = setTimeout(() => void extract(++requestIdRef.current), REGEN_DEBOUNCE_MS)
 
     return () => {
       clearTimeout(timer)

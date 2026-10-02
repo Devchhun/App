@@ -12,8 +12,13 @@ const ROWS = 72
 const LEVELS = 64
 const INTERVAL_MS = 100
 
-export function ColorScope({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null> }): JSX.Element {
+/** `active` is false while the playhead sits in a gap: the player shows
+ * black there, but the <video> element still holds the last clip's frame,
+ * and the scope must describe what is on screen, not that stale frame. */
+export function ColorScope({ videoRef, active }: { videoRef: RefObject<HTMLVideoElement | null>; active: boolean }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -34,7 +39,7 @@ export function ColorScope({ videoRef }: { videoRef: RefObject<HTMLVideoElement 
     const draw = (): void => {
       if (disposed) return
       const video = videoRef.current
-      if (video && video.videoWidth > 0 && video.readyState >= 2) {
+      if (activeRef.current && video && video.videoWidth > 0 && video.readyState >= 2) {
         sctx.drawImage(video, 0, 0, COLS, ROWS)
         const px = sctx.getImageData(0, 0, COLS, ROWS).data
         counts.fill(0)

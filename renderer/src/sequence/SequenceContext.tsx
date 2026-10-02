@@ -23,6 +23,7 @@ import {
   applyClipProperties as applyClipPropertiesOp,
   resetClipProperties as resetClipPropertiesOp,
   replaceClipMedia as replaceClipMediaOp,
+  setClipAudioSource as setClipAudioSourceOp,
   setClipStartTimes as setClipStartTimesOp,
   type ClipPropertyPatch,
   linkClips as linkClipsOp,
@@ -41,6 +42,7 @@ import {
   addOrUpdateKeyframe as addOrUpdateKeyframeOp,
   moveKeyframe as moveKeyframeOp,
   removeKeyframe as removeKeyframeOp,
+  addMirroredAudioClips,
   type InsertableAsset,
   type TrimEdge
 } from './sequenceOps'
@@ -184,6 +186,11 @@ interface SequenceContextValue {
    * points at (already-imported `newMediaId`), resetting sourceIn/duration to
    * fit the replacement's own length. */
   replaceClipMedia: (clipId: string, newMediaId: string, newSourceDurationSeconds: number) => void
+  /** Remove Vocal: the instrumental under each video clip, timed like it,
+   * and the clip muted -- see sequenceOps.addMirroredAudioClips. */
+  mirrorAudioUnderClips: (videoClipIds: string[], audioMediaId: string) => void
+  /** Audio Effects: the clip plays another file of the same sound. */
+  setClipAudioSource: (clipId: string, patch: { mediaId: string; sourceIn: number; sourceOut: number; audioEffect: TimelineClip['audioEffect'] }) => void
 
   /** Blade tool -- splits exactly `clipId` at `atTime`, independent of the
    * current selection (unlike splitSelected). A no-op for a locked clip. */
@@ -570,6 +577,10 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSequence((prev) => replaceClipMediaOp(prev, clipId, newMediaId, newSourceDurationSeconds))
   }, [])
 
+  const setClipAudioSource = useCallback((clipId: string, patch: { mediaId: string; sourceIn: number; sourceOut: number; audioEffect: TimelineClip['audioEffect'] }) => {
+    setSequence((prev) => setClipAudioSourceOp(prev, clipId, patch))
+  }, [])
+
   const splitClipAt = useCallback((clipId: string, atTime: number, options?: { linked?: boolean }) => {
     setSequence((prev) => splitClipOp(prev, clipId, atTime, { linked: options?.linked ?? true }))
   }, [])
@@ -592,6 +603,10 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
 
   const setClipStartTimes = useCallback((updates: { clipId: string; startTime: number }[]) => {
     setSequence((prev) => setClipStartTimesOp(prev, updates))
+  }, [])
+
+  const mirrorAudioUnderClips = useCallback((videoClipIds: string[], audioMediaId: string) => {
+    setSequence((prev) => addMirroredAudioClips(prev, videoClipIds, audioMediaId))
   }, [])
 
   const toggleClipMute = useCallback((clipId: string) => {
@@ -709,6 +724,8 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       moveKeyframe,
       removeKeyframe,
       replaceClipMedia,
+      mirrorAudioUnderClips,
+      setClipAudioSource,
       splitClipAt,
       rollEditClips,
       deleteRange,
@@ -774,6 +791,8 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       moveKeyframe,
       removeKeyframe,
       replaceClipMedia,
+      mirrorAudioUnderClips,
+      setClipAudioSource,
       splitClipAt,
       rollEditClips,
       deleteRange,

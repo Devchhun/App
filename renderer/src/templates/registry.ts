@@ -14,6 +14,7 @@ import type { TemplateId, TemplateCategory } from '@shared/templates'
 import type { CommunicationPurpose } from '@shared/suggestions'
 import type { TemplateProps } from './templateShared'
 import { LowerThird } from './LowerThird'
+import { PlainText } from './PlainText'
 import { StatisticCallout } from './StatisticCallout'
 import { NumberedSteps } from './NumberedSteps'
 import { Comparison } from './Comparison'
@@ -57,6 +58,7 @@ function purposesFor(id: TemplateId): CommunicationPurpose[] {
 }
 
 const COMPONENTS: Record<TemplateId, (props: TemplateProps) => JSX.Element> = {
+  'plain-text': PlainText,
   'lower-third': LowerThird,
   'statistic-callout': StatisticCallout,
   'numbered-steps': NumberedSteps,
@@ -88,6 +90,7 @@ const COMPONENTS: Record<TemplateId, (props: TemplateProps) => JSX.Element> = {
 }
 
 const TAGS: Record<TemplateId, string[]> = {
+  'plain-text': ['text', 'title', 'caption', 'plain', 'words'],
   'lower-third': ['name', 'title', 'caption', 'intro'],
   'statistic-callout': ['number', 'stat', 'claim', 'callout'],
   'numbered-steps': ['steps', 'sequence', 'process', 'numbered'],

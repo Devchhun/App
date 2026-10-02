@@ -146,17 +146,19 @@ export function registerTranscriptionIpc(): void {
   // Parsing itself stays in shared/srt.ts (pure, Electron-free, unit
   // tested) rather than here; this handler only gets the raw file onto the
   // renderer's side of the bridge.
-  ipcMain.handle(TRANSCRIPTION_IPC.importSrtFile, async (event) => {
+  // `multiple`: any number of SRTs at once (AI Dubber, one per video on
+  // the Timeline) -- all of them in `files`, the first also as before.
+  ipcMain.handle(TRANSCRIPTION_IPC.importSrtFile, async (event, options?: { multiple?: boolean }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return { canceled: true }
     const result = await dialog.showOpenDialog(win, {
-      title: 'Import Subtitle File',
-      properties: ['openFile'],
+      title: options?.multiple ? 'Import Subtitle Files (one per video)' : 'Import Subtitle File',
+      properties: options?.multiple ? ['openFile', 'multiSelections'] : ['openFile'],
       filters: [{ name: 'SubRip Subtitle', extensions: ['srt'] }]
     })
     if (result.canceled || result.filePaths.length === 0) return { canceled: true }
-    const srtText = await readFile(result.filePaths[0], 'utf-8')
-    return { canceled: false, fileName: basename(result.filePaths[0]), srtText }
+    const files = await Promise.all(result.filePaths.map(async (path) => ({ fileName: basename(path), srtText: await readFile(path, 'utf-8') })))
+    return { canceled: false, fileName: files[0].fileName, srtText: files[0].srtText, files }
   })
 }
 

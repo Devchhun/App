@@ -41,6 +41,41 @@ export function predictGender(f0Hz: number | undefined, voicedRatio: number): { 
   return { gender: f0Hz < 165 ? 'male' : 'female', confidence }
 }
 
+/** How many of a speaker's lines Gemini heard as a male or a female voice
+ * (lines it was unsure about are not counted). */
+export interface GeminiGenderVotes {
+  male: number
+  female: number
+}
+
+/** A speaker's gender from BOTH sources: the pitch rule above (median F0
+ * against 165 Hz) and Gemini listening to each line. Pitch alone is wrong
+ * in known, common cases -- a man shouting, crying or angry goes above
+ * 165 Hz, a boy's voice is high, some women speak low -- while Gemini judges
+ * the whole voice. So:
+ * - they agree: that gender, more confident than either alone;
+ * - only one has an answer: that one (Gemini's a little discounted);
+ * - they disagree: Gemini, when it heard the same gender on at least 3 of
+ *   this speaker's lines and 80% of them; otherwise unknown, to be checked
+ *   by hand rather than guessed. */
+export function combineSpeakerGender(
+  pitch: { gender: SpeakerGender; confidence: number },
+  votes: GeminiGenderVotes
+): { gender: SpeakerGender; confidence: number; source: 'agree' | 'pitch' | 'gemini' | 'conflict' } {
+  const decisive = votes.male + votes.female
+  const geminiGender: SpeakerGender = decisive === 0 || votes.male === votes.female ? 'unknown' : votes.male > votes.female ? 'male' : 'female'
+  const share = decisive > 0 ? Math.max(votes.male, votes.female) / decisive : 0
+  // Few lines say less than many.
+  const geminiConfidence = share * Math.min(1, decisive / 3)
+  if (geminiGender === 'unknown') return { ...pitch, source: 'pitch' }
+  if (pitch.gender === 'unknown') {
+    return geminiConfidence >= 0.5 ? { gender: geminiGender, confidence: Math.min(0.9, geminiConfidence * 0.85), source: 'gemini' } : { ...pitch, source: 'pitch' }
+  }
+  if (pitch.gender === geminiGender) return { gender: pitch.gender, confidence: Math.min(0.97, Math.max(pitch.confidence, geminiConfidence) + 0.15), source: 'agree' }
+  if (decisive >= 3 && share >= 0.8) return { gender: geminiGender, confidence: Math.min(0.75, geminiConfidence * 0.75), source: 'gemini' }
+  return { gender: 'unknown', confidence: 0, source: 'conflict' }
+}
+
 /** Age is intentionally conservative: acoustics overlap heavily across age
  * groups. Ambiguous input stays Unknown and every prediction carries its
  * confidence so the UI never presents this heuristic as a fact. */

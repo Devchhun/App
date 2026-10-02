@@ -3,8 +3,10 @@
 // unit-testable). app/main/media/export.ts is the only thing that actually
 // runs these args through ffmpeg. Mirrors shared/localAi.ts's own
 // "pure/testable core + thin main-process runner" split.
+import { buildOverlayFilterSteps, type BlurSettings } from './videoOverlay'
 import type { ProjectSequence, TimelineClip } from './project'
 import { clipRate, sourceEnd } from './clipTiming'
+import { clipMotionExprs } from './clipMotion'
 import type { TimelineTrack } from './timelineTracks'
 import { isTrackAudioMuted } from './timelineTracks'
 
@@ -171,6 +173,9 @@ export interface ResolvedExportClip {
   clip: TimelineClip
   sourcePath: string
   trackOrder: number
+  /** Seconds of the clip already played before this run starts (a window
+   * of a longer export): its motion carries on from there. */
+  motionOffset?: number
 }
 
 export interface ExportFilterGraphResult {
@@ -179,6 +184,135 @@ export interface ExportFilterGraphResult {
   /** True if there's nothing to export (no active clips) -- caller should
    * reject with kind: 'no-content' rather than invoking ffmpeg at all. */
   isEmpty: boolean
+}
+
+/** How one ffmpeg run of an export is built (all optional: none = one run
+ * over the whole Timeline, as before). */
+export interface ExportBuildOptions {
+  /** Open each input at its own stretch with -ss/-t instead of trim. */
+  seekInputs?: boolean
+  /** The video encoder and its quality settings (a GPU encoder, say) in
+   * place of EXPORT_CODEC_ENCODER + CRF. */
+  videoCodecArgs?: string[]
+  /** Project time where this run starts (a window of a longer export):
+   * the burned-in subtitles are timed in project time. */
+  timeOffset?: number
+  /** Always an audio track of the full length (silence under it). */
+  silentBed?: boolean
+  /** PCM audio, for a piece that is joined and encoded afterwards. */
+  pcmAudio?: boolean
+  /** Decoder threads per video input: several pieces run at once, and an
+   * HEVC decoder's default (one thread per core) held ~90 MB a thread --
+   * 3.2 GB per piece with ~35 inputs; 2 threads halved that at no cost. */
+  decoderThreads?: number
+  /** Decode and fit the videos on an NVIDIA GPU (NVDEC + scale_cuda): a
+   * piece's 13 film inputs went 1.6x quicker, for ~0.5 GB of video memory,
+   * and the CPU -- the slow part of a small machine -- is left nearly idle.
+   * A cropped clip still goes through the CPU (the crop comes first). */
+  gpuDecode?: boolean
+  /** A picture even with no video clip in this run (black): every piece of
+   * a longer export must carry the same streams to be joined. */
+  forceVideo?: boolean
+}
+
+function seconds(value: number): string {
+  return String(Math.round(value * 1e6) / 1e6)
+}
+
+/** A stretch of the Timeline exported by one ffmpeg run. */
+export interface ExportWindow {
+  start: number
+  end: number
+}
+
+/** Most inputs one ffmpeg run gets: every clip is an input, and Windows
+ * cuts a command line off at 32,767 characters -- a 1,900-clip Timeline
+ * (Video Sync pieces plus a dub line each) could not be exported at all. */
+export const EXPORT_MAX_INPUTS_PER_RUN = 40
+/** Longest window, so progress and cancelling stay responsive. */
+export const EXPORT_MAX_WINDOW_SECONDS = 300
+
+/** Splits the Timeline into windows each run can take: at most
+ * `maxInputs` clips (video and audio) touching a window, at most
+ * `maxSeconds` long, boundaries on the frame grid -- and never inside an
+ * audio clip's fade (a fade cut in two would restart). One window when the
+ * whole Timeline fits. */
+export function planExportWindows(
+  clips: { startTime: number; duration: number; fadeIn?: number; fadeOut?: number; isAudio: boolean }[],
+  durationSeconds: number,
+  frameRate: number,
+  maxInputs = EXPORT_MAX_INPUTS_PER_RUN,
+  maxSeconds = EXPORT_MAX_WINDOW_SECONDS
+): ExportWindow[] {
+  if (durationSeconds <= 0) return []
+  const touching = (a: number, b: number): number => clips.filter((c) => c.startTime < b && c.startTime + c.duration > a).length
+  if (touching(0, durationSeconds) <= maxInputs) return [{ start: 0, end: durationSeconds }]
+  const frame = 1 / frameRate
+  const snap = (t: number): number => Math.round(t / frame) * frame
+  // Where a boundary must not fall: inside an audio fade.
+  const fades: [number, number][] = []
+  for (const c of clips) {
+    if (!c.isAudio) continue
+    if (c.fadeIn) fades.push([c.startTime, c.startTime + c.fadeIn])
+    if (c.fadeOut) fades.push([c.startTime + c.duration - c.fadeOut, c.startTime + c.duration])
+  }
+  const clearOfFades = (t: number): number => {
+    for (let moved = true; moved; ) {
+      moved = false
+      for (const [a, b] of fades) {
+        if (t > a + 1e-6 && t < b - 1e-6) {
+          t = snap(b + frame / 2)
+          moved = true
+        }
+      }
+    }
+    return t
+  }
+  const windows: ExportWindow[] = []
+  let start = 0
+  while (start < durationSeconds - 1e-6) {
+    let length = Math.min(maxSeconds, durationSeconds - start)
+    while (length > frame && touching(start, start + length) > maxInputs) length /= 2
+    let end = start + length >= durationSeconds - 1e-6 ? durationSeconds : clearOfFades(snap(start + length))
+    if (end <= start + 1e-6) end = Math.min(durationSeconds, snap(start + frame * 2))
+    if (end >= durationSeconds - frame / 2) end = durationSeconds
+    windows.push({ start, end })
+    start = end
+  }
+  return windows
+}
+
+/** The clips of a window, cut to it and timed from its start: a clip
+ * running into the window from before starts at 0 further into its file
+ * (by the playback rate); one running past it is cut at its end. Fades
+ * stay with the part that holds them (planExportWindows never cuts one). */
+export function sliceClipsToWindow(clips: ResolvedExportClip[], window: ExportWindow): ResolvedExportClip[] {
+  const out: ResolvedExportClip[] = []
+  for (const rc of clips) {
+    const { clip } = rc
+    const from = Math.max(clip.startTime, window.start)
+    const to = Math.min(clip.startTime + clip.duration, window.end)
+    if (to - from <= 1e-6) continue
+    const rate = clipRate(clip)
+    const sourceIn = clip.sourceIn + (from - clip.startTime) * rate
+    const duration = to - from
+    const cutStart = from > clip.startTime + 1e-6
+    const cutEnd = to < clip.startTime + clip.duration - 1e-6
+    out.push({
+      ...rc,
+      motionOffset: (rc.motionOffset ?? 0) + (from - clip.startTime),
+      clip: {
+        ...clip,
+        startTime: from - window.start,
+        duration,
+        sourceIn,
+        sourceOut: sourceIn + duration * rate,
+        fadeIn: cutStart ? undefined : clip.fadeIn,
+        fadeOut: cutEnd ? undefined : clip.fadeOut
+      }
+    })
+  }
+  return out
 }
 
 /** Builds a complete ffmpeg filter_complex export for the "simple case"
@@ -200,10 +334,13 @@ export function buildExportFilterGraph(
   dimensions: { width: number; height: number },
   frameRate: number,
   options: Pick<ExportOptions, 'codec' | 'bitratePreset' | 'customBitrateKbps' | 'includeVideo' | 'includeAudio' | 'audioFormat'>,
-  outputPath: string
+  outputPath: string,
+  /** Blur boxes and burned-in subtitles over the finished picture. */
+  overlay?: { blur?: BlurSettings; assPath?: string; textAssPath?: string; fontsDir?: string },
+  build: ExportBuildOptions = {}
 ): ExportFilterGraphResult {
-  const wantVideo = options.includeVideo && videoClips.length > 0
-  if (!wantVideo && (audioClips.length === 0 || !options.includeAudio)) {
+  const wantVideo = options.includeVideo && (videoClips.length > 0 || !!build.forceVideo)
+  if (!wantVideo && (!options.includeAudio || (audioClips.length === 0 && !build.silentBed))) {
     return { args: [], isEmpty: true }
   }
 
@@ -217,52 +354,167 @@ export function buildExportFilterGraph(
   const videoInputIndex = new Map<ResolvedExportClip, number>()
   const audioInputIndex = new Map<ResolvedExportClip, number>()
 
+  // seekInputs: each input opened at its own stretch (`-ss`/`-t` before
+  // `-i`: the decoder starts at the nearest keyframe and drops the frames
+  // before the point) instead of `trim` -- which decodes the file from its
+  // very start: a clip at minute 80 of a film decoded 80 minutes to keep
+  // two seconds.
+  const onGpu = (rc: ResolvedExportClip): boolean => {
+    const t = rc.clip.transform
+    return !!build.gpuDecode && rc.clip.type === 'video' && !(t && (t.cropTop || t.cropRight || t.cropBottom || t.cropLeft))
+  }
+  const inputFor = (rc: ResolvedExportClip): string[] => {
+    // A still image is one frame at time 0: a window starting partway
+    // through its clip would seek past it and show nothing. A moving one
+    // needs a frame for every moment it moves.
+    if (rc.clip.type === 'image') {
+      return rc.clip.motion ? ['-loop', '1', '-framerate', String(frameRate), '-t', seconds(Math.max(0.001, rc.clip.duration * clipRate(rc.clip))), '-i', rc.sourcePath] : ['-i', rc.sourcePath]
+    }
+    if (!build.seekInputs) return ['-i', rc.sourcePath]
+    const length = Math.max(0.001, sourceEnd(rc.clip) - rc.clip.sourceIn)
+    return ['-ss', seconds(rc.clip.sourceIn), '-t', seconds(length), '-i', rc.sourcePath]
+  }
   for (const rc of sortedVideo) {
-    inputArgs.push('-i', rc.sourcePath)
+    if (onGpu(rc)) inputArgs.push('-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda')
+    else if (build.decoderThreads) inputArgs.push('-threads', String(build.decoderThreads))
+    inputArgs.push(...inputFor(rc))
     videoInputIndex.set(rc, inputs.length)
     inputs.push(rc.sourcePath)
   }
   if (options.includeAudio) {
     for (const rc of audioClips) {
-      inputArgs.push('-i', rc.sourcePath)
+      inputArgs.push(...inputFor(rc))
       audioInputIndex.set(rc, inputs.length)
       inputs.push(rc.sourcePath)
     }
   }
 
   const filterParts: string[] = []
-  if (wantVideo) filterParts.push(`color=c=black:s=${dimensions.width}x${dimensions.height}:d=${durationSeconds}:r=${frameRate}[base0]`)
-
-  let lastLabel = 'base0'
-  sortedVideo.forEach((rc, i) => {
-    const idx = videoInputIndex.get(rc)!
+  const canvas = `color=c=black:s=${dimensions.width}x${dimensions.height}:r=${frameRate}`
+  // A clip's own picture: its stretch of the file at its speed, cropped,
+  // fitted to the frame, scaled, turned and faded as on the Timeline.
+  const clipPicture = (rc: ResolvedExportClip): string[] => {
     const { clip } = rc
-    const sourceOut = sourceEnd(clip)
     const rate = clipRate(clip)
     const opacity = clip.opacity ?? 1
     const t = clip.transform
-
-    const steps: string[] = [`trim=start=${clip.sourceIn}:end=${sourceOut}`, 'setpts=PTS-STARTPTS']
+    const steps: string[] = build.seekInputs ? ['setpts=PTS-STARTPTS'] : [`trim=start=${clip.sourceIn}:end=${sourceEnd(clip)}`, 'setpts=PTS-STARTPTS']
     if (rate !== 1) steps.push(`setpts=PTS/${rate}`)
     if (t && (t.cropTop || t.cropRight || t.cropBottom || t.cropLeft)) {
       steps.push(`crop=iw*(1-${t.cropLeft}-${t.cropRight}):ih*(1-${t.cropTop}-${t.cropBottom}):iw*${t.cropLeft}:ih*${t.cropTop}`)
     }
-    steps.push(`scale=${dimensions.width}:${dimensions.height}:force_original_aspect_ratio=decrease`)
+    if (onGpu(rc)) steps.push(`scale_cuda=${dimensions.width}:${dimensions.height}:force_original_aspect_ratio=decrease:format=yuv420p`, 'hwdownload', 'format=yuv420p')
+    else steps.push(`scale=${dimensions.width}:${dimensions.height}:force_original_aspect_ratio=decrease`)
     if (t && (t.scaleX !== 1 || t.scaleY !== 1)) steps.push(`scale=iw*${t.scaleX ?? 1}:ih*${t.scaleY ?? 1}`)
-    if (t && t.rotation) steps.push(`rotate=${(t.rotation * Math.PI) / 180}:c=none`)
+    // Motion (shared/clipMotion.ts), `t` here being seconds into the clip:
+    // turned first at a fixed size (a turn after a size change smeared),
+    // then sized frame by frame.
+    const motion = clip.motion ? clipMotionExprs(clip.motion, `t+${seconds(rc.motionOffset ?? 0)}`) : null
+    const turn = t?.rotation ? (t.rotation * Math.PI) / 180 : 0
+    if (motion?.rotate) steps.push('format=rgba', `rotate=a='${turn ? `${turn}+` : ''}${motion.rotate}':c=none:ow='hypot(iw,ih)':oh=ow`)
+    else if (turn) steps.push(`rotate=${turn}:c=none`)
+    if (motion?.scale) steps.push(`scale=w='max(2,trunc(iw*${motion.scale}/2)*2)':h='max(2,trunc(ih*${motion.scale}/2)*2)':eval=frame`)
     if (opacity < 1) steps.push(`format=yuva420p,colorchannelmixer=aa=${opacity}`)
-    steps.push(`setpts=PTS-STARTPTS+${clip.startTime}/TB`)
+    return steps
+  }
+  // Shown whole and centred, as fitted: no moving, zoom, turn or fade.
+  const isPlainPicture = (clip: TimelineClip): boolean => {
+    const t = clip.transform
+    return !clip.motion && (clip.opacity ?? 1) >= 1 && (!t || (!t.x && !t.y && (t.scaleX ?? 1) === 1 && (t.scaleY ?? 1) === 1 && !t.rotation))
+  }
+  // Where the picture sits; `clipTime` is the overlay's time expressed as
+  // seconds into the clip, for its motion.
+  const place = (rc: ResolvedExportClip, clipTime: string): { x: string; y: string } => {
+    const t = rc.clip.transform
+    const motion = rc.clip.motion ? clipMotionExprs(rc.clip.motion, `${clipTime}+${seconds(rc.motionOffset ?? 0)}`) : null
+    const x = `(W-w)/2${t?.x ? `+${t.x}` : ''}${motion?.dx ? `+${motion.dx}` : ''}`
+    const y = `(H-h)/2${t?.y ? `+${t.y}` : ''}${motion?.dy ? `+${motion.dy}` : ''}`
+    return { x: `'${x}'`, y: `'${y}'` }
+  }
 
+  // The bottom track is laid end to end: each clip (and each gap, in black)
+  // is its own stretch of whole frames, joined with `concat`. A timed
+  // `overlay` per clip over one long canvas -- as before -- copied every
+  // 2K frame once per clip of the run, shown or not: 13 clips made a run
+  // four times slower than one. Stretches are counted on the frame grid of
+  // the whole run, so hundreds of joins never drift off the sound.
+  let lastLabel = ''
+  const upper: ResolvedExportClip[] = []
+  if (wantVideo) {
+    const fps = frameRate
+    const totalFrames = Math.max(1, Math.round(durationSeconds * fps))
+    const bottomOrder = sortedVideo[0]?.trackOrder
+    const stretches: string[] = []
+    let cursor = 0
+    const gap = (frames: number): void => {
+      const label = `gap${stretches.length}`
+      filterParts.push(`${canvas}:d=${seconds((frames + 1) / fps)},trim=end_frame=${frames}[${label}]`)
+      stretches.push(label)
+    }
+    sortedVideo.forEach((rc, i) => {
+      const from = Math.round(rc.clip.startTime * fps)
+      const to = Math.min(totalFrames, Math.round((rc.clip.startTime + rc.clip.duration) * fps))
+      if (rc.trackOrder !== bottomOrder || from < cursor) {
+        upper.push(rc)
+        return
+      }
+      if (to <= from) return
+      if (from > cursor) gap(from - cursor)
+      const frames = to - from
+      const label = `s${i}`
+      const input = `[${videoInputIndex.get(rc)!}:v]${clipPicture(rc).join(',')}`
+      // A file that ends early (or a still image) holds its last frame, and
+      // one with no frames at all leaves black -- never a shorter stretch
+      // that would pull everything after it earlier.
+      if (isPlainPicture(rc.clip)) {
+        // Centred as it is: padded to the frame, after one black frame
+        // that is dropped again (all that is left if the file gave none).
+        filterParts.push(`${input},pad=${dimensions.width}:${dimensions.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[c${i}]`)
+        filterParts.push(`${canvas}:d=${seconds(1 / fps)},trim=end_frame=1[z${i}]`)
+        filterParts.push(`[z${i}][c${i}]concat=n=2:v=1:a=0,tpad=stop_mode=clone:stop=-1,trim=start_frame=1:end_frame=${frames + 1},setpts=PTS-STARTPTS[${label}]`)
+      } else {
+        // Smaller, moved, turned or see-through: over black of its length.
+        filterParts.push(`${canvas}:d=${seconds((frames + 1) / fps)}[bg${i}]`)
+        filterParts.push(`${input}[c${i}]`)
+        const at = place(rc, 't')
+        filterParts.push(`[bg${i}][c${i}]overlay=x=${at.x}:y=${at.y}:eof_action=repeat,trim=end_frame=${frames}[${label}]`)
+      }
+      stretches.push(label)
+      cursor = to
+    })
+    if (cursor < totalFrames) gap(totalFrames - cursor)
+    if (stretches.length === 1) lastLabel = stretches[0]
+    else {
+      filterParts.push(`${stretches.map((l) => `[${l}]`).join('')}concat=n=${stretches.length}:v=1:a=0[lane]`)
+      lastLabel = 'lane'
+    }
+  }
+  // Higher tracks (and any overlap on the bottom one) over it, each shown
+  // for its own time.
+  upper.forEach((rc, i) => {
+    const { clip } = rc
     const clipLabel = `v${i}`
-    filterParts.push(`[${idx}:v]${steps.join(',')}[${clipLabel}]`)
-
-    const x = t ? `(W-w)/2+${t.x}` : '(W-w)/2'
-    const y = t ? `(H-h)/2+${t.y}` : '(H-h)/2'
+    filterParts.push(`[${videoInputIndex.get(rc)!}:v]${[...clipPicture(rc), `setpts=PTS-STARTPTS+${clip.startTime}/TB`].join(',')}[${clipLabel}]`)
     const nextLabel = `ov${i}`
-    const end = clip.startTime + clip.duration
-    filterParts.push(`[${lastLabel}][${clipLabel}]overlay=x=${x}:y=${y}:enable='between(t,${clip.startTime},${end})'[${nextLabel}]`)
+    const at = place(rc, `t-${seconds(clip.startTime)}`)
+    filterParts.push(`[${lastLabel}][${clipLabel}]overlay=x=${at.x}:y=${at.y}:enable='between(t,${clip.startTime},${clip.startTime + clip.duration})'[${nextLabel}]`)
     lastLabel = nextLabel
   })
+  if (wantVideo && overlay) {
+    // A window of a longer export: the burned-in subtitles are timed in
+    // project time, so the frames are shifted there and back around them.
+    const offset = build.timeOffset ?? 0
+    const shiftedIn = offset > 0 ? 'shiftedin' : lastLabel
+    const steps = buildOverlayFilterSteps(shiftedIn, offset > 0 ? 'shiftedout' : 'overlaid', dimensions, overlay)
+    if (steps.length > 0) {
+      if (offset > 0) {
+        filterParts.push(`[${lastLabel}]setpts=PTS+${offset}/TB[shiftedin]`)
+        filterParts.push(...steps)
+        filterParts.push(`[shiftedout]setpts=PTS-${offset}/TB[overlaid]`)
+      } else filterParts.push(...steps)
+      lastLabel = 'overlaid'
+    }
+  }
   if (wantVideo) filterParts.push(`[${lastLabel}]format=yuv420p[vout]`)
 
   const audioLabels: string[] = []
@@ -272,7 +524,7 @@ export function buildExportFilterGraph(
       const { clip } = rc
       const sourceOut = sourceEnd(clip)
       const volume = clip.volume ?? 1
-      const steps: string[] = [`atrim=start=${clip.sourceIn}:end=${sourceOut}`, 'asetpts=PTS-STARTPTS']
+      const steps: string[] = build.seekInputs ? ['asetpts=PTS-STARTPTS'] : [`atrim=start=${clip.sourceIn}:end=${sourceOut}`, 'asetpts=PTS-STARTPTS']
       let remainingRate = clipRate(clip)
       while (remainingRate > 2) {
         steps.push('atempo=2')
@@ -293,6 +545,13 @@ export function buildExportFilterGraph(
     })
   }
 
+  // Pieces of a longer export are joined end to end: each needs an audio
+  // track of exactly its own length, even a stretch with nothing to hear.
+  if (build.silentBed && options.includeAudio) {
+    filterParts.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${seconds(durationSeconds)}[abed]`)
+    audioLabels.unshift('abed')
+  }
+
   let audioOutLabel: string | null = null
   if (audioLabels.length > 0) {
     if (audioLabels.length === 1) {
@@ -308,11 +567,17 @@ export function buildExportFilterGraph(
   if (audioOutLabel) args.push('-map', `[${audioOutLabel}]`)
 
   if (wantVideo) {
-    args.push('-c:v', EXPORT_CODEC_ENCODER[options.codec])
-    if (options.bitratePreset === 'custom' && options.customBitrateKbps) {
-      args.push('-b:v', `${options.customBitrateKbps}k`)
-    } else if (options.bitratePreset !== 'custom') {
-      args.push('-crf', String(EXPORT_BITRATE_CRF[options.bitratePreset]))
+    if (build.videoCodecArgs) args.push(...build.videoCodecArgs)
+    else {
+      args.push('-c:v', EXPORT_CODEC_ENCODER[options.codec])
+      // No GPU: the CPU encoder's quick setting too (x264 "veryfast" is
+      // about three times "medium"'s speed); "Higher" keeps the default.
+      if (options.bitratePreset !== 'higher' && options.codec !== 'av1') args.push('-preset', options.codec === 'h264' ? 'veryfast' : 'fast')
+      if (options.bitratePreset === 'custom' && options.customBitrateKbps) {
+        args.push('-b:v', `${options.customBitrateKbps}k`)
+      } else if (options.bitratePreset !== 'custom') {
+        args.push('-crf', String(EXPORT_BITRATE_CRF[options.bitratePreset]))
+      }
     }
     args.push('-pix_fmt', 'yuv420p', '-r', String(frameRate))
   } else {
@@ -320,13 +585,16 @@ export function buildExportFilterGraph(
   }
 
   if (audioOutLabel) {
-    args.push('-c:a', options.audioFormat === 'mp3' ? 'libmp3lame' : 'aac', '-b:a', '192k')
+    // A piece keeps its sound as PCM: it is encoded once, after joining
+    // (AAC per piece would leave a tiny gap at every join).
+    if (build.pcmAudio) args.push('-c:a', 'pcm_s16le', '-ar', '48000')
+    else args.push('-c:a', options.audioFormat === 'mp3' ? 'libmp3lame' : 'aac', '-b:a', '192k')
   } else {
     args.push('-an')
   }
 
   args.push('-t', String(durationSeconds))
-  if (wantVideo) args.push('-movflags', '+faststart')
+  if (wantVideo && !build.pcmAudio) args.push('-movflags', '+faststart')
   args.push('-progress', 'pipe:1', '-nostats', outputPath)
 
   return { args, isEmpty: false }
@@ -345,11 +613,14 @@ const APPROX_KBPS_AT_CRF23: Record<ExportResolution, number> = {
 const CRF_SIZE_MULTIPLIER: Record<Exclude<ExportBitratePreset, 'custom'>, number> = { lower: 0.6, recommended: 1, higher: 1.7 }
 
 /** Estimated output size in MB, for display only. */
-export function estimateOutputSizeMB(durationSeconds: number, options: Pick<ExportOptions, 'resolution' | 'bitratePreset' | 'customBitrateKbps'>): number {
+export function estimateOutputSizeMB(durationSeconds: number, options: Pick<ExportOptions, 'resolution' | 'bitratePreset' | 'customBitrateKbps'> & { frameRate?: number }): number {
+  // 50/60 fps holds about half as much again: a 1 h 32 min 2K 60 fps export
+  // came out at 9.6 Mbps, 6.4 GB, where the 30 fps figure said 2.6 GB.
+  const fpsFactor = (options.frameRate ?? 30) > 30 ? 1.6 : 1
   const kbps =
     options.bitratePreset === 'custom' && options.customBitrateKbps
       ? options.customBitrateKbps
-      : APPROX_KBPS_AT_CRF23[options.resolution] * CRF_SIZE_MULTIPLIER[options.bitratePreset === 'custom' ? 'recommended' : options.bitratePreset]
+      : APPROX_KBPS_AT_CRF23[options.resolution] * CRF_SIZE_MULTIPLIER[options.bitratePreset === 'custom' ? 'recommended' : options.bitratePreset] * fpsFactor
   const audioKbps = 192
   return ((kbps + audioKbps) * durationSeconds) / 8 / 1024
 }

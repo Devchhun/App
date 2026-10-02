@@ -289,7 +289,11 @@ export function sortTracksForDisplay(tracks: TimelineTrack[]): TimelineTrack[] {
 const TRACK_HEIGHT_MODE_SCALE: Record<'compact' | 'normal' | 'tall', number> = { compact: 0.65, normal: 1, tall: 1.5 }
 
 export function trackDisplayHeight(track: TimelineTrack, mode: 'compact' | 'normal' | 'tall' = 'normal'): number {
-  const base = track.collapsed ? MIN_TRACK_HEIGHT : track.height
+  // A track saved without a usable height (a damaged or hand-edited project)
+  // gets its kind's default: a NaN height used to reach the waveform
+  // canvas and take the whole Timeline down with a render error.
+  const height = Number.isFinite(track.height) && track.height > 0 ? track.height : defaultHeightForKind(track.kind)
+  const base = track.collapsed ? MIN_TRACK_HEIGHT : height
   return track.collapsed ? base : Math.max(MIN_TRACK_HEIGHT, Math.round(base * TRACK_HEIGHT_MODE_SCALE[mode]))
 }
 
@@ -304,9 +308,13 @@ export function getMainVideoTrackId(tracks: TimelineTrack[]): string | undefined
 /** Picks the single clip that should drive the one <video> element at
  * `time`: among clips whose track is kind 'video', the one on the
  * highest-order track (matching "highest visual track renders/plays on
- * top"). Generic over any clip shape with trackId/startTime/duration so it
- * doesn't need to import TimelineClip and create a cycle. */
-export function resolveActiveVideoClip<C extends { trackId: string; startTime: number; duration: number }>(
+ * top"). A still image never does: a <video> cannot show a picture file,
+ * so a logo on a track above the film left the film as an overlay and the
+ * logo nowhere -- images are drawn as <img> overlays (keeping their
+ * transparency) over whatever video plays. Generic over any clip shape
+ * with trackId/startTime/duration so it doesn't need to import
+ * TimelineClip and create a cycle. */
+export function resolveActiveVideoClip<C extends { trackId: string; startTime: number; duration: number; type?: string }>(
   clips: C[],
   tracks: TimelineTrack[],
   time: number
@@ -316,7 +324,7 @@ export function resolveActiveVideoClip<C extends { trackId: string; startTime: n
   let bestOrder = -Infinity
   for (const clip of clips) {
     const order = videoTrackOrder.get(clip.trackId)
-    if (order === undefined) continue
+    if (order === undefined || clip.type === 'image') continue
     if (time < clip.startTime || time >= clip.startTime + clip.duration) continue
     if (order > bestOrder) {
       best = clip

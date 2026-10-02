@@ -1,5 +1,7 @@
+import type { ClipMotion } from './clipMotion'
 // Shared project-file data model, used by both the Electron main process
 // and the renderer UI. See plan section "Data model (project file)".
+import type { AudioEffectSettings } from './audioEffects'
 import type { Transcript, ScriptAlignment } from './transcription'
 import type { CommunicationPurpose, AiSuggestion } from './suggestions'
 import type {
@@ -205,6 +207,13 @@ export interface Scene {
   fontSizePx?: number
   fontWeight?: FontWeight
   textAlign?: TextAlign
+  /** Plain text (Add Text): an outline around the letters (0 = none), a
+   * drop shadow, and whether a box (fillColor/fillOpacity) sits behind it.
+   * See shared/plainText.ts. */
+  textStrokeColor?: string
+  textStrokeWidth?: number
+  textShadow?: boolean
+  textBackground?: boolean
   textColor?: string
 
   // Fill (background) -- undefined falls back to brandOverrides.primaryColor / brand.primaryColor.
@@ -404,6 +413,13 @@ export interface TimelineClip {
    * clip array and undo history. Undefined/true = enabled (the common case). */
   enabled?: boolean
   markers?: ClipMarker[]
+  /** A sound effect rendered into this clip (Clip Properties > Audio
+   * Effects): the clip plays the rendered file, and `source` is the
+   * original it was made from, so the effect can be changed or removed. */
+  audioEffect?: {
+    settings: AudioEffectSettings
+    source: { mediaId: string; sourceIn: number; sourceOut: number }
+  }
 
   /** All fields below are additive (schemaVersion 6) and optional -- a
    * missing value always means "the un-adjusted default" (1x speed, full
@@ -428,6 +444,9 @@ export interface TimelineClip {
    * keyframes are a purely opt-in, per-property overlay, never required.
    * See shared/keyframes.ts's own doc comments for the interpolation rules. */
   keyframes?: ClipKeyframes
+  /** A looping motion on the picture (a logo that floats, bounces,
+   * wanders...) -- see shared/clipMotion.ts. Player and Export both. */
+  motion?: ClipMotion
 }
 
 export interface ClipTransform {

@@ -85,7 +85,7 @@ interface SceneContextValue {
     atTime: number,
     track: string,
     templateId?: TemplateId,
-    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio'>>
+    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio' | 'visualText'>>
   ) => void
   /** Bulk-inserts every scene in one state update (and therefore one Undo
    * entry) -- the Local AI Scene Planner's "Apply" action builds each
@@ -296,7 +296,7 @@ export function SceneProvider({ children }: { children: ReactNode }): JSX.Elemen
     atTime: number,
     track: string,
     templateId: TemplateId = 'lower-third',
-    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio'>>
+    initialLayout?: Partial<Pick<Scene, 'position' | 'textAlign' | 'lockAspectRatio' | 'visualText'>>
   ) => {
     const id = crypto.randomUUID()
     const defaults = defaultContentForTemplate(templateId, id)

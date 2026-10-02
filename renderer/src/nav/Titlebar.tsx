@@ -166,7 +166,12 @@ export function WindowControls({ onClose }: { onClose?: () => void } = {}): JSX.
 }
 
 export function Titlebar(): JSX.Element {
-  const { projectName } = useProject()
+  const { projectName, renameProject } = useProject()
+  const [nameDraft, setNameDraft] = useState<string | null>(null)
+  const commitName = (): void => {
+    if (nameDraft !== null && nameDraft.trim()) renameProject(nameDraft)
+    setNameDraft(null)
+  }
   const { brandPreset } = useBrandPreset()
   const { openHome } = useUiState()
   const { canUndo, canRedo, undo, redo } = useHistory()
@@ -186,7 +191,26 @@ export function Titlebar(): JSX.Element {
           </svg>
           Home
         </button>
-        {projectName && <span className="titlebar-project">Project: {projectName}</span>}
+        {projectName &&
+          (nameDraft !== null ? (
+            <input
+              className="titlebar-project-input"
+              autoFocus
+              value={nameDraft}
+              placeholder="Project name"
+              onChange={(e) => setNameDraft(e.target.value)}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitName()
+                else if (e.key === 'Escape') setNameDraft(null)
+              }}
+            />
+          ) : (
+            <button className="titlebar-project" title="Rename the project" onClick={() => setNameDraft(projectName)}>
+              Project: {projectName}
+            </button>
+          ))}
 
         <div className="titlebar-history">
           <button

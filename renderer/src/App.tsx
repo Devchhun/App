@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { LicenseProvider } from './license/LicenseContext'
 import { LicenseGate } from './license/LicenseGate'
 import { MediaProvider, useMedia } from './media/MediaContext'
@@ -31,6 +31,7 @@ import { NarrationProvider, useNarration } from './narration/NarrationContext'
 import { NarrationScriptPanel } from './narration/NarrationScriptPanel'
 import { RecordingAssistantPanel } from './narration/RecordingAssistantPanel'
 import { AiDubberProvider, useAiDubber } from './dubbing/AiDubberContext'
+import { AudioEffectsProvider } from './audioFx/AudioEffectsContext'
 import { AiDubberScriptPanel } from './dubbing/AiDubberScriptPanel'
 import { VoiceModelPanel } from './dubbing/VoiceModelPanel'
 import { Titlebar } from './nav/Titlebar'
@@ -52,6 +53,69 @@ import { AUTO_GENERATE_RECAP_VOICE_EVENT } from './aiScript/videoStoryEvents'
 import { EarthGlobe } from './recap/EarthGlobe'
 import { AiAnimationPanel } from './aiAnimation/AiAnimationPanel'
 import { VideoStoryRecapControls } from './aiScript/VideoStoryRecapControls'
+
+/** AI Dubber's right column: the Voice Model panel -- and, while a Timeline
+ * clip is selected, that clip's Properties (Speed/Volume for audio,
+ * Transform/Opacity for video; the same panel as outside AI Dubber).
+ * Clicking a clip shows its Properties; Voice Model is one click back, and
+ * clearing the selection returns to it. A clip selected by the app itself
+ * (Add Video inserting the video, a dub line landing) leaves the voices
+ * showing -- only the user's own click switches. */
+function AiDubberRightColumn(): JSX.Element {
+  const { selectedTimelineClipIds, sequence } = useSequence()
+  // Opening another episode swaps the Timeline: a selection left from the
+  // previous one names clips that are not there.
+  const hasClip = selectedTimelineClipIds.some((id) => sequence.clips.some((clip) => clip.id === id))
+  // A text or graphic picked on the Timeline or the Player has Properties
+  // too (Add Text while dubbing could not be edited at all).
+  const { selectedSceneId } = useScenes()
+  const hasScene = !hasClip && !!selectedSceneId
+  const hasSelection = hasClip || hasScene
+  const [view, setView] = useState<'voices' | 'properties'>('voices')
+  const clipClickedRef = useRef(false)
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent): void => {
+      if (!(e.target as HTMLElement | null)?.closest?.('.clip-track-clip')) return
+      clipClickedRef.current = true
+      // Also when the clip was already selected (the app selects a video
+      // it has just inserted): no selection change follows that click.
+      setView('properties')
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
+  useEffect(() => {
+    if (selectedTimelineClipIds.length === 0 && !selectedSceneId) setView('voices')
+    else if (clipClickedRef.current) setView('properties')
+    clipClickedRef.current = false
+  }, [selectedTimelineClipIds, selectedSceneId])
+  // A text just added or clicked opens its Properties.
+  useEffect(() => {
+    if (selectedSceneId) setView('properties')
+  }, [selectedSceneId])
+  // One stable tree whatever is selected: the Voice Model panel is never
+  // remounted (only hidden behind Clip Properties), so what is open in it --
+  // the Auto SRT panel mid-run -- survives a clip being selected, including
+  // the ones Batch Load itself selects as it places each video.
+  return (
+    <div className="right-column">
+      {hasSelection && (
+        <div className="ai-dubber-right-switch" role="tablist" aria-label="Right panel">
+        <button role="tab" aria-selected={view === 'voices'} className={view === 'voices' ? 'ai-dubber-right-switch-active' : ''} onClick={() => setView('voices')}>
+          Voice Model
+        </button>
+        <button role="tab" aria-selected={view === 'properties'} className={view === 'properties' ? 'ai-dubber-right-switch-active' : ''} onClick={() => setView('properties')}>
+          {hasScene ? 'Properties' : 'Clip Properties'}
+        </button>
+        </div>
+      )}
+      <div className="ai-dubber-right-voices" hidden={hasSelection && view === 'properties'}>
+        <VoiceModelPanel />
+      </div>
+      {hasSelection && view === 'properties' && <aside className="panel panel-brand">{hasClip ? <ClipPropertiesPanel /> : <ScenePropertiesPanel />}</aside>}
+    </div>
+  )
+}
 
 function RightSidebar(): JSX.Element {
   const { rightTab, setRightTab, setLeftView, openSettings, requestVideoStory } = useUiState()
@@ -87,7 +151,7 @@ function RightSidebar(): JSX.Element {
   }, [selectedSceneId, selectedTimelineClipIds, setRightTab, narration.active, aiDubber.active])
 
   if (narration.active) return <RecordingAssistantPanel />
-  if (aiDubber.active) return <VoiceModelPanel />
+  if (aiDubber.active) return <AiDubberRightColumn />
 
   return (
     <div className="right-column">
@@ -388,6 +452,7 @@ function App(): JSX.Element {
                           <UiStateProvider>
                             <NarrationProvider>
                               <AiDubberProvider>
+                                <AudioEffectsProvider>
                                 <ProjectProvider>
                                   <TimelineViewProvider>
                                     <ExportProvider>
@@ -399,6 +464,7 @@ function App(): JSX.Element {
                                     </ExportProvider>
                                   </TimelineViewProvider>
                                 </ProjectProvider>
+                                </AudioEffectsProvider>
                               </AiDubberProvider>
                             </NarrationProvider>
                           </UiStateProvider>

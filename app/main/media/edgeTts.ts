@@ -5,6 +5,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { getBundledPythonPath } from '../ai/pythonRuntime'
+import { unreadableScriptFor, voiceLanguageOf } from '@shared/ttsLanguage'
+import { runInBackground } from './processPriority'
 
 /** python-worker/edge_tts_runner.py: edge_tts at 96 kbps instead of the
  * 48 kbps stream the library hard-codes. At 48 kbps every line carries MP3
@@ -64,8 +66,11 @@ export function hasSpeakableText(text: string): boolean {
 export function explainEdgeTtsFailure(code: number | null, stderr: string): string {
   const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   const last = lines[lines.length - 1] ?? ''
-  if (/NoAudioReceived/i.test(stderr)) {
-    return 'Edge TTS returned no audio for this line — it has no words to speak (only symbols like … or ♪), or the voice cannot read its text.'
+  // Lines with no words never get here (hasSpeakableText refuses them
+  // first), so an empty stream is Microsoft's service, not the text: the
+  // runner has already asked again three times, a few seconds apart.
+  if (/NoAudioReceived/i.test(last)) {
+    return "Microsoft's voice service sent back no audio for this line, even after retrying (it is busy or limiting requests) — wait a minute, then generate the failed lines again."
   }
   if (/ClientConnector|getaddrinfo|Cannot connect|TimeoutError|ServerDisconnected|WSServerHandshakeError|\b403\b|\b429\b/i.test(stderr)) {
     return `Edge TTS could not reach Microsoft's voice service (no internet, blocked, or busy — try again). ${last.slice(0, 200)}`
@@ -83,6 +88,15 @@ const LINE_TIMEOUT_MS = 60_000
  * spawn failure, or the timeout above; resolves with the output path only
  * once the file actually exists (edge_tts exits 0 having written nothing if
  * the text was empty after its own normalization). */
+/** A line the voice cannot read at all (Chinese text for a Khmer voice).
+ * Retrying it never helps, so callers fail it at once instead. */
+export class EdgeTtsUnreadableTextError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'EdgeTtsUnreadableTextError'
+  }
+}
+
 /** Rejection reason when a line is stopped by Cancel -- not a failure. */
 export class EdgeTtsCanceledError extends Error {
   constructor() {
@@ -103,7 +117,18 @@ export function runEdgeTtsLine(installDir: string, voice: string, text: string, 
       reject(new Error('This line has no words to speak (only symbols like … or ♪) — no voice was made for it.'))
       return
     }
-    const proc = spawn(edgePythonExe(installDir), buildEdgeTtsArgs(voice, text, outPath))
+    // A Khmer voice sends back NO audio for Chinese text, every time --
+    // that is an untranslated subtitle, not a busy server.
+    const script = unreadableScriptFor(text, voiceLanguageOf(voice))
+    if (script) {
+      reject(
+        new EdgeTtsUnreadableTextError(
+          `This line is still in ${script} ("${text.slice(0, 24)}${text.length > 24 ? '…' : ''}") — the ${voiceLanguageOf(voice) === 'km' ? 'Khmer' : 'English'} voice cannot read ${script}. Translate the subtitles first (Translate to Khmer), then generate again.`
+        )
+      )
+      return
+    }
+    const proc = runInBackground(spawn(edgePythonExe(installDir), buildEdgeTtsArgs(voice, text, outPath)))
     // Cancel stops the line in flight, not just the ones after it.
     let canceled = false
     const onAbort = (): void => {

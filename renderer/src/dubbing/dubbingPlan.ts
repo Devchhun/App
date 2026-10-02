@@ -1,7 +1,13 @@
 import type { DubbingSegmentState, DubbingSpeakerProfile, DubbingEngine } from '@shared/dubbing'
 import type { NarrationSpeaker } from '@shared/narration'
+import { samePerformance, type LinePerformance } from '@shared/dubbingPerformance'
 import { isSavedVoiceId } from './savedVoices'
 import { edgeFallbackVoiceId, recommendVoiceId } from './voiceModels'
+import { kiriVoiceId, kiriVoiceOf } from '@shared/kiriTts'
+
+/** KiriTTS's built-in Khmer voices a line falls back to by gender. */
+export const KIRI_FALLBACK_FEMALE = 'Nita'
+export const KIRI_FALLBACK_MALE = 'Chanda'
 
 /** The voice a line is spoken in, most specific choice first:
  *   1. the line's own pick (a card clicked for this line),
@@ -16,13 +22,25 @@ import { edgeFallbackVoiceId, recommendVoiceId } from './voiceModels'
 export function resolveLineVoice(
   line: Pick<DubbingSegmentState, 'voiceId' | 'detectedGender'>,
   speaker: Pick<DubbingSpeakerProfile, 'voiceId' | 'gender'> | undefined,
-  engine: DubbingEngine
+  engine: DubbingEngine,
+  /** KiriTTS: the account's copy of a VoxCPM2 voice (its Kiri voice id). */
+  kiriCopyOf?: (voiceId: string) => string | undefined
 ): { voiceId: string; gender: NarrationSpeaker } {
   const gender: NarrationSpeaker = line.detectedGender !== 'unknown' ? line.detectedGender : speaker?.gender ?? 'unknown'
   let voiceId = line.voiceId ?? speaker?.voiceId ?? recommendVoiceId(gender) ?? 'male-adult'
   // Edge TTS cannot clone a recording: a cloned voice falls back to Edge's
   // own Khmer voice of the same gender (see AiDubberContext.generateDubbing).
-  if (engine === 'edge-tts' && (voiceId === 'custom-voice' || isSavedVoiceId(voiceId))) voiceId = edgeFallbackVoiceId(gender)
+  if (engine === 'edge-tts' && (voiceId === 'custom-voice' || isSavedVoiceId(voiceId) || kiriVoiceOf(voiceId))) voiceId = edgeFallbackVoiceId(gender)
+  // A KiriTTS voice is only the account's: VoxCPM2 speaks the line in its
+  // own voice of the same gender (it used to fall to Male Adult).
+  if (engine === 'voxcpm2' && kiriVoiceOf(voiceId)) voiceId = recommendVoiceId(gender) ?? 'male-adult'
+  // KiriTTS speaks only its own voices (built-in or the account's clones):
+  // a VoxCPM2 voice copied to the account speaks as that copy; any other
+  // falls back to KiriTTS's Khmer voice of the same gender.
+  if (engine === 'kiritts' && !kiriVoiceOf(voiceId)) {
+    const copy = kiriCopyOf?.(voiceId)
+    voiceId = kiriVoiceId(copy ?? (gender === 'female' ? KIRI_FALLBACK_FEMALE : KIRI_FALLBACK_MALE))
+  }
   return { voiceId, gender }
 }
 
@@ -35,6 +53,10 @@ export interface PlannedLine {
   pitch: number
   speed: number
   volumeDb: number
+  performance?: LinePerformance
+  takeNonce?: number
+  /** A thought: the finished line gets the inner-voice echo. */
+  innerVoice?: boolean
 }
 
 /** One request to the voice engine: a single line, or several neighbouring
@@ -51,6 +73,10 @@ export interface GenerationUnit {
   pitch: number
   speed: number
   volumeDb: number
+  /** The take's performance (its first line's -- joined lines share it). */
+  performance?: LinePerformance
+  takeNonce?: number
+  innerVoice?: boolean
 }
 
 /** Neighbouring lines join only while they are close enough that reading
@@ -72,8 +98,8 @@ export function joinSpokenLines(texts: string[]): string {
 }
 
 /** Groups chronologically ordered lines into generation units. Consecutive
- * lines join when they share the voice and the pitch/speed/volume settings
- * (a take has one of each), sit at most JOIN_MAX_GAP_SECONDS apart, and the
+ * lines join when they share the voice, the pitch/speed/volume settings and
+ * the performance (a take has one of each), sit at most JOIN_MAX_GAP_SECONDS apart, and the
  * whole take stays within JOIN_MAX_SPAN_SECONDS. A separate take per short
  * line is what made dubbing sound choppy: every fragment started and ended
  * on its own, with the voice's natural phrasing reset each time. */
@@ -92,7 +118,10 @@ export function planGenerationUnits(lines: PlannedLine[], join = true): Generati
       endTime: current.lines[current.lines.length - 1].endTime,
       pitch: leader.pitch,
       speed: leader.speed,
-      volumeDb: leader.volumeDb
+      volumeDb: leader.volumeDb,
+      performance: leader.performance,
+      takeNonce: leader.takeNonce,
+      innerVoice: leader.innerVoice
     })
     current = null
   }
@@ -106,6 +135,13 @@ export function planGenerationUnits(lines: PlannedLine[], join = true): Generati
       line.pitch === previous.pitch &&
       line.speed === previous.speed &&
       line.volumeDb === previous.volumeDb &&
+      // A take has ONE control: an angry line and the calm reply after it
+      // are never read as one take.
+      samePerformance(line.performance, previous.performance) &&
+      (line.takeNonce ?? 0) === (previous.takeNonce ?? 0) &&
+      // A thought and the spoken line beside it are two takes: only one of
+      // them gets the echo.
+      !!line.innerVoice === !!previous.innerVoice &&
       line.startTime - previous.endTime <= JOIN_MAX_GAP_SECONDS &&
       line.endTime - current.lines[0].startTime <= JOIN_MAX_SPAN_SECONDS
     if (!joins) flush()
@@ -114,4 +150,35 @@ export function planGenerationUnits(lines: PlannedLine[], join = true): Generati
   }
   flush()
   return units
+}
+
+/** The most Auto-Speed will speed a line up. It used to make every line fit
+ * exactly, with no limit: a 3 s line in a 1 s slot played at 3x, and past
+ * the first minutes of an episode (where overruns pile up) the voice turned
+ * into an unclear gabble. Past this a line keeps its natural pace and runs
+ * a little late instead (planAutoSync). */
+export const AUTO_SPEED_MAX = 1.25
+
+/** Speed-up Auto-Speed gives one clip, or null to leave it as it is: it
+ * fits, it would gain too little, or it was already sped up once (pressing
+ * Auto-Speed again used to speed the sped-up file again, compounding). */
+export function autoSpeedFor(clipSeconds: number, availableSeconds: number, alreadyRefit: boolean): number | null {
+  if (alreadyRefit || availableSeconds <= 0) return null
+  const needed = clipSeconds / availableSeconds
+  if (needed <= 1.02) return null
+  return Math.round(Math.min(AUTO_SPEED_MAX, needed) * 1000) / 1000
+}
+
+/** Auto-Sync: every line back on its subtitle's start -- but never before
+ * the previous line has finished (plus a breath), so two lines never talk
+ * over each other. Returns only the clips that move. */
+export function planAutoSync(lines: { clipId: string; subtitleStart: number; clipStart: number; clipSeconds: number }[], breathSeconds = 0.05): { clipId: string; startTime: number }[] {
+  const moves: { clipId: string; startTime: number }[] = []
+  let previousEnd = Number.NEGATIVE_INFINITY
+  for (const line of [...lines].sort((a, b) => a.subtitleStart - b.subtitleStart)) {
+    const start = Math.max(line.subtitleStart, previousEnd + breathSeconds)
+    if (Math.abs(line.clipStart - start) > 0.001) moves.push({ clipId: line.clipId, startTime: Math.round(start * 1000) / 1000 })
+    previousEnd = start + line.clipSeconds
+  }
+  return moves
 }

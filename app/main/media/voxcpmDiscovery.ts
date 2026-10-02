@@ -79,7 +79,7 @@ export async function detectVoxCpmInstalls(knownPath?: string): Promise<string[]
 
   if (knownPath?.trim()) consider(knownPath.trim())
 
-  for (const root of searchRoots()) {
+  const searchUnder = async (root: string): Promise<void> => {
     const children = await listDirectories(root)
     for (const candidate of candidateInstallPaths(root, children)) {
       consider(candidate)
@@ -91,5 +91,27 @@ export async function detectVoxCpmInstalls(knownPath?: string): Promise<string[]
     }
   }
 
+  for (const root of searchRoots()) await searchUnder(root)
+
+  // On a drive root, also one ordinary folder down: installs live in
+  // `E:\Donwload\VoxCPM2`, `D:\AI\VoxCPM2`... -- a folder whose own name
+  // says nothing about VoxCPM. Only directory listings, and system folders
+  // are skipped, so this stays a quick look rather than a disk walk.
+  for (const root of searchRoots().filter(isDriveRoot)) {
+    for (const child of await listDirectories(root)) {
+      if (looksLikeVoxCpmFolder(child) || isSystemFolder(child)) continue // VoxCPM ones were searched above
+      await searchUnder(join(root, child))
+    }
+  }
+
   return found
+}
+
+function isDriveRoot(path: string): boolean {
+  return /^[A-Za-z]:\\?$/.test(path)
+}
+
+/** Folders on a drive root that never hold a user's portable install. */
+export function isSystemFolder(name: string): boolean {
+  return /^(\$|windows$|program files|programdata$|system volume information$|recovery$|perflogs$|msocache$|intel$|amd$|nvidia$|drivers$|boot$|config\.msi$|documents and settings$|users$|onedrivetemp$|\.)/i.test(name)
 }

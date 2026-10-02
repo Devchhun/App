@@ -122,7 +122,8 @@ export function rippleTrim(
   if (partner?.locked) return sequence
   let boundedTime = pointerTime
   if (edge === 'right') {
-    if (Number.isFinite(sourceDurationSeconds)) boundedTime = Math.min(boundedTime, target.startTime + ((sourceDurationSeconds as number) - target.sourceIn) / clipRate(target))
+    // A still image has no source end (see sequenceOps.ts's trimClip).
+    if (target.type !== 'image' && Number.isFinite(sourceDurationSeconds)) boundedTime = Math.min(boundedTime, target.startTime + ((sourceDurationSeconds as number) - target.sourceIn) / clipRate(target))
     if (partner) boundedTime = Math.min(boundedTime, partner.startTime + ((partnerSourceDurationSeconds ?? sourceEnd(partner)) - partner.sourceIn) / clipRate(partner))
   }
   const trimmedClip = applyTrim(target, edge, boundedTime, sourceDurationSeconds)

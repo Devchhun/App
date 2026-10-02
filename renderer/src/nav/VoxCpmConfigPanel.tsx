@@ -146,6 +146,14 @@ export function VoxCpmConfigPanel({ settings, onChange }: Props): JSX.Element {
             <GlobeIcon size={14} />
             Remote (Online)
           </button>
+          <button
+            className={settings.engine === 'kiritts' ? 'voxcpm-mode-option voxcpm-mode-option-active' : 'voxcpm-mode-option'}
+            onClick={() => onChange({ engine: 'kiritts' as DubbingEngine })}
+            title="KiriTTS in the cloud: Khmer voices and voice cloning with nothing running on this computer. Needs a KiriTTS API key (Settings > AI API Keys) on a plan with API access."
+          >
+            <GlobeIcon size={14} />
+            KiriTTS (Cloud)
+          </button>
         </div>
       </div>
 
@@ -206,7 +214,7 @@ export function VoxCpmConfigPanel({ settings, onChange }: Props): JSX.Element {
                 [
                   ['natural', 'Natural', 'Smoothest sound. Use this if the voice sounds processed or bubbly.'],
                   ['balanced', 'Balanced', 'The default: clean sound, still holds one speaker well.'],
-                  ['locked', 'Locked', 'Holds one speaker hardest across many lines, at the cost of a more processed sound.']
+                  ['locked', 'Locked', 'Holds one speaker hardest across many lines: emotions get less pitch room, so lines sound more alike. Can sound more processed.']
                 ] as const
               ).map(([value, label, hint]) => (
                 <button
@@ -223,7 +231,7 @@ export function VoxCpmConfigPanel({ settings, onChange }: Props): JSX.Element {
               {settings.tone === 'natural'
                 ? 'Smoothest sound -- pick this first if a generated voice warbles.'
                 : settings.tone === 'locked'
-                  ? 'Strongest speaker lock; can sound more processed.'
+                  ? 'Strongest speaker lock: each emotion may move the voice less, so every line stays closest to the character. Can sound more processed.'
                   : 'Clean sound with a good speaker lock.'}
             </div>
           </div>

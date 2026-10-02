@@ -10,6 +10,8 @@ import { getMediaCacheRoot } from './cache'
 import { probeMedia } from './probe'
 import { levelVoiceClip, REFERENCE_LEVEL } from './voiceLeveling'
 import { DEFAULT_VOICE_TONE, type VoxCpmDevice, type DubbingGenerationGroup, type ReferenceClipQuality, type VoiceTone } from '@shared/dubbing'
+import type { DubbingLineDebug, EmotionProfile } from '@shared/dubbingPerformance'
+import { runInBackground } from './processPriority'
 
 /** VoxCPM2 has a hard ~8,192-token context ceiling shared between reference
  * audio, input text, and generated audio -- at the model's own rough
@@ -234,6 +236,17 @@ export function computePitchCorrection(semitonesFromReference: number): number {
   return Math.round(-semitonesFromReference * 100) / 100
 }
 
+/** The shift that brings an expressive take back to its emotion's pitch
+ * limit -- only the part beyond the limit, at most 3 semitones (a take
+ * further off than that was already the closest of the retries, and a
+ * bigger shift would sound processed). 0 inside the limit or with no limit. */
+export function computeExcessPitchCorrection(semitonesFromReference: number, capSemitones: number | null): number {
+  if (!Number.isFinite(semitonesFromReference) || capSemitones === null || !Number.isFinite(capSemitones)) return 0
+  const excess = Math.abs(semitonesFromReference) - capSemitones
+  if (excess < 0.25) return 0
+  return Math.round(-Math.sign(semitonesFromReference) * Math.min(3, excess) * 100) / 100
+}
+
 /** Reads the `.pitch.json` the runner leaves beside a generated line (see
  * voxcpm_batch_runner.py) and turns it into the correction to apply. 0
  * when there is no sidecar (Edge TTS, the stock CLI, no reference). */
@@ -241,7 +254,11 @@ export async function readPitchCorrection(generatedPath: string): Promise<number
   const sidecar = generatedPath.replace(/\.wav$/i, '.pitch.json')
   if (sidecar === generatedPath || !existsSync(sidecar)) return 0
   try {
-    const parsed = JSON.parse(await readFile(sidecar, 'utf-8')) as { semitones?: number }
+    const parsed = JSON.parse(await readFile(sidecar, 'utf-8')) as { semitones?: number; correct?: boolean; cap?: number | null }
+    // An expressive take ("correct": false) is not pulled back to the
+    // neutral reference pitch -- that undoes the acting -- but anything past
+    // its emotion's limit ("cap") is, so it never lands on another voice.
+    if (parsed.correct === false) return computeExcessPitchCorrection(Number(parsed.semitones), parsed.cap ?? null)
     return computePitchCorrection(Number(parsed.semitones))
   } catch {
     return 0
@@ -254,7 +271,7 @@ function runtimePython(installDir: string): string {
 
 function runPythonJson(pythonExe: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(pythonExe, args, { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
+    const proc = runInBackground(spawn(pythonExe, args, { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }))
     let stdout = ''
     const timer = setTimeout(() => proc.kill(), timeoutMs)
     proc.stdout.on('data', (chunk: Buffer) => {
@@ -316,6 +333,84 @@ export async function measureReferenceClipQuality(installDir: string, clipPath: 
 export function voiceSeedFor(voiceId: string): number {
   const digest = createHash('sha1').update(`creative-ai-editor-voxcpm2-voice::${voiceId.trim().toLowerCase()}`).digest('hex')
   return 1000 + (parseInt(digest.slice(0, 8), 16) % 900000)
+}
+
+/** A performance line's seed: the voice's own seed plus an offset from the
+ * line and its take number. Measured on VoxCPM2: with the reference clip
+ * pinning the timbre, changing the seed changes the DELIVERY (the same
+ * angry line came out +3.7, -0.6 and +0.3 semitones above the reference on
+ * three seeds) while speaker similarity stayed 0.90-0.91 -- so one seed for
+ * every line of a voice gave every line the same delivery pattern. The
+ * offset stays under 100,000, so base + offset never reaches the runner's
+ * retry step (1,000,003) and cannot collide with another voice's retries.
+ * Same line + same take -> same seed (a re-run reproduces it);
+ * Regenerate bumps `take` for a different performance. */
+export function performanceSeedFor(voiceId: string, lineKey: string, take = 0): number {
+  const digest = createHash('sha1').update(`creative-ai-editor-performance::${lineKey}::${take}`).digest('hex')
+  return voiceSeedFor(voiceId) + 1 + (parseInt(digest.slice(0, 8), 16) % 97_331)
+}
+
+/** One line's job for the runner when the line carries a performance:
+ * its own control, seed, scoring profile and time slot. */
+export interface RunnerLineJob {
+  /** undefined = the group's control; null = no control at all. */
+  control?: string | null
+  seed?: number
+  profile?: EmotionProfile
+  slotSeconds?: number
+  /** Last resort when every take drifted off the voice: a held-back control,
+   * generated on the voice's own seed (see the runner's rescue take). */
+  safeControl?: string
+  voiceSeed?: number
+}
+
+/** The runner's JSON Lines input: one object per output line. */
+export function buildRunnerJobsJsonl(texts: string[], jobs: RunnerLineJob[]): string {
+  return texts
+    .map((text, i) => {
+      const job = jobs[i] ?? {}
+      const item: Record<string, unknown> = { text }
+      if (job.control !== undefined) item.control = job.control ?? ''
+      if (job.seed !== undefined) item.seed = job.seed
+      if (job.profile) item.profile = job.profile
+      if (job.slotSeconds && job.slotSeconds > 0) item.slotSeconds = Math.round(job.slotSeconds * 100) / 100
+      if (job.safeControl) item.safeControl = job.safeControl
+      if (job.voiceSeed !== undefined) item.voiceSeed = job.voiceSeed
+      return JSON.stringify(item)
+    })
+    .join('\n')
+}
+
+/** Parses the runner's `Debug: {...}` line (see voxcpm_batch_runner.py) into
+ * the line's debug record. null for anything else. */
+export function parseRunnerDebugLine(line: string): { index: number; debug: Partial<DubbingLineDebug> } | null {
+  if (!line.startsWith('Debug: ')) return null
+  try {
+    const raw = JSON.parse(line.slice(7)) as Record<string, unknown>
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    const index = num(raw.line)
+    if (index === null) return null
+    return {
+      index: index - 1,
+      debug: {
+        control: typeof raw.control === 'string' && raw.control ? raw.control : null,
+        seed: num(raw.seed) ?? undefined,
+        attempt: num(raw.attempt) ?? undefined,
+        attempts: num(raw.attempts) ?? undefined,
+        similarity: num(raw.similarity),
+        pitchDriftSt: num(raw.pitchShiftSt) ?? num(raw.pitchDriftSt),
+        pitchVariationSt: num(raw.pitchVariationSt),
+        energyVariationDb: num(raw.energyVariationDb),
+        expressiveness: num(raw.expression),
+        naturalness: num(raw.naturalness),
+        timing: num(raw.timing),
+        score: num(raw.score),
+        flat: raw.flat === true
+      }
+    }
+  } catch {
+    return null
+  }
 }
 
 /** Builds the seeded runner's argument array -- pure and independently
@@ -421,6 +516,18 @@ export function voiceReferenceClipPath(voiceId: string, control: string): string
  * Best-effort by design: any failure returns null and the caller falls back
  * to plain `--control`, i.e. exactly today's behavior. Minting is never
  * allowed to be the thing that breaks dubbing outright. */
+/** A catalog voice whose reference was CHOSEN BY EAR and ships with the app
+ * (resources/voice-refs/<voiceId>.wav) -- the Khmer drama voices. Minting
+ * from a description samples a new speaker every time, so a voice minted on
+ * the user's machine is whatever that one draw happened to be; a bundled
+ * clip is the same, picked, voice on every machine. Null when there is none
+ * (every other catalog voice still mints its own). */
+export function bundledVoiceReferencePath(voiceId: string): string | null {
+  const dir = app.isPackaged ? join(process.resourcesPath, 'voice-refs') : join(__dirname, '../../resources/voice-refs')
+  const path = join(dir, `${fileNameSafe(voiceId)}.wav`)
+  return existsSync(path) ? path : null
+}
+
 export async function ensureVoiceReferenceClip(installDir: string, device: VoxCpmDevice, voiceId: string, control: string): Promise<string | null> {
   const outputPath = voiceReferenceClipPath(voiceId, control)
   if (existsSync(outputPath)) return outputPath
@@ -431,7 +538,7 @@ export async function ensureVoiceReferenceClip(installDir: string, device: VoxCp
   const env = { ...process.env, PYTHONPATH: [p.sourceSrc, process.env.PYTHONPATH].filter(Boolean).join(delimiter) }
 
   return new Promise<string | null>((resolve) => {
-    const proc = spawn(p.pythonExe, args, { env })
+    const proc = runInBackground(spawn(p.pythonExe, args, { env }))
     let stallTimer: ReturnType<typeof setTimeout>
     const armStall = (): void => {
       clearTimeout(stallTimer)
@@ -491,14 +598,24 @@ export function runVoxCpmBatch(
   group: Pick<DubbingGenerationGroup, 'voiceId' | 'control' | 'referenceAudioPath' | 'promptText'>,
   texts: string[],
   onSegmentDone: (index: number, outputPath: string | null) => void,
-  options: { pitchMatch?: boolean; tone?: VoiceTone; signal?: AbortSignal } = {}
+  options: {
+    pitchMatch?: boolean
+    tone?: VoiceTone
+    signal?: AbortSignal
+    /** Per-line jobs (same order as `texts`) -- only honoured by the seeded
+     * runner; the stock CLI fallback has no per-line control. */
+    lineJobs?: RunnerLineJob[]
+    /** The runner's report on the take it kept for line `index`. */
+    onLineDebug?: (index: number, debug: Partial<DubbingLineDebug>) => void
+  } = {}
 ): Promise<RunVoxCpmBatchResult> {
   const p = voxcpmPaths(installDir)
+  const perLine = !!options.lineJobs && existsSync(voxcpmRunnerPath())
 
   return mkdtemp(join(tmpdir(), 'voxcpm-')).then((workDir) => {
-    const inputFile = join(workDir, 'input.txt')
+    const inputFile = join(workDir, perLine ? 'input.jsonl' : 'input.txt')
     const outputDir = join(workDir, 'out')
-    return writeFile(inputFile, texts.join('\n'), 'utf-8').then(
+    return writeFile(inputFile, perLine ? buildRunnerJobsJsonl(texts, options.lineJobs!) : texts.join('\n'), 'utf-8').then(
       () =>
         new Promise<RunVoxCpmBatchResult>((resolve, reject) => {
           // Prefer the seeded runner: it re-seeds every RNG before each line,
@@ -514,7 +631,7 @@ export function runVoxCpmBatch(
             ? buildSeededBatchArgs(group, installDir, device, inputFile, outputDir, options)
             : buildBatchArgs(group, installDir, device, inputFile, outputDir)
           const env = { ...process.env, PYTHONPATH: [p.sourceSrc, process.env.PYTHONPATH].filter(Boolean).join(delimiter) }
-          const proc = spawn(p.pythonExe, args, { env })
+          const proc = runInBackground(spawn(p.pythonExe, args, { env }))
           // Cancel stops the model mid-batch; lines already saved are kept
           // (the close handler below still resolves with them).
           if (options.signal?.aborted) proc.kill()
@@ -535,6 +652,11 @@ export function runVoxCpmBatch(
             const lines = stderrTail.split('\n')
             stderrTail = lines.pop() ?? ''
             for (const line of lines) {
+              const debug = parseRunnerDebugLine(line.trim())
+              if (debug) {
+                options.onLineDebug?.(debug.index, debug.debug)
+                continue
+              }
               if (/^Saved: /.test(line) || /^Failed on line \d+:/.test(line)) {
                 const index = Math.min(completed, texts.length - 1)
                 completed = Math.min(completed + 1, texts.length)
@@ -609,7 +731,13 @@ export function computeAutoFitSpeed(generatedDurationSeconds: number, slotDurati
  * tempo/pitch range in one pass with much higher-fidelity time-stretching,
  * and `formant=preserved` keeps a pitch-shifted voice sounding like a human
  * voice instead of a sped-up/slowed-down tape ("chipmunk" effect). */
-export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number; volumeDb: number }): string | null {
+/** The inner-voice echo (a character's thought, shared/innerVoice.ts):
+ * three repeats at 60/120/200 ms fading out, over a short pad so the last
+ * word's echo is heard instead of cut off. Measured with the app's own echo
+ * detector as clearly echoed. */
+export const INNER_VOICE_ECHO_FILTER = 'apad=pad_dur=0.35,aecho=0.85:0.75:60|120|200:0.35|0.22|0.12'
+
+export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number; volumeDb: number; echo?: boolean }): string | null {
   const steps: string[] = []
 
   const pitchRatio = Math.pow(2, fx.pitch / 12)
@@ -626,6 +754,9 @@ export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number
   }
 
   if (fx.volumeDb !== 0) steps.push(`volume=${fx.volumeDb}dB`)
+
+  // Last, after speed-fit: the echo tail is not speech to be fitted.
+  if (fx.echo) steps.push(INNER_VOICE_ECHO_FILTER)
 
   return steps.length > 0 ? steps.join(',') : null
 }
@@ -715,7 +846,7 @@ export function fileNameSafe(id: string): string {
   return id.replace(/[^A-Za-z0-9._-]+/g, '-')
 }
 
-export async function applyDubbingPostFx(jobId: string, inputPath: string, fx: { pitch: number; speed: number; volumeDb: number }): Promise<string> {
+export async function applyDubbingPostFx(jobId: string, inputPath: string, fx: { pitch: number; speed: number; volumeDb: number; echo?: boolean }): Promise<string> {
   const filterGraph = buildDubbingPostFxFilterGraph(fx)
   if (!filterGraph) return inputPath
   // Always writes .wav regardless of what came in -- VoxCPM2 produces .wav,

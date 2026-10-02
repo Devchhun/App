@@ -76,7 +76,11 @@ export function registerMediaProtocolHandler(): void {
           'Content-Range': `bytes ${start}-${end}/${stat.size}`,
           'Accept-Ranges': 'bytes',
           'Content-Length': String(end - start + 1),
-          'Content-Type': mimeType
+          'Content-Type': mimeType,
+          // The Player routes louder-than-100% clips through Web Audio
+          // (renderer/src/media/audioBoost.ts): without CORS that sound
+          // would be silent.
+          'Access-Control-Allow-Origin': '*'
         }
       })
     }
@@ -87,7 +91,8 @@ export function registerMediaProtocolHandler(): void {
       headers: {
         'Content-Length': String(stat.size),
         'Accept-Ranges': 'bytes',
-        'Content-Type': mimeType
+        'Content-Type': mimeType,
+        'Access-Control-Allow-Origin': '*'
       }
     })
   })

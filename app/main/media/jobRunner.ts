@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { ffmpegPath } from './ffmpeg'
 import { parseFfmpegProgressPercent } from './ffmpegProgress'
+import { runInBackground } from './processPriority'
 
 export class CanceledError extends Error {
   constructor() {
@@ -25,16 +26,26 @@ export class TimeoutError extends Error {
  * killed -- only one that's gone completely silent for this long. */
 const STALL_TIMEOUT_MS = 90_000
 
+/** `-movflags +faststart` rewrites the whole file once the encode is done,
+ * printing nothing meanwhile: 25 s for 3.8 GB on a fast SSD, minutes on a
+ * slow disk. The 90 s limit killed a finished 2 GB export there, at 100%. */
+const FASTSTART_STALL_TIMEOUT_MS = 30 * 60_000
+
 const activeJobs = new Map<string, ChildProcess>()
 const canceledJobs = new Set<string>()
 
-/** Kills whichever ffmpeg process is currently running under this job id, if any. */
+/** Kills whichever ffmpeg process is currently running under this job id,
+ * if any -- and every job named `<jobId>:<part>` (an export's pieces run
+ * side by side under its id). */
 export function cancelJob(jobId: string): boolean {
-  const proc = activeJobs.get(jobId)
-  if (!proc) return false
-  canceledJobs.add(jobId)
-  proc.kill()
-  return true
+  let any = false
+  for (const [id, proc] of activeJobs) {
+    if (id !== jobId && !id.startsWith(`${jobId}:`)) continue
+    canceledJobs.add(id)
+    proc.kill()
+    any = true
+  }
+  return any
 }
 
 export interface RunFfmpegOptions {
@@ -50,7 +61,7 @@ export interface RunFfmpegResult {
 
 export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptions = {}): Promise<RunFfmpegResult> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args)
+    const proc = runInBackground(spawn(ffmpegPath, args))
     activeJobs.set(jobId, proc)
 
     const stdoutChunks: Buffer[] = []
@@ -66,12 +77,13 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
     let timedOut = false
 
     let stallTimer: ReturnType<typeof setTimeout>
+    let stallMs = STALL_TIMEOUT_MS
     const armStall = (): void => {
       clearTimeout(stallTimer)
       stallTimer = setTimeout(() => {
         timedOut = true
         proc.kill()
-      }, STALL_TIMEOUT_MS)
+      }, stallMs)
     }
     armStall()
 
@@ -91,8 +103,10 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
     })
 
     proc.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString()
+      if (text.includes('Starting second pass')) stallMs = FASTSTART_STALL_TIMEOUT_MS
       armStall()
-      stderr += chunk.toString()
+      stderr += text
       if (stderr.length > 8000) stderr = stderr.slice(-8000)
     })
 
@@ -108,7 +122,7 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
       activeJobs.delete(jobId)
       const wasCanceled = canceledJobs.delete(jobId)
       if (timedOut) {
-        reject(new TimeoutError(`ffmpeg made no progress for ${STALL_TIMEOUT_MS / 1000}s and was stopped`))
+        reject(new TimeoutError(`ffmpeg made no progress for ${stallMs / 1000}s and was stopped`))
       } else if (wasCanceled) {
         reject(new CanceledError())
       } else if (code === 0) {

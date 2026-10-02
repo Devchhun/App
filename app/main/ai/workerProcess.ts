@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { randomUUID } from 'crypto'
 import { resolvePythonRuntime } from './pythonRuntime'
 import { ensureVenv, type ProvisionProgress } from './provisionVenv'
+import { runInBackground } from '../media/processPriority'
 
 export class WorkerCanceledError extends Error {
   constructor(message = 'Canceled') {
@@ -64,7 +65,7 @@ export class PythonWorker {
       pythonExe = await ensureVenv((p) => this.emitProvisionProgress(p))
     }
 
-    const proc = spawn(pythonExe, ['-u', runtime.workerScript], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const proc = runInBackground(spawn(pythonExe, ['-u', runtime.workerScript], { stdio: ['pipe', 'pipe', 'pipe'] }))
     this.proc = proc
 
     proc.stdout.on('data', (chunk: Buffer) => this.handleStdout(chunk))

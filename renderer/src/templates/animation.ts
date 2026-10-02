@@ -47,6 +47,20 @@ const ENTER_EXIT_SECONDS_BY_INTENSITY: Record<AnimationIntensity, number> = {
   custom: 0.4
 }
 
+/** How long a scene takes to fade in and out (the Player's computeSceneMotion
+ * rule, for Export to burn in the same). */
+export function sceneFadeSeconds(
+  scene: { startTime: number; endTime: number; animationDurationSeconds?: number; animationInDurationSeconds?: number; animationOutDurationSeconds?: number },
+  intensity: AnimationIntensity = 'balanced'
+): { fadeIn: number; fadeOut: number } {
+  const fallback = ENTER_EXIT_SECONDS_BY_INTENSITY[intensity]
+  const half = Math.max(0.01, scene.endTime - scene.startTime) / 2
+  return {
+    fadeIn: Math.min(scene.animationInDurationSeconds ?? scene.animationDurationSeconds ?? fallback, half),
+    fadeOut: Math.min(scene.animationOutDurationSeconds ?? scene.animationDurationSeconds ?? fallback, half)
+  }
+}
+
 export interface SceneMotionOptions {
   intensity?: AnimationIntensity
   /** Per-scene override (Properties > Timing > In/Out duration); falls back to the brand's animationIntensity when unset. */

@@ -16,9 +16,8 @@ import { GraphicsTrack } from './GraphicsTrack'
 import { ClipTrack } from './ClipTrack'
 import { TimelineTrackHeaders } from './TimelineTrackHeaders'
 import { useConfirm } from '../ui/ConfirmDialog'
-import { useHistory } from '../history/HistoryContext'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { visibleTracksForDisplay, trackDisplayHeight, isInViewport, withCaptionTrackContent, isNarrationTrackId, NARRATION_TRACK_ID, findOrCreateTrack, type OccupiedRange } from './trackModel'
+import { visibleTracksForDisplay, trackDisplayHeight, isInViewport, withCaptionTrackContent, isNarrationTrackId, NARRATION_TRACK_ID, type OccupiedRange } from './trackModel'
 import { useNarration } from '../narration/NarrationContext'
 import { useAiDubber } from '../dubbing/AiDubberContext'
 import { planSequentialDrop, planStackDrop, type DropAsset, type PlannedPlacement } from './placementPlanning'
@@ -36,7 +35,10 @@ import { formatDuration } from '../media/format'
 import { computeTimelineDisplayDuration } from './timelineDuration'
 import { nextPlaybackScrollLeft } from './playbackFollow'
 import { nearestInsertionBoundary } from './magnet'
-import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey } from '../dubbing/voxcpmSettings'
+import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey, type DubbingEngine } from '../dubbing/voxcpmSettings'
+import { ENGINE_LABEL } from '../dubbing/engineVoices'
+import { SubtitleQuickEditor } from './SubtitleQuickEditor'
+import { REMOVE_BACKGROUND_EVENT } from '../media/removeBackgroundEvent'
 import type { MediaItem } from '@shared/media'
 import type { TimelineClip, Scene } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
@@ -102,7 +104,7 @@ export function Timeline(): JSX.Element {
   const { items, selectedId, select: selectMediaForInspection, importPaths } = useMedia()
   const { transcripts, moveSegment, moveSegments, removeSegments } = useTranscript()
   const { currentTime } = usePlaybackTime()
-  const { seekTo, isPlaying } = usePlaybackControls()
+  const { seekTo, isPlaying, setPlaying } = usePlaybackControls()
   const { scenesByMedia, selectedSceneId, selectedSceneIds, selectScene, selectScenes, retimeScene, deleteScenes } = useScenes()
   const { setRightTab } = useUiState()
   const narration = useNarration()
@@ -142,11 +144,8 @@ export function Timeline(): JSX.Element {
     replaceClipMedia,
     addTrack,
     removeKeyframe,
-    insertClip,
-    ensureTrack,
-    toggleClipMute
+    mirrorAudioUnderClips
   } = useSequence()
-  const { beginTransaction, endTransaction } = useHistory()
   const confirm = useConfirm()
   const {
     pixelsPerSecond,
@@ -165,9 +164,17 @@ export function Timeline(): JSX.Element {
   } = useTimelineView()
   const { triggerFreezeFrame } = useFreezeFrame()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
+  /** The subtitle being typed / voiced in place (see SubtitleQuickEditor). */
+  const [subtitleEditor, setSubtitleEditor] = useState<{ segmentId: string; isNew: boolean } | null>(null)
+  const closeSubtitleEditor = useCallback(() => setSubtitleEditor(null), [])
   const [selectedCaptionSegmentIds, setSelectedCaptionSegmentIds] = useState<string[]>([])
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  /** `.timeline-scroll-2d`'s scrollLeft as of its last scroll/resize (the
+   * viewport tracker below records it) -- read in render instead of the
+   * element's own scrollLeft, which forces a synchronous layout on every
+   * render of the Timeline. */
+  const scrollLeftRef = useRef(0)
   const timelineRootRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   /** 'scrub': dragging on the ruler seeks the playhead (existing behavior).
@@ -178,6 +185,11 @@ export function Timeline(): JSX.Element {
    * 'pan': Hand tool -- dragging scrolls the Timeline instead of anything else.
    * 'range': Range tool -- dragging sets rangeSelection instead of anything else. */
   const draggingRef = useRef<'scrub' | 'maybe-box' | 'box' | 'pan' | 'range' | false>(false)
+  /** A scrub that began during playback: playback is paused for the drag
+   * and resumes on release. Left playing, the playback clock (which never
+   * steps backwards and follows the lagging <video>) and the pointer both
+   * moved the playhead every frame -- it jumped back and forth between them. */
+  const resumeAfterScrubRef = useRef(false)
   const boxStartRef = useRef<{ x: number; y: number } | null>(null)
   const [boxRect, setBoxRect] = useState<ScreenRect | null>(null)
   const panStartRef = useRef<{ clientX: number; clientY: number; scrollLeft: number; scrollTop: number } | null>(null)
@@ -221,8 +233,15 @@ export function Timeline(): JSX.Element {
   /** The instrumental track waiting on its import round-trip, plus the video
    * clip it belongs under -- same pending-ref-then-items-effect pattern as
    * pendingReplaceRef above. */
-  const pendingVocalRemovalRef = useRef<{ clipId: string; path: string } | null>(null)
+  const pendingVocalRemovalRef = useRef<{ clipIds: string[]; path: string } | null>(null)
+  /** Remove Background on a picture: the running job (its pill), or the
+   * last error to show. The cut-out comes back through the same import +
+   * pendingReplaceRef round-trip Replace Media uses. */
+  const [backgroundJob, setBackgroundJob] = useState<{ clipId: string; jobId: string; stage: string; percent: number } | null>(null)
+  const [backgroundError, setBackgroundError] = useState<string | null>(null)
   const [removingVocalsClipId, setRemovingVocalsClipId] = useState<string | null>(null)
+  /** The running Remove Vocal job, for its Cancel button. */
+  const vocalJobIdRef = useRef<string | null>(null)
   /** Live progress of the running Remove Vocal job (see the onProgress
    * subscription below) -- null when nothing is running. */
   const [vocalProgress, setVocalProgress] = useState<{ percent: number; stage: string } | null>(null)
@@ -259,6 +278,11 @@ export function Timeline(): JSX.Element {
   // clip added to an otherwise-empty Timeline entered an infinite render
   // loop (React error #185) even though no captions existed at all.
   const segments = useMemo(() => transcript?.segments ?? [], [transcript?.segments])
+  // Only the subtitles in view are drawn, like clips and scenes.
+  const visibleCaptionSegments = useMemo(
+    () => (viewportRange ? segments.filter((s) => isInViewport(s.startTime, s.endTime - s.startTime, viewportRange.start, viewportRange.end)) : segments),
+    [segments, viewportRange]
+  )
 
   useEffect(() => {
     const existing = new Set(segments.map((segment) => segment.id))
@@ -287,11 +311,42 @@ export function Timeline(): JSX.Element {
     setSelectedCaptionSegmentIds([])
   }, [selectedId, selectedCaptionSegmentIds, aiDubber, removeSegments])
 
+  /** Deletes the selected subtitles -- asking first unless it is one line
+   * on its own. Subtitles are not on the Undo stack, and they get selected
+   * in bulk without anyone meaning to: a box drawn to delete dub clips picks
+   * up every subtitle under it, Ctrl+A selects all of them. Either followed
+   * by Delete silently wiped 181 lines of an episode. The Delete key and the
+   * toolbar's delete both come through here. */
+  const removeSelectedCaptionsAsking = useCallback(() => {
+    const captionCount = selectedCaptionSegmentIds.length
+    if (captionCount === 0) return
+    const otherItems = selectedTimelineClipIds.length > 0 || selectedSceneIds.length > 0
+    if (captionCount === 1 && !otherItems) {
+      removeSelectedCaptions()
+      return
+    }
+    void confirm({
+      title: otherItems ? `Also delete ${captionCount} subtitle${captionCount === 1 ? '' : 's'}?` : `Delete ${captionCount} subtitles?`,
+      message: [
+        otherItems
+          ? `The selection also covered ${captionCount} subtitle line${captionCount === 1 ? '' : 's'}. The clips are deleted; the subtitles only if you say so.`
+          : `${captionCount} subtitle lines will be removed.`,
+        'Subtitles cannot be brought back with Undo.'
+      ],
+      confirmLabel: 'Delete subtitles',
+      danger: true
+    }).then((ok) => {
+      if (ok) removeSelectedCaptions()
+      else setSelectedCaptionSegmentIds([])
+    })
+  }, [selectedCaptionSegmentIds.length, selectedTimelineClipIds.length, selectedSceneIds.length, removeSelectedCaptions, confirm])
+
   const deleteAllSelectedTimelineItems = useCallback(() => {
+    // Captions first: the question must see the clips still selected.
+    removeSelectedCaptionsAsking()
     if (selectedTimelineClipIds.length > 0) deleteSelected()
     if (selectedSceneIds.length > 0) deleteScenes(selectedSceneIds)
-    if (selectedCaptionSegmentIds.length > 0) removeSelectedCaptions()
-  }, [selectedTimelineClipIds.length, deleteSelected, selectedSceneIds, deleteScenes, selectedCaptionSegmentIds.length, removeSelectedCaptions])
+  }, [removeSelectedCaptionsAsking, selectedTimelineClipIds.length, deleteSelected, selectedSceneIds, deleteScenes])
 
   // Graphics scenes are already project-global on disk (Scene.startTime/endTime
   // are absolute seconds, not media-relative) -- flatten every media's bucket
@@ -367,7 +422,16 @@ export function Timeline(): JSX.Element {
   // the workspace is prepared, even before its first accepted take, so the
   // user can see the recording target row -- not gated behind having
   // content the way an ordinary empty Overlay/Music track is.
-  const alwaysVisibleTrackIds = useMemo(() => (narration.active ? new Set([NARRATION_TRACK_ID]) : undefined), [narration.active])
+  // AI Dubber: the subtitle row shows as soon as there is a video, before
+  // its first subtitle -- right-click on it is where one is added.
+  const hasVideoClip = useMemo(() => sequence.clips.some((clip) => clip.type === 'video'), [sequence.clips])
+  const showEmptyCaptionRow = aiDubber.active && hasVideoClip
+  const alwaysVisibleTrackIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (narration.active) ids.add(NARRATION_TRACK_ID)
+    if (showEmptyCaptionRow) for (const track of sequence.tracks) if (track.kind === 'caption') ids.add(track.id)
+    return ids.size > 0 ? ids : undefined
+  }, [narration.active, showEmptyCaptionRow, sequence.tracks])
   // Story Narration Workspace: "Take N" labels for VO1's accepted clips, and
   // the live red in-progress recording region shown on VO1 while actively
   // recording/reviewing the current segment (before it's been accepted, so
@@ -584,8 +648,8 @@ export function Timeline(): JSX.Element {
     selectedIds: selectedCaptionSegmentIds,
     allIds: segments.map((segment) => segment.id),
     select: setSelectedCaptionSegmentIds,
-    removeSelected: removeSelectedCaptions
-  }), [selectedCaptionSegmentIds, segments, removeSelectedCaptions])
+    removeSelected: removeSelectedCaptionsAsking
+  }), [selectedCaptionSegmentIds, segments, removeSelectedCaptionsAsking])
   useTimelineShortcuts(effectiveDuration, captionShortcuts, playbackEndTime)
 
   const activeSegmentId = useMemo(() => {
@@ -682,6 +746,43 @@ export function Timeline(): JSX.Element {
     [splitClipAt, linkageOn]
   )
 
+  const handleRemoveBackground = useCallback(
+    async (clip: TimelineClip) => {
+      const media = mediaById[clip.mediaId]
+      if (clip.type !== 'image' || !media?.originalPath || backgroundJob) return
+      const jobId = `remove-bg-${crypto.randomUUID()}`
+      setBackgroundError(null)
+      setBackgroundJob({ clipId: clip.id, jobId, stage: 'Starting', percent: 0 })
+      const result = await window.api.media.removeBackground(jobId, media.originalPath)
+      setBackgroundJob(null)
+      if (!result.ok) {
+        if (!result.canceled) setBackgroundError(result.error)
+        return
+      }
+      pendingReplaceRef.current = { clipId: clip.id, path: result.outputPath }
+      await importPaths([result.outputPath])
+    },
+    [mediaById, backgroundJob, importPaths]
+  )
+  useEffect(
+    () =>
+      window.api.media.onRemoveBackgroundProgress((progress) => {
+        setBackgroundJob((job) => (job && job.jobId === progress.jobId ? { ...job, stage: progress.stage, percent: progress.percent } : job))
+      }),
+    []
+  )
+  // Clip Properties' button asks for it by clip id.
+  const removeBackgroundRef = useRef(handleRemoveBackground)
+  removeBackgroundRef.current = handleRemoveBackground
+  useEffect(() => {
+    const onRequest = (e: Event): void => {
+      const clip = sequence.clips.find((c) => c.id === (e as CustomEvent<string>).detail)
+      if (clip) void removeBackgroundRef.current(clip)
+    }
+    window.addEventListener(REMOVE_BACKGROUND_EVENT, onRequest)
+    return () => window.removeEventListener(REMOVE_BACKGROUND_EVENT, onRequest)
+  }, [sequence.clips])
+
   const handleReplaceMedia = useCallback(
     async (clipId: string) => {
       const paths = await window.api.media.pickFiles()
@@ -716,24 +817,39 @@ export function Timeline(): JSX.Element {
     async (clip: TimelineClip): Promise<void> => {
       const media = mediaById[clip.mediaId]
       if (!media?.originalPath) return
+      // Every selected clip of the same video at once (Video Sync can cut
+      // one film into hundreds of clips) -- the separation is of the whole
+      // file and kept, so they all share the one run.
+      const targets = selectedTimelineClipIds.includes(clip.id)
+        ? sequence.clips.filter((c) => selectedTimelineClipIds.includes(c.id) && c.type === 'video' && c.mediaId === clip.mediaId).map((c) => c.id)
+        : [clip.id]
       setRemovingVocalsClipId(clip.id)
+      const jobId = `vocal-${clip.id}-${Date.now()}`
+      vocalJobIdRef.current = jobId
       try {
         // The real separator (Demucs) runs from the VoxCPM2 runtime the
         // AI Dubber is already configured with -- same per-machine setting.
         const voxcpm = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
-        const result = await window.api.vocalRemoval.removeVocals(`vocal-${clip.id}-${Date.now()}`, media.originalPath, voxcpm.installDir, voxcpm.device)
+        const result = await window.api.vocalRemoval.removeVocals(jobId, media.originalPath, voxcpm.installDir, voxcpm.device)
         if (!result.ok) {
-          await confirm({ title: 'Could not remove vocals', message: result.error, confirmLabel: 'OK', hideCancel: true })
+          if (!result.canceled) await confirm({ title: 'Could not remove vocals', message: result.error, confirmLabel: 'OK', hideCancel: true })
           return
         }
-        pendingVocalRemovalRef.current = { clipId: clip.id, path: result.outputPath }
+        // Already in Media (an earlier Remove Vocal on this video): straight on.
+        const existing = items.find((item) => item.originalPath === result.outputPath && item.stage === 'ready')
+        if (existing) {
+          mirrorAudioUnderClips(targets, existing.id)
+          return
+        }
+        pendingVocalRemovalRef.current = { clipIds: targets, path: result.outputPath }
         await importPaths([result.outputPath])
       } finally {
+        vocalJobIdRef.current = null
         setRemovingVocalsClipId(null)
         setVocalProgress(null)
       }
     },
-    [mediaById, importPaths, confirm]
+    [mediaById, importPaths, confirm, selectedTimelineClipIds, sequence.clips, mirrorAudioUnderClips, items]
   )
 
   useEffect(() => {
@@ -743,16 +859,9 @@ export function Timeline(): JSX.Element {
     if (!match || (match.stage !== 'ready' && match.stage !== 'error')) return
     pendingVocalRemovalRef.current = null
     if (match.stage === 'error') return
-    const clip = sequence.clips.find((c) => c.id === pending.clipId)
-    if (!clip) return
-
-    const occupied: OccupiedRange[] = sequence.clips.map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
-    const routing = findOrCreateTrack(sequence.tracks, occupied, clip.startTime, clip.duration, 'audio')
-    beginTransaction()
-    if (routing.newTrack) ensureTrack(routing.newTrack)
-    insertClip(assetFromMediaItem(match), clip.startTime, routing.trackId)
-    if (!clip.muted) toggleClipMute(clip.id)
-    endTransaction()
+    // Each clip gets the stretch of the instrumental that matches its own
+    // stretch of the video (not the file from its start).
+    mirrorAudioUnderClips(pending.clipIds, match.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `items` should retrigger this; the sequence mutators are stable context callbacks.
   }, [items])
 
@@ -814,6 +923,9 @@ export function Timeline(): JSX.Element {
           onClick: () => void handleRemoveVocal(clip),
           disabled: !media?.metadata?.hasAudio || removingVocalsClipId !== null
         },
+        ...(clip.type === 'image'
+          ? [{ label: backgroundJob?.clipId === clip.id ? 'Removing Background…' : 'Remove Background', onClick: () => void handleRemoveBackground(clip), disabled: !!backgroundJob || clip.locked }]
+          : []),
         { label: clip.groupId ? 'Ungroup' : 'Group Selected', onClick: clip.groupId ? ungroupSelected : groupSelected, disabled: !clip.groupId && selectedTimelineClipIds.length < 2 },
         { separator: true, label: '' },
         { label: 'Replace Media…', onClick: () => void handleReplaceMedia(clip.id), disabled: clip.locked },
@@ -858,7 +970,9 @@ export function Timeline(): JSX.Element {
       linkageOn,
       triggerFreezeFrame,
       handleReplaceMedia,
-      resetClipProperties
+      resetClipProperties,
+      backgroundJob,
+      handleRemoveBackground
     ]
   )
 
@@ -981,6 +1095,53 @@ export function Timeline(): JSX.Element {
     [sequence, pasteAtTime, hasClipboardContent, addTrack, addMarkerAtTime, selectClips, currentTime, removeGap, removeAllGapsOnTrack, linkageOn]
   )
 
+  // The subtitle row's own menus belong to the AI Dubber's subtitles: the
+  // ones shown are the dubber's (or there are none yet, and the first one
+  // starts them).
+  const dubberOwnsCaptions = !aiDubber.state.videoMediaId || aiDubber.state.videoMediaId === selectedId
+  const buildCaptionMenuItems = useCallback(
+    (segmentId: string): ContextMenuItem[] => {
+      const segment = aiDubber.segments.find((s) => s.id === segmentId)
+      const hasText = !!(segment?.editedText ?? segment?.text ?? '').trim()
+      const busy = aiDubber.segments.some((s) => aiDubber.getSegmentState(s.id).status === 'generating')
+      const generateWith = (engine: DubbingEngine): ContextMenuItem => ({
+        label: `Generate with ${ENGINE_LABEL[engine]}`,
+        onClick: () => aiDubber.generateSegmentWith(segmentId, engine),
+        disabled: !hasText || busy
+      })
+      return [
+        { label: hasText ? 'Edit Subtitle…' : 'Edit Subtitle… (no text yet)', onClick: () => setSubtitleEditor({ segmentId, isNew: false }) },
+        { separator: true, label: '' },
+        generateWith('voxcpm2'),
+        generateWith('edge-tts'),
+        generateWith('kiritts'),
+        { label: 'Generate with Voice…', onClick: () => setSubtitleEditor({ segmentId, isNew: false }), disabled: busy },
+        { separator: true, label: '' },
+        { label: 'Delete Subtitle', danger: true, onClick: () => aiDubber.removeSubtitle(segmentId) }
+      ]
+    },
+    [aiDubber]
+  )
+  const buildCaptionRowMenuItems = useCallback(
+    (atTime: number): ContextMenuItem[] => {
+      const hasVideo = sequence.clips.some((clip) => clip.type === 'video')
+      const selectedVideo = items.find((m) => m.id === selectedId && m.kind === 'video')?.id
+      return [
+        {
+          label: hasVideo ? 'Add Subtitle Here' : 'Add Subtitle Here (add a video first)',
+          disabled: !hasVideo,
+          onClick: () => {
+            const id = aiDubber.addSubtitleAt(atTime, selectedVideo)
+            if (id) setSubtitleEditor({ segmentId: id, isNew: true })
+          }
+        },
+        { separator: true, label: '' },
+        ...buildEmptySpaceMenuItems(atTime, undefined)
+      ]
+    },
+    [sequence.clips, items, selectedId, aiDubber, buildEmptySpaceMenuItems]
+  )
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
@@ -1003,6 +1164,21 @@ export function Timeline(): JSX.Element {
         return
       }
 
+      // A subtitle: edit it, voice it. The subtitle row: add one there.
+      if (dubberOwnsCaptions) {
+        const captionEl = target.closest<HTMLElement>('[data-caption-id]')
+        const captionId = captionEl?.dataset.captionId
+        if (captionId) {
+          if (!selectedCaptionSegmentIds.includes(captionId)) selectCaptionSegment(captionId)
+          setContextMenu({ x: e.clientX, y: e.clientY, items: buildCaptionMenuItems(captionId) })
+          return
+        }
+        if (target.closest('[data-track-kind="caption"]')) {
+          setContextMenu({ x: e.clientX, y: e.clientY, items: buildCaptionRowMenuItems(atTime) })
+          return
+        }
+      }
+
       const clipEl = target.closest<HTMLElement>('[data-clip-id]')
       if (clipEl) {
         const clip = sequence.clips.find((c) => c.id === clipEl.dataset.clipId)
@@ -1021,7 +1197,7 @@ export function Timeline(): JSX.Element {
       const trackEl = target.closest<HTMLElement>('[data-track-id]')
       setContextMenu({ x: e.clientX, y: e.clientY, items: buildEmptySpaceMenuItems(atTime, trackEl?.dataset.trackId) })
     },
-    [pixelsPerSecond, sequence.clips, selectedTimelineClipIds, selectClip, buildClipMenuItems, buildRulerMenuItems, buildEmptySpaceMenuItems, buildKeyframeMenuItems]
+    [pixelsPerSecond, sequence.clips, selectedTimelineClipIds, selectClip, buildClipMenuItems, buildRulerMenuItems, buildEmptySpaceMenuItems, buildKeyframeMenuItems, dubberOwnsCaptions, selectedCaptionSegmentIds, selectCaptionSegment, buildCaptionMenuItems, buildCaptionRowMenuItems]
   )
 
   const seekFromClientX = useCallback(
@@ -1239,6 +1415,8 @@ export function Timeline(): JSX.Element {
     // seeks like before.
     if ((e.target as HTMLElement).closest('.timeline-ruler, .timeline-playhead-handle')) {
       draggingRef.current = 'scrub'
+      resumeAfterScrubRef.current = isPlaying
+      if (isPlaying) setPlaying(false)
       seekFromClientX(e.clientX)
       trackDragOnWindow()
       return
@@ -1349,6 +1527,10 @@ export function Timeline(): JSX.Element {
       // throttled frame happened to leave it.
       seekFromClientX(e.clientX)
       draggingRef.current = false
+      if (resumeAfterScrubRef.current) {
+        resumeAfterScrubRef.current = false
+        setPlaying(true)
+      }
       return
     }
     if (draggingRef.current === 'range') {
@@ -1496,6 +1678,7 @@ export function Timeline(): JSX.Element {
     const marginPx = 400
     const update = (): void => {
       rafId = null
+      scrollLeftRef.current = scrollEl.scrollLeft
       const start = Math.max(0, (scrollEl.scrollLeft - marginPx) / pixelsPerSecond)
       const end = (scrollEl.scrollLeft + scrollEl.clientWidth + marginPx) / pixelsPerSecond
       // ResizeObserver/layout effects can legitimately report the same
@@ -1614,10 +1797,15 @@ export function Timeline(): JSX.Element {
   // right edge, flip it to the left entirely so it can never clip off-screen
   // or sit on top of whatever tick is there. The playhead LINE itself
   // (`.timeline-playhead`'s own `left`) is untouched either way.
+  // From the recorded scroll position and the measured viewport width --
+  // never the element itself: reading its scrollLeft/clientWidth here
+  // forced a full layout on every render (every playback tick, every
+  // AI Dubber change), the main cost of a Detect Gender click on a long
+  // project.
   const playheadBadgeEdgeClass = ((): string => {
-    const scrollEl = scrollRef.current
-    if (!scrollEl) return ''
-    const edge = playheadBadgeEdge(currentTime * pixelsPerSecond, scrollEl.scrollLeft, scrollEl.scrollLeft + scrollEl.clientWidth)
+    if (!scrollRef.current || timelineViewportWidth <= 0) return ''
+    const scrollLeft = scrollLeftRef.current
+    const edge = playheadBadgeEdge(currentTime * pixelsPerSecond, scrollLeft, scrollLeft + timelineViewportWidth)
     return edge ? ` timeline-playhead-badge-${edge}-edge` : ''
   })()
 
@@ -1633,6 +1821,27 @@ export function Timeline(): JSX.Element {
       {/* Remove Vocal runs for seconds to minutes (a real separation
           model); before this the only sign anything was happening was a
           greyed-out menu item nobody could see once the menu closed. */}
+      {backgroundJob && (
+        <div className="timeline-job-pill" role="status" aria-live="polite">
+          <span className="timeline-job-pill-spinner" />
+          <span className="timeline-job-pill-label">Removing background · {backgroundJob.stage}</span>
+          <span className="timeline-job-pill-track">
+            <span className="timeline-job-pill-fill" style={{ width: `${backgroundJob.percent}%` }} />
+          </span>
+          <span className="timeline-job-pill-percent">{Math.round(backgroundJob.percent)}%</span>
+          <button className="timeline-job-pill-cancel" title="Stop" aria-label="Stop removing the background" onClick={() => void window.api.media.cancelRemoveBackground(backgroundJob.jobId)}>
+            ✕
+          </button>
+        </div>
+      )}
+      {backgroundError && !backgroundJob && (
+        <div className="timeline-job-pill timeline-job-pill-error" role="alert">
+          <span className="timeline-job-pill-label">Remove Background: {backgroundError}</span>
+          <button className="timeline-job-pill-cancel" title="Close" aria-label="Close" onClick={() => setBackgroundError(null)}>
+            ✕
+          </button>
+        </div>
+      )}
       {removingVocalsClipId && (
         <div className="timeline-job-pill" role="status" aria-live="polite">
           <span className="timeline-job-pill-spinner" />
@@ -1641,6 +1850,16 @@ export function Timeline(): JSX.Element {
             <span className="timeline-job-pill-fill" style={{ width: `${vocalProgress?.percent ?? 0}%` }} />
           </span>
           <span className="timeline-job-pill-percent">{Math.round(vocalProgress?.percent ?? 0)}%</span>
+          <button
+            className="timeline-job-pill-cancel"
+            title="Stop removing vocals"
+            aria-label="Stop removing vocals"
+            onClick={() => {
+              if (vocalJobIdRef.current) void window.api.vocalRemoval.cancel(vocalJobIdRef.current)
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
       <div
@@ -1731,6 +1950,7 @@ export function Timeline(): JSX.Element {
                   <CaptionsTrack
                     key={track.id}
                     segments={segments}
+                    visibleSegments={visibleCaptionSegments}
                     duration={effectiveDuration}
                     visualMinWidthPx={trackRowVisualMinWidthPx}
                     pixelsPerSecond={pixelsPerSecond}
@@ -1836,6 +2056,7 @@ export function Timeline(): JSX.Element {
       </div>
 
       {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />}
+      {subtitleEditor && <SubtitleQuickEditor key={subtitleEditor.segmentId} segmentId={subtitleEditor.segmentId} isNew={subtitleEditor.isNew} onClose={closeSubtitleEditor} />}
     </div>
   )
 }

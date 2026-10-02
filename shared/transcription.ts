@@ -43,6 +43,9 @@ export interface TranscriptSegment {
   /** Stable diarization identity for this spoken line. Optional for normal
    * Whisper/imported-SRT transcripts; populated by AI Dubber's speaker pass. */
   speakerId?: string
+  /** Gemini heard this line as a character's inner voice -- thought, not
+   * said, usually with an echo (see shared/innerVoice.ts). */
+  innerVoice?: boolean
   /** Cosine similarity to the assigned speaker centroid (0-1). */
   speakerConfidence?: number
 }
@@ -96,6 +99,13 @@ export interface DetectSpeakersRequest {
   originalPath: string
   modelId: WhisperModelSize
   language: TranscriptionLanguage
+  /** Only these stretches of the file (seconds) -- Auto SRT's "Fill gaps":
+   * the parts of a video that came back with no lines, sent again on their
+   * own. Absent: the whole file. */
+  ranges?: { start: number; end: number }[]
+  /** Where VoxCPM2 is installed, if known: its runtime separates the speech
+   * from the music before Gemini hears it. Searched for when absent. */
+  voxCpmInstallDir?: string
 }
 
 export interface DetectSpeakersResult {
@@ -104,6 +114,9 @@ export interface DetectSpeakersResult {
   srtText: string
   srtPath: string
   srtFileName: string
+  /** Seconds of audio Gemini could not transcribe cleanly (music, noise,
+   * overlapping shouting) -- where lines may be missing. */
+  unclearSeconds?: number
 }
 
 export interface DetectSpeakersProgress {

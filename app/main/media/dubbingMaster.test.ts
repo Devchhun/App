@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeMasterGainDb, buildMasterFilterGraph, parseLoudnormJson, DUB_TARGET_LUFS, DUB_TRUE_PEAK_CEILING_DB } from './dubbingMaster'
+import { computeMasterGainDb, buildMasterFilterGraph, parseLoudnormJson, parseAstatsRmsDb, DUB_TARGET_LUFS, DUB_TRUE_PEAK_CEILING_DB } from './dubbingMaster'
 
 describe('computeMasterGainDb', () => {
   it('lifts a quiet line and lowers a hot one onto the same target', () => {
@@ -50,5 +50,20 @@ describe('parseLoudnormJson', () => {
     const stderr = 'Input #0 ...\n[Parsed_loudnorm_0 @ 0x1] \n{\n\t"input_i" : "-12.34",\n\t"input_tp" : "0.20",\n\t"input_lra" : "0.00"\n}\n'
     expect(parseLoudnormJson(stderr)).toEqual({ integratedLufs: -12.34, truePeakDb: 0.2 })
     expect(parseLoudnormJson('nothing here')).toBeNull()
+  })
+})
+
+describe('loudness of a line too short for loudnorm', () => {
+  it("reads the overall RMS level from ffmpeg's astats", () => {
+    const stderr = ['[Parsed_astats_0 @ 0] Channel: 1', '[Parsed_astats_0 @ 0] RMS level dB: -30.5', '[Parsed_astats_0 @ 0] Overall', '[Parsed_astats_0 @ 0] RMS level dB: -25.2'].join('\n')
+    expect(parseAstatsRmsDb(stderr)).toBe(-25.2)
+  })
+  it('gives nothing for silence or no output', () => {
+    expect(parseAstatsRmsDb('Overall\nRMS level dB: -inf')).toBeNull()
+    expect(parseAstatsRmsDb('')).toBeNull()
+  })
+  it('the trailing silence is trimmed too, keeping a little tail', () => {
+    const graph = buildMasterFilterGraph(0)
+    expect(graph).toContain('areverse,silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.08,areverse')
   })
 })

@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import { ffmpegPath } from './ffmpeg'
 import { runFfmpeg } from './jobRunner'
 import { probeMedia } from './probe'
+import { unlink } from 'fs/promises'
 
 /** Makes every generated dub line sit at the same level and start/stop
  * cleanly, so a scene doesn't lurch between a shouted line and a whispered
@@ -38,11 +39,51 @@ export interface LineLoudness {
 
 /** The one static gain that puts the line on target without its peaks
  * crossing the ceiling. Pure, so the arithmetic is unit-tested. */
-export function computeMasterGainDb(measured: LineLoudness, targetLufs = DUB_TARGET_LUFS, ceilingDb = DUB_TRUE_PEAK_CEILING_DB): number {
+export function computeMasterGainDb(measured: LineLoudness, targetLufs = DUB_TARGET_LUFS, ceilingDb = DUB_TRUE_PEAK_CEILING_DB, limiterAllowanceDb = 0): number {
   if (!Number.isFinite(measured.integratedLufs) || measured.integratedLufs < -70) return 0
   let gain = targetLufs - measured.integratedLufs
-  if (Number.isFinite(measured.truePeakDb) && measured.truePeakDb + gain > ceilingDb) gain = ceilingDb - measured.truePeakDb
+  // Peaks may go past the ceiling by `limiterAllowanceDb` -- the limiter in
+  // buildMasterFilterGraph takes them back under it. Only loud performances
+  // (a shout, an angry line) get an allowance: a shout is peaky, and without
+  // this the ceiling alone held a shout BELOW its target (measured: -16.0
+  // LUFS against a -13.1 target). Everything else keeps 0 -- the limiter as a
+  // safety net that never has to act.
+  const allowed = ceilingDb + Math.max(0, limiterAllowanceDb)
+  if (Number.isFinite(measured.truePeakDb) && measured.truePeakDb + gain > allowed) gain = allowed - measured.truePeakDb
   return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, Math.round(gain * 100) / 100))
+}
+
+const SPEECH_TRIM_FILTERS = [
+  // Rumble/DC below the voice band -- nothing a speaking voice needs.
+  'highpass=f=70',
+  // Drop leading dead air but keep 30 ms so the first consonant isn't
+  // clipped, so the line starts on its subtitle instead of after it.
+  'silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03',
+  // And the dead air at the END (keeping 80 ms, so a word's last sound
+  // rings out). Edge TTS puts ~1 s of silence after every line: a one-word
+  // line was 0.2 s of speech in a 1.5 s file, so it counted as overrunning
+  // its slot and the speech itself was sped up to fit -- the word came out
+  // squashed and unclear.
+  'areverse',
+  'silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.08',
+  'areverse'
+]
+
+/** Seconds of speech in a take: its length with the dead air before and
+ * after trimmed exactly as masterDubbingLine trims it. The file's own
+ * length when it cannot be measured. */
+export async function measureSpeechSeconds(jobId: string, inputPath: string): Promise<number> {
+  const trimmedPath = `${inputPath.replace(/\.[^./\\]+$/, '')}.speech.wav`
+  try {
+    await runFfmpeg(jobId, ['-y', '-i', inputPath, '-af', SPEECH_TRIM_FILTERS.join(','), trimmedPath])
+    const { durationSeconds } = await probeMedia(trimmedPath)
+    if (durationSeconds >= 0.1) return durationSeconds
+  } catch {
+    // Fall through to the untrimmed length.
+  } finally {
+    await unlink(trimmedPath).catch(() => {})
+  }
+  return (await probeMedia(inputPath)).durationSeconds
 }
 
 /** ffmpeg filter chain for one line, given its measured gain. Order
@@ -58,11 +99,7 @@ export function buildMasterFilterGraph(gainDb: number, ceilingDb = DUB_TRUE_PEAK
   const peakAfterGain = measured && Number.isFinite(measured.truePeakDb) ? measured.truePeakDb + gainDb : Number.POSITIVE_INFINITY
   const needsLimiter = !(peakAfterGain <= ceilingDb - 0.1)
   return [
-    // Rumble/DC below the voice band -- nothing a speaking voice needs.
-    'highpass=f=70',
-    // Drop leading dead air but keep 30 ms so the first consonant isn't
-    // clipped, so the line starts on its subtitle instead of after it.
-    'silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03',
+    ...SPEECH_TRIM_FILTERS,
     `volume=${gainDb}dB`,
     ...(needsLimiter ? [`alimiter=limit=${limit}:attack=3:release=40:level=false`] : []),
     'afade=t=in:d=0.01',
@@ -76,8 +113,42 @@ export function buildMasterFilterGraph(gainDb: number, ceilingDb = DUB_TRUE_PEAK
   ].join(',')
 }
 
+/** A line's loudness: ffmpeg's loudnorm analyser, or -- for a line too
+ * short for it (loudnorm's integrated loudness needs ~0.4 s; a one-word
+ * line like "ឈប់!" is 0.3 s and came back as -inf) -- the line's RMS level,
+ * which tracks LUFS within a dB or so on speech (measured -17.4 LUFS vs
+ * -17.1 dB RMS). Without this the gain fell back to 0 and short words came
+ * out ~8 dB quieter than every other line. */
+export async function measureLineLoudness(inputPath: string): Promise<LineLoudness> {
+  const measured = await measureLoudnorm(inputPath)
+  if (Number.isFinite(measured.integratedLufs) && measured.integratedLufs >= -70) return measured
+  const rmsDb = await measureRmsDb(inputPath)
+  return rmsDb === null ? measured : { integratedLufs: rmsDb, truePeakDb: measured.truePeakDb }
+}
+
+/** The overall RMS level (dBFS) from ffmpeg's astats, or null. */
+export function parseAstatsRmsDb(stderr: string): number | null {
+  const overall = stderr.lastIndexOf('Overall')
+  const match = /RMS level dB:\s*(-?[\d.]+)/.exec(overall >= 0 ? stderr.slice(overall) : stderr)
+  const value = match ? parseFloat(match[1]) : NaN
+  return Number.isFinite(value) && value > -90 ? value : null
+}
+
+function measureRmsDb(inputPath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-i', inputPath, '-af', 'astats=metadata=0', '-f', 'null', '-'])
+    let stderr = ''
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+      if (stderr.length > 200_000) stderr = stderr.slice(-100_000)
+    })
+    proc.on('error', () => resolve(null))
+    proc.on('close', () => resolve(parseAstatsRmsDb(stderr)))
+  })
+}
+
 /** One decode pass through ffmpeg's loudnorm analyser. */
-export function measureLineLoudness(inputPath: string): Promise<LineLoudness> {
+function measureLoudnorm(inputPath: string): Promise<LineLoudness> {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-i', inputPath, '-af', 'loudnorm=print_format=json', '-f', 'null', '-'])
     let stderr = ''
@@ -111,11 +182,19 @@ export function parseLoudnormJson(stderr: string): LineLoudness | null {
 /** Measures, then renders the leveled/cleaned line beside the input as
  * `<name>.master.wav`. Falls back to the untouched input if measuring or
  * rendering fails -- a line that plays at its raw level beats a line that
- * doesn't play. */
-export async function masterDubbingLine(jobId: string, inputPath: string): Promise<string> {
+ * doesn't play.
+ *
+ * `targetLufs` is the line's own level: a performance line is brought to
+ * its emotion's loudness (shared/dubbingPerformance.ts's
+ * lineLoudnessTargetLufs -- a whisper around -26, a shout around -13),
+ * everything else to DUB_TARGET_LUFS as before. Levelling every line to
+ * one target made a whisper exactly as loud as a shout. The true-peak
+ * ceiling (and the limiter when needed) is the same for every line, so a
+ * loud line is louder, never clipped. */
+export async function masterDubbingLine(jobId: string, inputPath: string, options: { targetLufs?: number; limiterAllowanceDb?: number } = {}): Promise<string> {
   try {
     const measured = await measureLineLoudness(inputPath)
-    const gainDb = computeMasterGainDb(measured)
+    const gainDb = computeMasterGainDb(measured, options.targetLufs ?? DUB_TARGET_LUFS, DUB_TRUE_PEAK_CEILING_DB, options.limiterAllowanceDb ?? 0)
     const outPath = `${inputPath.replace(/\.[^./\\]+$/, '')}.master.wav`
     // 32-bit float, not 16-bit: this file is an INTERMEDIATE -- speed-fit,
     // pitch match, stitching and levelling all still come. Re-quantising to
@@ -132,4 +211,48 @@ export async function masterDubbingLine(jobId: string, inputPath: string): Promi
   } catch {
     return inputPath
   }
+}
+
+/** The stretches of sound in a take (seconds), split wherever it falls
+ * quiet (below -40 dB) for 0.3 s or more. */
+export function measureSpeechSpans(inputPath: string): Promise<{ start: number; end: number }[]> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-nostdin', '-i', inputPath, '-af', 'silencedetect=noise=-40dB:d=0.3', '-f', 'null', '-'])
+    let stderr = ''
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    proc.on('error', () => resolve([]))
+    proc.on('close', () => {
+      const durationMatch = /Duration: (\d+):(\d+):([\d.]+)/.exec(stderr)
+      if (!durationMatch) return resolve([])
+      const duration = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3])
+      const silences: { start: number; end: number }[] = []
+      let open: number | null = null
+      for (const line of stderr.split('\n')) {
+        const start = /silence_start: ([\d.]+)/.exec(line)
+        if (start) open = Number(start[1])
+        const end = /silence_end: ([\d.]+)/.exec(line)
+        if (end && open !== null) {
+          silences.push({ start: open, end: Number(end[1]) })
+          open = null
+        }
+      }
+      if (open !== null) silences.push({ start: open, end: duration })
+      const spans: { start: number; end: number }[] = []
+      let t = 0
+      for (const silence of silences) {
+        if (silence.start > t + 0.02) spans.push({ start: t, end: silence.start })
+        t = silence.end
+      }
+      if (duration > t + 0.02) spans.push({ start: t, end: duration })
+      resolve(spans)
+    })
+  })
+}
+
+/** The first `seconds` of a take, the last 30 ms faded out. */
+export async function cutTake(jobId: string, inputPath: string, outPath: string, seconds: number): Promise<void> {
+  const fadeStart = Math.max(0, seconds - 0.03)
+  await runFfmpeg(jobId, ['-y', '-i', inputPath, '-t', seconds.toFixed(3), '-af', `afade=t=out:st=${fadeStart.toFixed(3)}:d=0.03`, outPath])
 }

@@ -1,3 +1,4 @@
+import { PLAIN_TEXT_POSITION } from '@shared/plainText'
 import { useRef } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { usePlaybackTime } from '../playback/PlaybackContext'
@@ -85,7 +86,8 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
     addTrack,
     collapseAllTracks,
     toggleClipLock,
-    updateClipProperties
+    updateClipProperties,
+    clearClipSelection
   } = useSequence()
   const { canUndo, canRedo, undo, redo } = useHistory()
   const { triggerFreezeFrame } = useFreezeFrame()
@@ -206,15 +208,18 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
     // instead of incorrectly presenting user text as an image/graphic.
     const routing = findOrCreateTrack(sequence.tracks, occupied, currentTime, NEW_SCENE_DURATION_SECONDS, 'text')
     if (routing.newTrack) ensureTrack(routing.newTrack)
-    // The Text toolbar creates a generic editable text box, so its first
-    // position should be centered on the canvas. The underlying lower-third
-    // template keeps its traditional bottom-left default when chosen from
-    // the Template Library; only this Add Text shortcut supplies a layout.
-    insertScene(media.id, currentTime, routing.trackId, 'lower-third', {
-      position: { xPct: 25, yPct: 40, widthPct: 50, heightPct: 20 },
+    // Add Text: just the words, centred -- no box or bar behind them (the
+    // Lower Third it used to make always drew both). Its look is set in
+    // Properties and it is burned in by Export (shared/plainText.ts).
+    insertScene(media.id, currentTime, routing.trackId, 'plain-text', {
+      position: { ...PLAIN_TEXT_POSITION },
       textAlign: 'center',
-      lockAspectRatio: false
+      lockAspectRatio: false,
+      visualText: 'Text'
     })
+    // The new text is what is being worked on: its Properties show, not
+    // those of a clip that happened to be selected.
+    clearClipSelection()
   }
 
   const zoomToFit = (): void => {

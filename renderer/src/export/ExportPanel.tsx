@@ -1,3 +1,4 @@
+import { exportOverlayFor } from '@shared/videoOverlay'
 import { useEffect, useMemo, useState } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useSequence } from '../sequence/SequenceContext'
@@ -17,6 +18,9 @@ import type { ExportCodec } from '@shared/export'
 import { buildDubbingSrt } from '@shared/dubbingSrt'
 import { formatDuration } from '../media/format'
 import { useAiDubber } from '../dubbing/AiDubberContext'
+import { useScenes } from '../scenes/SceneContext'
+import { sceneFadeSeconds } from '../templates/animation'
+import { plainTextLook, PLAIN_TEXT_POSITION, type TextOverlay } from '@shared/plainText'
 
 const RESOLUTION_LABELS: Record<(typeof EXPORT_RESOLUTION_VALUES)[number], string> = {
   '480p': '480P', '720p': '720P', '1080p': '1080P', '2k': '2K', '4k': '4K'
@@ -86,6 +90,7 @@ export function ExportPanel(): JSX.Element | null {
   const { items } = useMedia()
   const { sequence } = useSequence()
   const { brandPreset } = useBrandPreset()
+  const { scenesByMedia } = useScenes()
   const { projectName } = useProject()
   const { isOpen, closeDialog, capabilities, options, setOptions, pickOutputDir, phase, progress, startExport, cancelExport, resetToForm } = useExport()
   const aiDubber = useAiDubber()
@@ -97,6 +102,16 @@ export function ExportPanel(): JSX.Element | null {
 
   const durationSeconds = useMemo(() => computeExportDurationSeconds(sequence.clips), [sequence.clips])
   const estimatedSizeMB = useMemo(() => estimateOutputSizeMB(durationSeconds, options), [durationSeconds, options])
+  // The fastest frame rate among the videos used: exporting above it only
+  // repeats frames -- the same motion, twice the work at 60 for a 30 fps film.
+  const sourceFps = useMemo(() => {
+    let fps = 0
+    for (const clip of sequence.clips) {
+      if (clip.type !== 'video') continue
+      fps = Math.max(fps, items.find((item) => item.id === clip.mediaId)?.metadata?.frameRate ?? 0)
+    }
+    return Math.round(fps)
+  }, [items, sequence.clips])
   const previewUrl = useMemo(() => {
     const orderedVisualClips = [...sequence.clips].filter((clip) => clip.type === 'video' || clip.type === 'image').sort((a, b) => a.startTime - b.startTime)
     for (const clip of orderedVisualClips) {
@@ -106,9 +121,13 @@ export function ExportPanel(): JSX.Element | null {
     return items.find((item) => item.thumbnailUrl)?.thumbnailUrl
   }, [items, sequence.clips])
 
+  // The project's name is filled in once, as the dialog opens -- not again
+  // whenever the field is empty: that refilled "Untitled Project" the moment
+  // it was cleared, so the name could not be deleted and retyped.
   useEffect(() => {
     if (isOpen && !options.name) setOptions({ name: projectName || 'export' })
-  }, [isOpen, options.name, projectName, setOptions])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- on open only
+  }, [isOpen])
 
   useEffect(() => {
     if (isOpen) setSrtResult(null)
@@ -135,7 +154,18 @@ export function ExportPanel(): JSX.Element | null {
     }
     if (!mediaExport) return
     const mediaById = Object.fromEntries(items.filter((m) => m.readyToUse).map((m) => [m.id, { originalPath: m.originalPath }]))
-    startExport(sequence, mediaById, brandPreset.defaultAspectRatio)
+    // AI Dubber's Subtitle & Blur: burned into the picture when switched on.
+    // Add Text's texts on shown tracks are burned in with the subtitles.
+    const hiddenTracks = new Set(sequence.tracks.filter((t) => t.hidden).map((t) => t.id))
+    const texts: TextOverlay[] = Object.values(scenesByMedia)
+      .flat()
+      .filter((scene) => scene.templateId === 'plain-text' && scene.status !== 'rejected' && !hiddenTracks.has(scene.track) && scene.visualText.trim())
+      .map((scene) => {
+        const fade = sceneFadeSeconds(scene, brandPreset.animationIntensity)
+        return { start: scene.startTime, end: scene.endTime, text: scene.visualText, position: scene.position ?? PLAIN_TEXT_POSITION, look: plainTextLook(scene), fadeInSeconds: fade.fadeIn, fadeOutSeconds: fade.fadeOut }
+      })
+    const overlay = exportOverlayFor(aiDubber.videoOverlay, aiDubber.overlayLines)
+    startExport(sequence, mediaById, brandPreset.defaultAspectRatio, texts.length > 0 ? { ...overlay, texts } : overlay)
   }
   const codecAvailable = (codec: ExportCodec): boolean => !capabilities || capabilities.availableCodecs.length === 0 || capabilities.availableCodecs.includes(codec)
   const openShareSite = (): void => {
@@ -158,7 +188,7 @@ export function ExportPanel(): JSX.Element | null {
                 <div className="export-preview-meta"><span>Original project</span><strong>{brandPreset.defaultAspectRatio}</strong></div>
               </aside>
               <div className="export-settings-scroll">
-                <div className="export-field-row"><label>Name</label><input value={exportName} onChange={(e) => setOptions({ name: e.target.value })} /></div>
+                <div className="export-field-row"><label>Name</label><input value={options.name} placeholder={projectName || 'export'} onChange={(e) => setOptions({ name: e.target.value })} /></div>
                 <div className="export-field-row">
                   <label>Export to</label>
                   <div className="export-path-row"><input readOnly value={options.outputDir || 'Choose a folder…'} title={options.outputDir} /><button onClick={() => void pickOutputDir()} title="Choose folder">▣</button></div>
@@ -171,6 +201,9 @@ export function ExportPanel(): JSX.Element | null {
                   <div className="export-field-row"><label>Codec</label><select disabled={!options.includeVideo} value={options.codec} onChange={(e) => setOptions({ codec: e.target.value as ExportCodec })}>{EXPORT_CODEC_VALUES.map((c) => <option key={c} value={c} disabled={!codecAvailable(c)}>{CODEC_LABELS[c]}{!codecAvailable(c) ? ' (unavailable)' : ''}</option>)}</select></div>
                   <div className="export-field-row"><label>Format</label><select value="mp4" disabled><option>mp4</option></select></div>
                   <div className="export-field-row"><label>Frame rate</label><select disabled={!options.includeVideo} value={options.frameRate} onChange={(e) => setOptions({ frameRate: Number(e.target.value) as typeof options.frameRate })}>{EXPORT_FRAME_RATE_VALUES.map((f) => <option key={f} value={f}>{f}fps</option>)}</select></div>
+                  {options.includeVideo && sourceFps > 0 && options.frameRate > sourceFps + 1 ? (
+                    <p className="export-field-hint">Your video is {sourceFps}fps. {options.frameRate}fps takes about {Math.round((options.frameRate / sourceFps) * 10) / 10}× longer to export and looks the same.</p>
+                  ) : null}
                   <div className="export-color-space">Color space: Rec. 709 SDR</div>
                 </div>}
                 <SectionHeader label="Audio" checked={options.includeAudio} onCheckedChange={(checked) => setOptions({ includeAudio: checked })} expanded={expanded.audio} onToggleExpand={() => setExpanded((p) => ({ ...p, audio: !p.audio }))} />

@@ -74,6 +74,9 @@ interface TranscriptContextValue {
    * no changes of their own -- as long as this mediaId is also the
    * currently-selected media (see NarrationContext.prepareWorkspace). */
   setImportedTranscript: (mediaId: string, transcript: Transcript) => void
+  /** Drops a media's transcript entirely -- its captions leave the Timeline
+   * (AI Dubber's Remove SRT). */
+  removeTranscript: (mediaId: string) => void
 
   scriptAlignments: Record<string, ScriptAlignmentSegment[]>
   scriptTexts: Record<string, string>
@@ -296,6 +299,14 @@ export function TranscriptProvider({ children }: { children: ReactNode }): JSX.E
     setTranscripts((prev) => ({ ...prev, [mediaId]: transcript }))
   }, [])
 
+  const removeTranscript = useCallback((mediaId: string) => {
+    setTranscripts((prev) => {
+      if (!(mediaId in prev)) return prev
+      const { [mediaId]: _removed, ...rest } = prev
+      return rest
+    })
+  }, [])
+
   const alignScript = useCallback(
     async (mediaId: string, scriptText: string) => {
       const transcript = transcripts[mediaId]
@@ -369,6 +380,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }): JSX.E
       moveSegment,
       moveSegments,
       setImportedTranscript,
+      removeTranscript,
       scriptAlignments,
       scriptTexts,
       alignScript,
@@ -403,6 +415,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }): JSX.E
       moveSegment,
       moveSegments,
       setImportedTranscript,
+      removeTranscript,
       scriptAlignments,
       scriptTexts,
       alignScript,

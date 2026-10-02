@@ -10,6 +10,9 @@ import { formatTimecode } from './format'
 import { computeStageSize } from './previewStageSize'
 import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode, getPreviewQualityStorageKey, parseStoredPreviewQuality, type PreviewQuality, getScopeStorageKey, parseStoredScopeVisible } from './previewPreferences'
 import { ColorScope } from './ColorScope'
+import { VideoOverlayLayer } from './VideoOverlayLayer'
+import { setElementLevel } from './audioBoost'
+import { useAiDubber } from '../dubbing/AiDubberContext'
 import { StillFrameExportDialog } from './StillFrameExportDialog'
 import { useProject } from '../project/ProjectContext'
 import { findActiveClips } from '../sequence/sequenceOps'
@@ -64,6 +67,29 @@ const LIVE_SEEK_THROTTLE_MS = 100
 // computed in seconds against the (unchanging) probed metadata and applied
 // identically regardless of which URL this returns, so swapping sources
 // here never touches timing.
+/** URLs of still images' own files, one per path for the whole session. */
+const stillImageUrls = new Map<string, Promise<string | null>>()
+
+function useStillImageUrl(path: string | undefined): string | undefined {
+  const [url, setUrl] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (!path) {
+      setUrl(undefined)
+      return
+    }
+    let live = true
+    const pending = stillImageUrls.get(path) ?? window.api.media.imageUrl(path).catch(() => null)
+    stillImageUrls.set(path, pending)
+    void pending.then((next) => {
+      if (live) setUrl(next ?? undefined)
+    })
+    return () => {
+      live = false
+    }
+  }, [path])
+  return url
+}
+
 function mediaUrl(media: MediaItem | undefined, quality: PreviewQuality = 'performance'): string | undefined {
   if (!media || !media.readyToUse) return undefined
   // Best quality: the original at full resolution; best performance: the
@@ -81,6 +107,8 @@ export function PreviewPlayer(): JSX.Element {
   const { sequence } = useSequence()
   const { brandPreset } = useBrandPreset()
   const narration = useNarration()
+  const { videoOverlay, setVideoOverlay, overlayLines } = useAiDubber()
+  const showOverlayToggles = overlayLines.length > 0 || videoOverlay.subtitles.enabled || videoOverlay.blur.enabled
 
   const mediaById = useMemo(() => Object.fromEntries(items.map((m) => [m.id, m] as const)), [items])
   const selectedMedia = items.find((m) => m.id === selectedId)
@@ -303,6 +331,10 @@ export function PreviewPlayer(): JSX.Element {
   const applyProjectTime = useCallback(
     (time: number, playing: boolean, options?: SeekOptions) => {
       const clamped = Math.max(0, Math.min(contentEndTime, time))
+      // The ref too, at once: a play/pause right after this seek (a scrub
+      // released during playback resumes it) must start from here, not
+      // from the last rendered time.
+      currentTimeRef.current = clamped
       setCurrentTime(clamped)
       reportTime(clamped)
       if (previewMode === 'project') syncVideoToTime(clamped, playing, options)
@@ -318,9 +350,11 @@ export function PreviewPlayer(): JSX.Element {
   // playhead/timecode UI every call.
   const seek = useCallback(
     (value: number, options?: SeekOptions) => {
-      applyProjectTime(value, isPlaying, options)
+      // The play INTENT, not the rendered state: a pause issued in the same
+      // event (a scrub starting during playback) has not rendered yet.
+      applyProjectTime(value, playIntentRef.current, options)
     },
-    [applyProjectTime, isPlaying]
+    [applyProjectTime]
   )
 
   useEffect(() => {
@@ -500,7 +534,7 @@ export function PreviewPlayer(): JSX.Element {
     // Countdown/reviewing/idle are unaffected (the original audio is still
     // audible then, e.g. via "Play Original", for rehearsal/reference).
     const recordingNarration = narration.phase === 'recording'
-    el.volume = Math.min(1, Math.max(0, volume * clipVolume * fadeMultiplier * (trackMuted || audioSplitToLinkedClip || clipMuted || recordingNarration ? 0 : 1)))
+    setElementLevel(el, volume * clipVolume * fadeMultiplier * (trackMuted || audioSplitToLinkedClip || clipMuted || recordingNarration ? 0 : 1))
     el.muted = narrationMuted
   }, [volume, narrationMuted, currentTime, activeV1Clip, isTrackAudioMutedFn, narration.phase])
 
@@ -515,9 +549,9 @@ export function PreviewPlayer(): JSX.Element {
   // frequency) is completely unchanged from before this feature existed.
   const activeClipAnimated = clipHasAnimatedProperties(activeV1Clip)
   const activeClipVisualStyle = useMemo(
-    (): React.CSSProperties => computeClipVisualStyle(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0)),
+    (): React.CSSProperties => computeClipVisualStyle(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0), stageSize, activeV1Clip ? mediaById[activeV1Clip.mediaId]?.metadata : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `currentTime` is deliberately only a dependency while `activeClipAnimated` is true; see the comment above.
-    [activeV1Clip, activeClipAnimated ? currentTime : null]
+    [activeV1Clip, activeClipAnimated ? currentTime : null, stageSize]
   )
 
   // Multi-track compositing/audio-mixing (spec section 20) -- every OTHER
@@ -637,6 +671,25 @@ export function PreviewPlayer(): JSX.Element {
             Source Preview
           </button>
         </div>
+        {/* Quick on/off for the AI Dubber's Subtitle & Blur (as Export burns them in). */}
+        {showOverlayToggles && previewMode === 'project' && (
+          <div className="preview-overlay-toggles">
+            <button
+              className={videoOverlay.subtitles.enabled ? 'preview-overlay-toggle preview-overlay-toggle-on' : 'preview-overlay-toggle'}
+              title={videoOverlay.subtitles.enabled ? 'Subtitles on the video: on (click to hide)' : 'Subtitles on the video: off (click to show)'}
+              onClick={() => setVideoOverlay((c) => ({ ...c, subtitles: { ...c.subtitles, enabled: !c.subtitles.enabled } }))}
+            >
+              CC
+            </button>
+            <button
+              className={videoOverlay.blur.enabled ? 'preview-overlay-toggle preview-overlay-toggle-on' : 'preview-overlay-toggle'}
+              title={videoOverlay.blur.enabled ? 'Blur over the original subtitles: on (click to turn off)' : 'Blur over the original subtitles: off (click to turn on)'}
+              onClick={() => setVideoOverlay((c) => ({ ...c, blur: { ...c.blur, enabled: !c.blur.enabled } }))}
+            >
+              Blur
+            </button>
+          </div>
+        )}
         <div className="preview-menu-root" ref={menuRootRef}>
           <button
             className={menuOpen ? 'preview-header-menu preview-header-menu-open' : 'preview-header-menu'}
@@ -751,6 +804,7 @@ export function PreviewPlayer(): JSX.Element {
               <div className="preview-stage-clip">
                 <video
                   ref={videoRef}
+                  crossOrigin="anonymous"
                   style={{ objectFit: fitMode, ...activeClipVisualStyle }}
                   onPlay={(e) => {
                     if (playIntentRef.current) setIsPlaying(true)
@@ -782,10 +836,13 @@ export function PreviewPlayer(): JSX.Element {
                     trackMuted={isTrackAudioMutedFn(clip.trackId)}
                     zIndex={trackOrderById[clip.trackId] ?? 0}
                     quality={previewQuality}
+                    stageSize={stageSize}
                   />
                 ))}
                 <GraphicsOverlay scenes={scenes} brand={brandPreset} currentTime={currentTime} selectedSceneId={selectedSceneId} stageSize={stageSize} />
-                {scopeVisible && <ColorScope videoRef={videoRef} />}
+                {/* AI Dubber: blur over the original subtitles, the dubbed ones on top -- as Export burns them in. */}
+                <VideoOverlayLayer stageSize={stageSize} currentTime={currentTime} />
+                {scopeVisible && <ColorScope videoRef={videoRef} active={!!activeV1Clip} />}
                 {/* Just the line being narrated -- the segment's own time
                     range already shows in the Recording Assistant's card,
                     so the blue timecode chip that used to sit here was a
@@ -887,6 +944,8 @@ interface SecondaryTrackMediaProps {
    * clip-selection (resolveActiveVideoClip) already uses. */
   zIndex: number
   quality: PreviewQuality
+  /** The Player's picture size, for a clip's motion. */
+  stageSize: { width: number; height: number } | null
 }
 
 /** One additional simultaneously-active clip beyond whichever the main
@@ -903,9 +962,12 @@ interface SecondaryTrackMediaProps {
  * on every render (not frame-perfect like the rvfc master, but genuinely
  * synchronized, checked continuously during playback) rather than owning a
  * second independent clock that could drift. */
-function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex, quality }: SecondaryTrackMediaProps): JSX.Element | null {
+function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex, quality, stageSize }: SecondaryTrackMediaProps): JSX.Element | null {
   const elRef = useRef<HTMLVideoElement & HTMLAudioElement>(null)
-  const src = mediaUrl(media, quality)
+  // A still image is drawn from its own file: its media plays from a video
+  // made of it, which an <img> cannot show (and which has no transparency).
+  const imageSrc = useStillImageUrl(clip.type === 'image' && media?.readyToUse ? media.originalPath : undefined)
+  const src = clip.type === 'image' ? imageSrc : mediaUrl(media, quality)
   const localTime = clip.type === 'image' ? 0 : sourceTimeAt(clip, currentTime)
 
   useEffect(() => {
@@ -936,22 +998,22 @@ function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume
     // already split onto a separate linked clip that also plays here as a
     // sibling SecondaryTrackMedia instance.
     const audioSplitToLinkedClip = clip.type === 'video' && !!clip.linkedClipId
-    el.volume = Math.min(1, Math.max(0, globalVolume * clipVolume * fadeMultiplier * (clip.muted || trackMuted || audioSplitToLinkedClip ? 0 : 1)))
+    setElementLevel(el, globalVolume * clipVolume * fadeMultiplier * (clip.muted || trackMuted || audioSplitToLinkedClip ? 0 : 1))
     el.muted = narrationMuted
   })
 
   if (!src || clip.enabled === false) return null
 
-  const visualStyle: React.CSSProperties = { zIndex, ...computeClipVisualStyle(clip, currentTime - clip.startTime) }
+  const visualStyle: React.CSSProperties = { zIndex, ...computeClipVisualStyle(clip, currentTime - clip.startTime, stageSize, media?.metadata) }
 
   if (clip.type === 'image') {
     // eslint-disable-next-line jsx-a11y/alt-text -- decorative Timeline overlay, not user-facing content needing description.
     return <img src={src} className="preview-secondary-visual" style={visualStyle} />
   }
   if (clip.type === 'audio') {
-    return <audio ref={elRef} src={src} />
+    return <audio ref={elRef} src={src} crossOrigin="anonymous" />
   }
-  return <video ref={elRef} src={src} className="preview-secondary-visual" style={{ ...visualStyle, objectFit: 'contain' }} />
+  return <video ref={elRef} src={src} crossOrigin="anonymous" className="preview-secondary-visual" style={{ ...visualStyle, objectFit: 'contain' }} />
 }
 
 /** Source Preview: a small, self-contained player for one Media asset's raw

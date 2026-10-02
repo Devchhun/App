@@ -79,6 +79,10 @@ describe('lines with nothing to speak', () => {
     await expect(runEdgeTtsLine('C:\\nowhere', 'km-KH-SreymomNeural', 'សួស្តី', 'C:\\nowhere\\x.mp3', controller.signal)).rejects.toThrow('Canceled')
   })
 
+  it('refuses an untranslated Chinese line at once, with the real reason', async () => {
+    await expect(runEdgeTtsLine('C:\\nowhere', 'km-KH-PisethNeural', '当然了我这三味真火', 'C:\\nowhere\\x.mp3')).rejects.toThrow(/still in Chinese.*Translate/)
+  })
+
   it('refuses them without starting Python', async () => {
     await expect(runEdgeTtsLine('C:\\nowhere', 'km-KH-SreymomNeural', '♪♪', 'C:\\nowhere\\x.mp3')).rejects.toThrow('no words to speak')
   })
@@ -102,7 +106,12 @@ describe('explainEdgeTtsFailure', () => {
 
   it('explains NoAudioReceived in plain words', () => {
     expect(explainEdgeTtsFailure(1, traceback('edge_tts.exceptions.NoAudioReceived: No audio was received. Please verify that your parameters are correct.')))
-      .toContain('has no words to speak')
+      .toContain('sent back no audio')
+  })
+
+  it('judges by the final failure, not an earlier retried attempt', () => {
+    const stderr = ['attempt 1 failed (NoAudioReceived); retrying', 'aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host speech.platform.bing.com:443'].join('\n')
+    expect(explainEdgeTtsFailure(1, stderr)).toContain("could not reach Microsoft's voice service")
   })
 
   it('recognises a network problem', () => {

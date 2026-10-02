@@ -5,6 +5,7 @@
 import type { CommunicationPurpose } from './suggestions'
 
 export type TemplateId =
+  | 'plain-text'
   | 'lower-third'
   | 'statistic-callout'
   | 'numbered-steps'
@@ -35,6 +36,7 @@ export type TemplateId =
   | 'final-summary'
 
 export const TEMPLATE_IDS: TemplateId[] = [
+  'plain-text',
   'lower-third',
   'statistic-callout',
   'numbered-steps',
@@ -66,6 +68,7 @@ export const TEMPLATE_IDS: TemplateId[] = [
 ]
 
 export const TEMPLATE_LABELS: Record<TemplateId, string> = {
+  'plain-text': 'Text',
   'lower-third': 'Lower Third',
   'statistic-callout': 'Statistic Callout',
   'numbered-steps': 'Numbered Steps',
@@ -97,6 +100,7 @@ export const TEMPLATE_LABELS: Record<TemplateId, string> = {
 }
 
 export const TEMPLATE_DESCRIPTIONS: Record<TemplateId, string> = {
+  'plain-text': 'Just the words on the video -- no box unless you add one. Outline, shadow and colors in Properties; exported with the video.',
   'lower-third': 'A bottom-left name/title bar. Used for introductions, causes/effects, and generic captions.',
   'statistic-callout': 'A bold centered callout. Used for key numbers, dates, money, and main claims.',
   'numbered-steps': 'A numbered badge with text. Used for sequences of steps.',
@@ -177,6 +181,7 @@ export const TEMPLATE_CATEGORY_LABELS: Record<TemplateCategory, string> = {
 }
 
 export const TEMPLATE_CATEGORY: Record<TemplateId, TemplateCategory> = {
+  'plain-text': 'titles',
   'lower-third': 'information',
   'statistic-callout': 'statistics',
   'numbered-steps': 'steps',
@@ -211,6 +216,7 @@ export const TEMPLATE_CATEGORY: Record<TemplateId, TemplateCategory> = {
  * controls a given template actually renders (spec: "the panel must show
  * only controls the selected template supports"). */
 export const TEMPLATE_ICON_SUPPORT: Record<TemplateId, IconSupportLevel> = {
+  'plain-text': 'none',
   'lower-third': 'single',
   'statistic-callout': 'single',
   'numbered-steps': 'single',
@@ -422,8 +428,8 @@ export const TEMPLATE_RECOMMENDATIONS: Record<CommunicationPurpose, TemplateId[]
   person: ['person-card', 'lower-third', 'social-channel-card', 'central-identity'],
   organization: ['person-card', 'social-channel-card', 'lower-third'],
   place: ['lower-third', 'title-card', 'keyword-highlight'],
-  question: ['lower-third', 'keyword-highlight', 'title-card'],
-  answer: ['lower-third', 'keyword-highlight', 'statistic-callout'],
+  question: ['lower-third', 'keyword-highlight', 'title-card', 'plain-text'],
+  answer: ['lower-third', 'keyword-highlight', 'statistic-callout', 'plain-text'],
   cause: ['cause-effect-flow', 'animated-break-in-vault-diagram', 'lower-third', 'statistic-callout', 'source-branch'],
   effect: ['cause-effect-flow', 'animated-break-in-vault-diagram', 'lower-third', 'statistic-callout', 'source-branch'],
   device: ['device-compatibility-lineup', 'isometric-system-diagram', 'lower-third'],

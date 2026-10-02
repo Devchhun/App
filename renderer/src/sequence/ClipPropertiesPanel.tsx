@@ -1,3 +1,5 @@
+import { REMOVE_BACKGROUND_EVENT } from '../media/removeBackgroundEvent'
+import { MotionPicker } from './MotionPicker'
 import { useState, type ReactNode } from 'react'
 import { useMedia } from '../media/MediaContext'
 import { useSequence } from './SequenceContext'
@@ -6,6 +8,9 @@ import { useTimelineView } from '../timeline/TimelineViewContext'
 import { useHistoryFieldProps } from '../history/useHistoryFieldProps'
 import { parseDurationInput, MIN_CLIP_DURATION_SECONDS } from './sequenceOps'
 import { RotateIcon, ChevronDownIcon } from '../nav/icons'
+import { MAX_CLIP_VOLUME } from '../media/audioBoost'
+import { useAudioEffects } from '../audioFx/AudioEffectsContext'
+import { AUDIO_EFFECT_PRESETS, createDefaultAudioEffectSettings, type AudioEffectSettings } from '@shared/audioEffects'
 import type { ClipTransform, TimelineClip } from '@shared/project'
 import type { KeyframeableProperty } from '@shared/keyframes'
 
@@ -246,10 +251,72 @@ function stageSizePx(): { width: number; height: number } | null {
  * Audio, Timing, Info) of label | control rows. Editing duration
  * numerically here updates the clip's width on the Timeline immediately
  * (both read from the same `sequence` state). */
+/** Audio Effects for an audio clip: a preset with an amount, bass and
+ * treble -- rendered into the clip (AudioEffectsContext), so the Player and
+ * Export hear the same. Apply to this clip, or to every audio clip on its
+ * track (all the dubbed lines on DUB1, say). */
+function AudioEffectsSection({ clip, trackName, trackClipIds, locked }: { clip: TimelineClip; trackName: string; trackClipIds: string[]; locked: boolean }): JSX.Element {
+  const { applyAudioEffect, progress } = useAudioEffects()
+  const [draft, setDraft] = useState<AudioEffectSettings>(() => clip.audioEffect?.settings ?? createDefaultAudioEffectSettings())
+  const [note, setNote] = useState<string | null>(null)
+  const busy = progress !== null
+  const run = async (ids: string[], settings: AudioEffectSettings): Promise<void> => {
+    setNote(null)
+    const { done, failed } = await applyAudioEffect(ids, settings)
+    setNote(failed > 0 ? `${done} clip(s) done, ${failed} failed` : `${done} clip(s) done`)
+  }
+  const set = (patch: Partial<AudioEffectSettings>): void => setDraft((d) => ({ ...d, ...patch }))
+  return (
+    <Section title="Audio Effects" resetTitle="Remove the effect" onReset={() => void run([clip.id], createDefaultAudioEffectSettings())}>
+      <div className="cp-fx-presets">
+        {AUDIO_EFFECT_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            className={draft.preset === p.id ? 'cp-fx-preset cp-fx-preset-active' : 'cp-fx-preset'}
+            title={p.hint}
+            disabled={locked || busy}
+            onClick={() => set({ preset: p.id })}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <Row label="Amount">
+        <input className="cp-fx-range" type="range" min={0} max={100} step={5} value={draft.amount} disabled={locked || busy || draft.preset === 'none'} onChange={(e) => set({ amount: Number(e.target.value) })} />
+        <span className="cp-fx-value">{draft.amount}%</span>
+      </Row>
+      <Row label="Bass">
+        <input className="cp-fx-range" type="range" min={-12} max={12} step={1} value={draft.bassDb} disabled={locked || busy} onChange={(e) => set({ bassDb: Number(e.target.value) })} />
+        <span className="cp-fx-value">{draft.bassDb > 0 ? '+' : ''}{draft.bassDb} dB</span>
+      </Row>
+      <Row label="Treble">
+        <input className="cp-fx-range" type="range" min={-12} max={12} step={1} value={draft.trebleDb} disabled={locked || busy} onChange={(e) => set({ trebleDb: Number(e.target.value) })} />
+        <span className="cp-fx-value">{draft.trebleDb > 0 ? '+' : ''}{draft.trebleDb} dB</span>
+      </Row>
+      <div className="cp-fx-actions">
+        <button className="cp-fx-apply" disabled={locked || busy} onClick={() => void run([clip.id], draft)}>
+          Apply
+        </button>
+        <button className="cp-fx-apply cp-fx-apply-all" disabled={busy || trackClipIds.length === 0} title={`The same effect on all ${trackClipIds.length} audio clip(s) on ${trackName}`} onClick={() => void run(trackClipIds, draft)}>
+          Apply to all audio on {trackName} ({trackClipIds.length})
+        </button>
+      </div>
+      {busy && <div className="cp-speed-note">Rendering {progress.done} / {progress.total}…</div>}
+      {!busy && note && <div className="cp-speed-note">{note}</div>}
+      {clip.audioEffect && !busy && (
+        <div className="cp-speed-note">
+          This clip has: {AUDIO_EFFECT_PRESETS.find((p) => p.id === clip.audioEffect!.settings.preset)?.label ?? 'EQ'} · the original sound is kept (Reset removes the effect).
+        </div>
+      )}
+    </Section>
+  )
+}
+
 export function ClipPropertiesPanel(): JSX.Element {
   const { items } = useMedia()
   const { sequence, selectedTimelineClipIds, toggleClipLock, toggleClipMute, moveClip, trimClip, updateClipProperties } = useSequence()
   const { currentTime } = usePlaybackTime()
+  const [tab, setTab] = useState<'basic' | 'animation'>('basic')
   const { linkageOn } = useTimelineView()
   const historyFieldProps = useHistoryFieldProps()
   const [durationText, setDurationText] = useState<string | null>(null)
@@ -344,10 +411,18 @@ export function ClipPropertiesPanel(): JSX.Element {
     <div className="scene-properties cp-panel">
       <div className="panel-fixed-head">
         <div className="cp-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected className="cp-tab cp-tab-active">
+          <button type="button" role="tab" aria-selected={tab === 'basic'} className={tab === 'basic' ? 'cp-tab cp-tab-active' : 'cp-tab'} onClick={() => setTab('basic')}>
             {kindLabel}
           </button>
-          <button type="button" role="tab" className="cp-tab" disabled title="Coming soon">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'animation'}
+            className={tab === 'animation' ? 'cp-tab cp-tab-active' : 'cp-tab'}
+            disabled={!isVisual}
+            title={isVisual ? 'Motion: float, bounce, wander around the screen…' : 'For pictures (video and images)'}
+            onClick={() => setTab('animation')}
+          >
             Animation
           </button>
           {isVisual && (
@@ -357,7 +432,14 @@ export function ClipPropertiesPanel(): JSX.Element {
           )}
         </div>
       </div>
-      <div className="panel-scroll-body editor-scroll cp-body">
+      {tab === 'animation' && isVisual && (
+        <div className="panel-scroll-body editor-scroll cp-body">
+          <Section title="Motion" resetTitle="No motion" onReset={() => updateClipProperties(clip.id, { motion: undefined })}>
+            <MotionPicker motion={clip.motion} disabled={locked} onChange={(motion) => updateClipProperties(clip.id, { motion })} />
+          </Section>
+        </div>
+      )}
+      <div className="panel-scroll-body editor-scroll cp-body" hidden={tab === 'animation' && isVisual}>
         {isVisual && (
           <Section
             title="Transform"
@@ -419,6 +501,16 @@ export function ClipPropertiesPanel(): JSX.Element {
           </Section>
         )}
 
+        {clip.type === 'image' && (
+          <Section title="Background">
+            <div className="cp-bg-remove">
+              <button type="button" className="cp-bg-remove-button" disabled={locked} onClick={() => window.dispatchEvent(new CustomEvent(REMOVE_BACKGROUND_EVENT, { detail: clip.id }))}>
+                Remove Background
+              </button>
+              <span className="cp-bg-remove-note">AI cuts out the subject (a logo, a person) and makes the rest see-through. The first time downloads its model (~180 MB).</span>
+            </div>
+          </Section>
+        )}
         {isVisual && (
           <Section title="Blend" resetTitle="Reset opacity" onReset={() => updateClipProperties(clip.id, { opacity: 1 })}>
             <Row label="Opacity" keyframe={<KeyframeToggle clip={clip} property="opacity" value={clip.opacity ?? 1} timeInClip={timeInClip} />}>
@@ -497,8 +589,9 @@ export function ClipPropertiesPanel(): JSX.Element {
         {hasAudioTrack && (
           <Section title="Audio" resetTitle="Reset audio" onReset={() => updateClipProperties(clip.id, { volume: 1, fadeIn: 0, fadeOut: 0 })}>
             <Row label="Volume" keyframe={<KeyframeToggle clip={clip} property="volume" value={clip.volume ?? 1} timeInClip={timeInClip} />}>
-              <Slider min={0} max={100} value={volumePercent} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
-              <NumberField value={volumePercent} unit="%" min={0} max={100} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
+              {/* Up to 300%: a quiet source (the video's own sound) can be made louder. */}
+              <Slider min={0} max={MAX_CLIP_VOLUME * 100} value={volumePercent} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
+              <NumberField value={volumePercent} unit="%" min={0} max={MAX_CLIP_VOLUME * 100} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
             </Row>
             <Row label="Mute">
               <Switch label="Mute" checked={Boolean(clip.muted)} disabled={locked} onChange={() => toggleClipMute(clip.id)} />
@@ -510,6 +603,16 @@ export function ClipPropertiesPanel(): JSX.Element {
               <NumberField value={clip.fadeOut ?? 0} unit="s" digits={1} step={0.1} min={0} disabled={locked} onChange={(v) => updateClipProperties(clip.id, { fadeOut: v })} />
             </Row>
           </Section>
+        )}
+
+        {clip.type === 'audio' && (
+          <AudioEffectsSection
+            key={clip.id}
+            clip={clip}
+            locked={locked}
+            trackName={sequence.tracks.find((t) => t.id === clip.trackId)?.name ?? clip.trackId}
+            trackClipIds={sequence.clips.filter((c) => c.trackId === clip.trackId && c.type === 'audio' && !c.locked).map((c) => c.id)}
+          />
         )}
 
         <Section title="Timing" defaultOpen={false}>

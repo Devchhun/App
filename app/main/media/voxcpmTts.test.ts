@@ -7,7 +7,7 @@ import { join } from 'path'
 // edgeTts.test.ts uses for the same reason.
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmpdir() } }))
 
-import { validateVoxCpmInstall, buildBatchArgs, buildDubbingPostFxFilterGraph, computeAutoFitSpeed, buildVoiceDesignArgs, voiceReferenceClipPath, voiceSeedFor, buildSeededBatchArgs, VOICE_MATCH_THRESHOLD, VOICE_MATCH_RETRIES, VOICE_PITCH_TOLERANCE_SEMITONES, computePitchCorrection, fileNameSafe, toneSettings } from './voxcpmTts'
+import { validateVoxCpmInstall, buildBatchArgs, buildDubbingPostFxFilterGraph, INNER_VOICE_ECHO_FILTER, computeAutoFitSpeed, buildVoiceDesignArgs, voiceReferenceClipPath, voiceSeedFor, buildSeededBatchArgs, VOICE_MATCH_THRESHOLD, VOICE_MATCH_RETRIES, VOICE_PITCH_TOLERANCE_SEMITONES, computePitchCorrection, fileNameSafe, toneSettings } from './voxcpmTts'
 
 describe('validateVoxCpmInstall', () => {
   let installDir: string
@@ -101,6 +101,14 @@ describe('buildBatchArgs', () => {
 describe('buildDubbingPostFxFilterGraph', () => {
   it('returns null when pitch/speed/volume are all neutral', () => {
     expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1, volumeDb: 0 })).toBeNull()
+  })
+
+  it('adds the inner-voice echo last, after the speed-fit, only when asked', () => {
+    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1, volumeDb: 0, echo: true })).toBe(INNER_VOICE_ECHO_FILTER)
+    const graph = buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 2, echo: true })!
+    expect(graph.endsWith(INNER_VOICE_ECHO_FILTER)).toBe(true)
+    expect(graph.indexOf('rubberband')).toBeLessThan(graph.indexOf('aecho'))
+    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 0, echo: false })).not.toContain('aecho')
   })
 
   it('builds a rubberband filter with formant preservation for a non-zero pitch shift', () => {

@@ -20,7 +20,7 @@ const TEMPLATES_WITHOUT_STARTER_CONTENT = TEMPLATE_IDS.filter((id) => !TEMPLATES
 
 describe('defaultContentForTemplate', () => {
   it('is undefined for every template that declares no starter content -- purely additive, no behavior change for old scenes', () => {
-    expect(TEMPLATES_WITHOUT_STARTER_CONTENT).toHaveLength(16)
+    expect(TEMPLATES_WITHOUT_STARTER_CONTENT).toHaveLength(17)
     for (const id of TEMPLATES_WITHOUT_STARTER_CONTENT) {
       expect(defaultContentForTemplate(id, 'seed')).toBeUndefined()
     }

@@ -2,9 +2,9 @@ import { existsSync } from 'fs'
 import { ipcMain, dialog, type BrowserWindow, type WebContents, app } from 'electron'
 import { spawn } from 'child_process'
 import { mkdir, writeFile, rm, rename, readFile } from 'fs/promises'
-import { join } from 'path'
-import { SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
-import type { MediaItem, MediaProgressUpdate, WaveformData } from '@shared/media'
+import { extname, join } from 'path'
+import { SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
+import type { MediaItem, MediaProgressUpdate, RemoveBackgroundResult, WaveformData } from '@shared/media'
 import type { MediaSource } from '@shared/project'
 import { detectFfmpeg, ffmpegPath } from '../media/ffmpeg'
 import { processMediaFile } from '../media/pipeline'
@@ -12,6 +12,23 @@ import { cancelJob, CanceledError } from '../media/jobRunner'
 import { registerMediaToken } from '../media/protocol'
 import { getMediaCacheRoot, cacheKeyForFile, ensureCacheDir, pathExists } from '../media/cache'
 import { generateWaveform, WAVEFORM_CACHE_FILE } from '../media/waveform'
+import { checkCachedProxy } from '../media/proxy'
+import { removeImageBackground } from '../media/removeBackground'
+
+/** A reopened project's proxies, checked one at a time in the background
+ * (proxy.ts's checkCachedProxy: a few seconds each, once per proxy). A
+ * damaged or missing one is dropped -- the original file plays meanwhile --
+ * and made again. Media still being processed is left to its own resumed
+ * pipeline, which checks its proxy the same way. */
+async function checkRehydratedProxies(sender: WebContents, sources: MediaSource[]): Promise<void> {
+  for (const source of sources) {
+    if (source.pendingStage || source.kind !== 'video' || !source.proxyPath) continue
+    if ((await checkCachedProxy(source.proxyPath)) === 'ok') continue
+    if (sender.isDestroyed()) return
+    sender.send(MEDIA_IPC.progress, { mediaId: source.id, stage: 'proxy', percent: 45, dropProxy: true } satisfies MediaProgressUpdate)
+    if (existsSync(source.originalPath)) runPipeline(sender, source.originalPath, source.id)
+  }
+}
 
 /** Waveform data lives in the same per-file cache directory as the
  * thumbnail/proxy (see pipeline.ts's shared `cacheDir`), but -- unlike those
@@ -78,6 +95,37 @@ async function rehydrateMediaSource(source: MediaSource): Promise<MediaItem> {
 export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(MEDIA_IPC.ffmpegStatus, async () => detectFfmpeg())
 
+  // Remove Background: one job per picture at a time; Cancel aborts it.
+  const backgroundJobs = new Map<string, AbortController>()
+  ipcMain.handle(MEDIA_IPC.removeBackground, async (event, args: { jobId: string; imagePath: string }): Promise<RemoveBackgroundResult> => {
+    const controller = new AbortController()
+    backgroundJobs.set(args.jobId, controller)
+    const send = (stage: string, percent: number): void => {
+      if (!event.sender.isDestroyed()) event.sender.send(MEDIA_IPC.removeBackgroundProgress, { jobId: args.jobId, stage, percent })
+    }
+    try {
+      return { ok: true, outputPath: await removeImageBackground(args.jobId, args.imagePath, send, controller.signal) }
+    } catch (err) {
+      if (controller.signal.aborted) return { ok: false, canceled: true, error: 'Canceled' }
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      backgroundJobs.delete(args.jobId)
+    }
+  })
+  ipcMain.handle(MEDIA_IPC.cancelRemoveBackground, async (_event, jobId: string) => {
+    backgroundJobs.get(jobId)?.abort()
+    cancelJob(jobId)
+    return true
+  })
+
+  // Only picture files, and only ones that exist: this hands out a URL
+  // for a path the renderer names.
+  ipcMain.handle(MEDIA_IPC.imageUrl, async (_event, filePath: string): Promise<string | null> => {
+    const ext = extname(filePath ?? '').slice(1).toLowerCase()
+    if (!(SUPPORTED_IMAGE_EXTENSIONS as readonly string[]).includes(ext) || !existsSync(filePath)) return null
+    return registerMediaToken(filePath)
+  })
+
   ipcMain.handle(MEDIA_IPC.rehydrate, async (event, sources: MediaSource[]) => {
     for (const source of sources) retryPaths.set(source.id, source.originalPath)
     const items = await Promise.all(sources.map(rehydrateMediaSource))
@@ -91,6 +139,7 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
     for (const source of sources) {
       if (source.pendingStage) runPipeline(event.sender, source.originalPath, source.id)
     }
+    void checkRehydratedProxies(event.sender, sources)
     return items
   })
 

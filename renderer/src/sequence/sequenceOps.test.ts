@@ -43,9 +43,12 @@ import {
   removeClipMarker,
   addOrUpdateKeyframe,
   moveKeyframe,
-  removeKeyframe
+  removeKeyframe,
+  addMirroredAudioClips
 } from './sequenceOps'
+import { createEmptySequence } from '@shared/project'
 import { updateClipSelection, clearClipSelection } from './sequenceSelection'
+import { rippleTrim } from '../timeline/ripple'
 import type { ProjectSequence, TimelineClip } from '@shared/project'
 import type { TimelineTrack } from '@shared/timelineTracks'
 
@@ -1404,5 +1407,46 @@ describe('keyframe animation (Keyframe Animation feature)', () => {
     sequence = removeKeyframe(sequence, 'a', 'volume', 'kf1')
     const keyframes = sequence.clips.find((c) => c.id === 'a')!.keyframes!.volume!
     expect(keyframes.map((k) => k.id)).toEqual(['kf2'])
+  })
+})
+
+describe('an image can be dragged longer (it has no source end)', () => {
+  // Images probe as a single frame (~0.04 s); that must never cap a trim.
+  it('trimClip extends an image past its probed length', () => {
+    const next = trimClip(seqOf([imageClip({ id: 'img', startTime: 0, duration: 1.5 })]), 'img', 'right', 12, 0.04)
+    expect(next.clips.find((c) => c.id === 'img')!.duration).toBeCloseTo(12)
+  })
+  it('rippleTrim extends it too', () => {
+    const next = rippleTrim(seqOf([imageClip({ id: 'img', startTime: 0, duration: 1.5 })]), 'img', 'right', 9, 'current', 0.04)
+    expect(next.clips.find((c) => c.id === 'img')!.duration).toBeCloseTo(9)
+  })
+  it('a video is still capped at its real length', () => {
+    const next = trimClip(seqOf([videoClip({ id: 'v', startTime: 0, duration: 2, sourceIn: 0, sourceOut: 2 })]), 'v', 'right', 12, 3)
+    expect(next.clips.find((c) => c.id === 'v')!.duration).toBeCloseTo(3)
+  })
+})
+
+describe('addMirroredAudioClips', () => {
+  it('puts the instrumental under each clip exactly like the clip, and mutes the clip', () => {
+    const seq = {
+      ...createEmptySequence(),
+      clips: [
+        { id: 'v1', mediaId: 'film', type: 'video' as const, trackId: 'V1', startTime: 0, duration: 77, sourceIn: 0, sourceOut: 77, locked: false },
+        { id: 'v2', mediaId: 'film', type: 'video' as const, trackId: 'V1', startTime: 77, duration: 2, sourceIn: 77, sourceOut: 78.7, locked: false, playbackRate: 0.85 }
+      ]
+    }
+    let n = 0
+    const next = addMirroredAudioClips(seq, ['v1', 'v2'], 'instrumental', () => `a${++n}`)
+    const audio = next.clips.filter((c) => c.mediaId === 'instrumental')
+    expect(audio.map((c) => [c.startTime, c.duration, c.sourceIn, c.sourceOut, c.playbackRate ?? 1])).toEqual([
+      [0, 77, 0, 77, 1],
+      [77, 2, 77, 78.7, 0.85]
+    ])
+    // Both on one audio track (they do not overlap).
+    expect(new Set(audio.map((c) => c.trackId)).size).toBe(1)
+    expect(next.tracks.find((t) => t.id === audio[0].trackId)?.kind).toBe('audio')
+    expect(next.clips.filter((c) => c.type === 'video').every((c) => c.muted)).toBe(true)
+    // Pressed again: nothing doubled.
+    expect(addMirroredAudioClips(next, ['v1', 'v2'], 'instrumental', () => `b${++n}`).clips.length).toBe(next.clips.length)
   })
 })

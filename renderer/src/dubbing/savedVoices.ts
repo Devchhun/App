@@ -1,3 +1,5 @@
+import { kiriVoiceOf } from '@shared/kiriTts'
+
 /** Custom voices the user recorded and named, so one character's voice can
  * be reused across subtitles, across sessions, and across PROJECTS.
  *
@@ -134,7 +136,7 @@ export function findBuiltinNarrator(voiceId: string | null): BuiltinNarrator | u
 /** The chosen narrator's display name, whichever kind it is. */
 export function narratorDisplayName(voiceId: string | null): string | null {
   if (!voiceId) return null
-  return findBuiltinNarrator(voiceId)?.name ?? findSavedVoice(loadSavedVoices(), voiceId)?.name ?? null
+  return findBuiltinNarrator(voiceId)?.name ?? findSavedVoice(loadSavedVoices(), voiceId)?.name ?? kiriVoiceOf(voiceId) ?? null
 }
 
 /** The voice chosen in Recap Script's My Voice drawer to narrate the
@@ -148,7 +150,7 @@ export function loadStoryNarratorVoiceId(): string | null {
   if (typeof localStorage === 'undefined') return null
   try {
     const raw = localStorage.getItem(NARRATOR_STORAGE_KEY)
-    return raw && (isSavedVoiceId(raw) || !!findBuiltinNarrator(raw)) ? raw : null
+    return raw && (isSavedVoiceId(raw) || !!findBuiltinNarrator(raw) || !!kiriVoiceOf(raw)) ? raw : null
   } catch {
     return null
   }

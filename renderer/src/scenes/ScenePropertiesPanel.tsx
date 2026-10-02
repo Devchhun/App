@@ -5,6 +5,7 @@ import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useScenes } from './SceneContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useHistoryFieldProps } from '../history/useHistoryFieldProps'
+import { PlainTextDesign } from './PlainTextDesign'
 import { IconPicker } from '../templates/IconPicker'
 import { TemplateIcon, resolveTemplateIconId } from '../templates/templateIcons'
 import { deriveChecklistItems } from '../templates/Checklist'
@@ -286,7 +287,7 @@ export function ScenePropertiesPanel(): JSX.Element {
             is the title here, with a plain × to drop the selection. */}
         <div className="scene-properties-header">
           <h3 className="scene-properties-title">
-            <span className="scene-properties-title-kind">Graphic</span>
+            <span className="scene-properties-title-kind">{scene.templateId === 'plain-text' ? 'Text' : 'Graphic'}</span>
             {TEMPLATE_LABELS[scene.templateId]}
           </h3>
           <button className="scene-properties-close" title="Deselect" aria-label="Close" onClick={() => selectScene(null)}>
@@ -308,7 +309,10 @@ export function ScenePropertiesPanel(): JSX.Element {
       </div>
 
       <div className="panel-scroll-body editor-scroll scene-properties-scroll-body">
-        {tab === 'design' && (
+        {tab === 'design' && scene.templateId === 'plain-text' && (
+          <PlainTextDesign scene={scene} disabled={disabled} update={(patch) => updateScene(media.id, scene.id, patch)} />
+        )}
+        {tab === 'design' && scene.templateId !== 'plain-text' && (
           <>
             <div className="scene-properties-group">
               <div className="scene-properties-group-title">Preset</div>

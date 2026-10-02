@@ -10,6 +10,7 @@ import { assetFromMediaItem } from '../media/assetFromMediaItem'
 import { findOrCreateTrack, type OccupiedRange } from '../timeline/trackModel'
 import { chunkRecapScript, estimateLineSeconds } from './recapNarration'
 import type { DubbingGenerationGroupSegment } from '@shared/dubbing'
+import { kiriVoiceOf } from '@shared/kiriTts'
 
 const STORAGE_PREFIX = 'cae-ai-script-v1:'
 /** Fired by AiScriptPanel whenever the stored script changes, so the Recap
@@ -91,9 +92,12 @@ export function useRecapNarration(): {
   // the AI Dubber's engine setting.
   const savedNarrator = narratorVoiceId ? findSavedVoice(loadSavedVoices(), narratorVoiceId) : undefined
   const builtinNarrator = findBuiltinNarrator(narratorVoiceId)
-  const narratorName = savedNarrator?.name ?? builtinNarrator?.name ?? null
+  // A KiriTTS voice (built-in or a clone on the account): spoken in the
+  // cloud, needs only the KiriTTS key.
+  const kiriNarrator = kiriVoiceOf(narratorVoiceId ?? undefined)
+  const narratorName = savedNarrator?.name ?? builtinNarrator?.name ?? kiriNarrator ?? null
   const settings = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
-  const engineReady = !!builtinNarrator || settings.installDir.trim().length > 0
+  const engineReady = !!builtinNarrator || !!kiriNarrator || settings.installDir.trim().length > 0
 
   const blocker: RecapNarrationBlocker | null = chunks.length === 0 ? 'no-script' : !narratorName ? 'no-narrator' : !engineReady ? 'no-engine' : null
 
@@ -202,7 +206,7 @@ export function useRecapNarration(): {
     })
     const totalSeconds = chunks.reduce((sum, text) => sum + estimateLineSeconds(text), 0) + Math.max(0, chunks.length - 1) * CHUNK_GAP_SECONDS
     const parts = `${chunks.length} ${chunks.length === 1 ? 'part' : 'parts'}`
-    const engineLabel = builtinNarrator ? 'Edge TTS (online)' : 'VoxCPM2'
+    const engineLabel = kiriNarrator ? 'KiriTTS (cloud)' : builtinNarrator ? 'Edge TTS (online)' : 'VoxCPM2'
     if (!skipConfirmation) {
       const ok = await confirm({
         title: `Voice the recap with ${narratorName}?`,
@@ -215,7 +219,15 @@ export function useRecapNarration(): {
     batchRef.current = { id, order: segments.map((s) => s.segmentId), outputs: new Map(), failed: new Set(), stitchedPath: null }
     setProgress({ completed: 0, total: segments.length, failed: 0, stage: 'generating' })
     void window.api.dubbing.generateBatch(
-      builtinNarrator
+      kiriNarrator
+        ? {
+            engine: 'kiritts',
+            installDir: settings.installDir,
+            device: settings.device,
+            batchId: id,
+            groups: [{ voiceId: narratorVoiceId as string, kiriVoice: kiriNarrator, segments }]
+          }
+        : builtinNarrator
         ? {
             engine: 'edge-tts',
             installDir: settings.installDir,
@@ -233,7 +245,7 @@ export function useRecapNarration(): {
             groups: [{ voiceId: narratorVoiceId ?? 'custom-voice', referenceAudioPath: savedNarrator?.referenceAudioPath, promptText: narratorName, segments }]
           }
     )
-  }, [blocker, narratorName, savedNarrator, builtinNarrator, narratorVoiceId, chunks, confirm, settings.installDir, settings.device, settings.pitchMatch, settings.tone])
+  }, [blocker, narratorName, savedNarrator, builtinNarrator, kiriNarrator, narratorVoiceId, chunks, confirm, settings.installDir, settings.device, settings.pitchMatch, settings.tone])
 
   const cancel = useCallback(() => {
     batchRef.current = null

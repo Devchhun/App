@@ -1,3 +1,4 @@
+import type { ExportOverlay } from '@shared/videoOverlay'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ProjectSequence } from '@shared/project'
 import type { ExportOptions, ExportProgress, ExportCapabilities } from '@shared/export'
@@ -17,7 +18,7 @@ interface ExportContextValue {
 
   phase: ExportPhase
   progress: ExportProgress | null
-  startExport: (sequence: ProjectSequence, mediaById: Record<string, { originalPath: string }>, aspectRatio: '16:9' | '9:16' | '1:1') => void
+  startExport: (sequence: ProjectSequence, mediaById: Record<string, { originalPath: string }>, aspectRatio: '16:9' | '9:16' | '1:1', overlay?: ExportOverlay) => void
   cancelExport: () => void
   resetToForm: () => void
 }
@@ -77,12 +78,12 @@ export function ExportProvider({ children }: { children: ReactNode }): JSX.Eleme
   }, [])
 
   const startExport = useCallback(
-    (sequence: ProjectSequence, mediaById: Record<string, { originalPath: string }>, aspectRatio: '16:9' | '9:16' | '1:1') => {
+    (sequence: ProjectSequence, mediaById: Record<string, { originalPath: string }>, aspectRatio: '16:9' | '9:16' | '1:1', overlay?: ExportOverlay) => {
       const requestId = crypto.randomUUID()
       currentRequestId.current = requestId
       setPhase('exporting')
       setProgress({ requestId, percent: 0, status: 'exporting' })
-      void window.api.export.startExport(requestId, sequence, mediaById, aspectRatio, options)
+      void window.api.export.startExport(requestId, sequence, mediaById, aspectRatio, options, overlay)
     },
     [options]
   )

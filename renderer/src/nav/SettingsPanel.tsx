@@ -9,6 +9,7 @@ import { LicenseSettingsCard } from '../license/LicenseSettingsCard'
 import { TranscriptionSettingsCard } from '../transcript/TranscriptionSettingsCard'
 import { DEFAULT_VOXCPM_SETTINGS, parseStoredVoxCpmSettings, serializeVoxCpmSettings, getVoxCpmSettingsStorageKey } from '../dubbing/voxcpmSettings'
 import { GeminiApiKeyCard } from './GeminiApiKeyCard'
+import { KiriApiKeyCard } from './KiriApiKeyCard'
 
 /** The Titlebar has its own compact update icon-button (see UpdateButton in
  * Titlebar.tsx) driven by the same window.api.updater surface -- this panel
@@ -137,7 +138,12 @@ export function SettingsPanel({ category }: { category: SettingsCategoryId }): J
 
       {category === 'transcription' && <TranscriptionSettingsCard />}
 
-      {category === 'apiKeys' && <GeminiApiKeyCard />}
+      {category === 'apiKeys' && (
+        <>
+          <GeminiApiKeyCard />
+          <KiriApiKeyCard />
+        </>
+      )}
 
       {category === 'voice' && <VoxCpmConfigPanel settings={voxcpm} onChange={(next) => setVoxcpm((prev) => ({ ...prev, ...next }))} />}
 

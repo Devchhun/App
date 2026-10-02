@@ -1,3 +1,4 @@
+import type { ExportOverlay } from '@shared/videoOverlay'
 import { ipcMain, dialog, app, BrowserWindow, shell, type WebContents } from 'electron'
 import { EXPORT_IPC } from '@shared/export'
 import type { ExportOptions, ExportProgress, ExportError, ExportCapabilities } from '@shared/export'
@@ -39,6 +40,7 @@ interface StartExportArgs {
   mediaById: Record<string, ExportMediaInfo>
   aspectRatio: '16:9' | '9:16' | '1:1'
   options: ExportOptions
+  overlay?: ExportOverlay
 }
 
 function runStartExport(sender: WebContents, args: StartExportArgs): void {
@@ -54,6 +56,7 @@ function runStartExport(sender: WebContents, args: StartExportArgs): void {
         mediaById: args.mediaById,
         aspectRatio: args.aspectRatio,
         options: args.options,
+        overlay: args.overlay,
         onProgress: (percent) => send({ requestId: args.requestId, percent, status: 'exporting' })
       })
 

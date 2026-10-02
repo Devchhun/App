@@ -11,7 +11,9 @@ Rather than editing the installed library, this swaps the format name in the
 one outgoing websocket message that carries it. If a future edge_tts sends
 that message differently the swap simply does not match and the line is
 made at 48 kbps as before; if the endpoint ever rejects 96 kbps, the line is
-retried at 48 kbps. Either way a line is still produced.
+retried at 48 kbps. Either way a line is still produced. An empty or dropped
+stream is retried a few times (see main) -- the endpoint does that now and
+then under load, not because the line is unreadable.
 
 Usage: python edge_tts_runner.py --voice V --text T --write-media OUT.mp3
 Exit 0 with OUT written, or exit 1 with the reason on the last stderr line
@@ -57,16 +59,27 @@ async def main() -> None:
     parser.add_argument('--text', required=True)
     parser.add_argument('--write-media', required=True)
     args = parser.parse_args()
-    try:
-        await synthesize(args.text, args.voice, args.write_media)
-    except (edge_tts.exceptions.NoAudioReceived, edge_tts.exceptions.UnexpectedResponse) as err:
-        if _wanted_format == DEFAULT_FORMAT:
-            raise
-        # The endpoint turned the better stream down -- make the line anyway.
-        print(f'96 kbps refused ({type(err).__name__}); falling back to 48 kbps', file=sys.stderr)
-        _wanted_format = DEFAULT_FORMAT
-        await synthesize(args.text, args.voice, args.write_media)
-
+    # Microsoft's endpoint sometimes answers with an empty stream
+    # (NoAudioReceived) or drops the socket for a perfectly good line --
+    # typically when it is rate limiting a long run. The same line spoken
+    # again a few seconds later comes back fine, so try again with growing
+    # pauses (1 + 3 + 6 s, well inside the app's 60 s per-line limit) before
+    # giving up. The tries alternate 96 and 48 kbps: a line refused only for
+    # the better stream still gets made, and one that was just unlucky is not
+    # left with the crackly 48 kbps sound.
+    retry_waits = [1.0, 3.0, 6.0]
+    formats = [HIGH_QUALITY_FORMAT, DEFAULT_FORMAT, HIGH_QUALITY_FORMAT, DEFAULT_FORMAT]
+    for attempt in range(len(retry_waits) + 1):
+        _wanted_format = formats[attempt]
+        try:
+            await synthesize(args.text, args.voice, args.write_media)
+            return
+        except (edge_tts.exceptions.NoAudioReceived, edge_tts.exceptions.UnexpectedResponse,
+                aiohttp.ClientError, asyncio.TimeoutError) as err:
+            if attempt == len(retry_waits):
+                raise
+            print(f'attempt {attempt + 1} failed ({type(err).__name__}); retrying', file=sys.stderr)
+            await asyncio.sleep(retry_waits[attempt])
 
 if __name__ == '__main__':
     try:

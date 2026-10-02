@@ -1,3 +1,6 @@
+import type { RemoveBackgroundProgress, RemoveBackgroundResult } from '@shared/media'
+import { KIRI_IPC, type KiriCloneResult, type KiriListResult } from '@shared/kiriTts'
+import type { ExportOverlay } from '@shared/videoOverlay'
 import { AI_ANIMATION_IPC, type AnimationIpcResult, type AnimationProgress, type AnimationRequest } from '@shared/aiAnimation'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
@@ -42,7 +45,7 @@ import type { CrashReport } from '@shared/crash'
 import { NARRATION_IPC } from '@shared/narration'
 import type { DetectSpeakerResult, NarrationOptimizationSettings } from '@shared/narration'
 import { DUBBING_IPC, type RefitClipAudioResult, type PrepareReferenceClipResult, type VoxCpmDevice } from '@shared/dubbing'
-import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent } from '@shared/dubbing'
+import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent, AnalyzePerformanceLine, AnalyzePerformanceResult } from '@shared/dubbing'
 import { VIDEO_STORY_NARRATION_IPC, type RegenerateNarrationSceneRequest, type StoryLibrary, type StoryOutlineIpcResult, type StoryOutlineRequest, type StoryScriptRequest, type VideoStoryNarrationIpcResult, type VideoStoryNarrationProgress, type VideoStoryNarrationRequest, type VideoStoryNarrationScene } from '@shared/videoStoryNarration'
 import { VOCAL_REMOVAL_IPC, type RemoveVocalsResult, type VocalRemovalProgress } from '@shared/vocalRemoval'
 import { TRANSLATION_IPC } from '@shared/translation'
@@ -50,6 +53,14 @@ import type { TranslateSubtitlesResult, TranslationError } from '@shared/transla
 
 const mediaApi = {
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke(MEDIA_IPC.pickFiles),
+  imageUrl: (filePath: string): Promise<string | null> => ipcRenderer.invoke(MEDIA_IPC.imageUrl, filePath),
+  removeBackground: (jobId: string, imagePath: string): Promise<RemoveBackgroundResult> => ipcRenderer.invoke(MEDIA_IPC.removeBackground, { jobId, imagePath }),
+  cancelRemoveBackground: (jobId: string): Promise<boolean> => ipcRenderer.invoke(MEDIA_IPC.cancelRemoveBackground, jobId),
+  onRemoveBackgroundProgress: (callback: (progress: RemoveBackgroundProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: RemoveBackgroundProgress): void => callback(progress)
+    ipcRenderer.on(MEDIA_IPC.removeBackgroundProgress, listener)
+    return () => ipcRenderer.removeListener(MEDIA_IPC.removeBackgroundProgress, listener)
+  },
   importPaths: (paths: string[]): Promise<void> => ipcRenderer.invoke(MEDIA_IPC.importPaths, paths),
   cancelJob: (mediaId: string): Promise<boolean> => ipcRenderer.invoke(MEDIA_IPC.cancelJob, mediaId),
   retryJob: (mediaId: string): Promise<void> => ipcRenderer.invoke(MEDIA_IPC.retryJob, mediaId),
@@ -125,8 +136,8 @@ const transcriptionApi = {
     mode: 'merge' | 'replace'
   ): Promise<{ canceled: boolean; entries?: CorrectionDictionaryEntry[] }> =>
     ipcRenderer.invoke(TRANSCRIPTION_IPC.importCorrectionDictionaryFromFile, mode),
-  importSrtFile: (): Promise<{ canceled: boolean; fileName?: string; srtText?: string }> =>
-    ipcRenderer.invoke(TRANSCRIPTION_IPC.importSrtFile),
+  importSrtFile: (options?: { multiple?: boolean }): Promise<{ canceled: boolean; fileName?: string; srtText?: string; files?: { fileName: string; srtText: string }[] }> =>
+    ipcRenderer.invoke(TRANSCRIPTION_IPC.importSrtFile, options),
   detectSpeakers: (request: DetectSpeakersRequest): Promise<DetectSpeakersResult> =>
     ipcRenderer.invoke(TRANSCRIPTION_IPC.detectSpeakers, request),
   cancelDetectSpeakers: (jobId: string): Promise<boolean> =>
@@ -187,6 +198,7 @@ const aiApi = {
 const vocalRemovalApi = {
   removeVocals: (jobId: string, sourcePath: string, installDir?: string, device?: VoxCpmDevice): Promise<RemoveVocalsResult> =>
     ipcRenderer.invoke(VOCAL_REMOVAL_IPC.removeVocals, { jobId, sourcePath, installDir, device }),
+  cancel: (jobId: string): Promise<boolean> => ipcRenderer.invoke(VOCAL_REMOVAL_IPC.cancel, jobId),
   onProgress: (callback: (progress: VocalRemovalProgress) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: VocalRemovalProgress): void => callback(progress)
     ipcRenderer.on(VOCAL_REMOVAL_IPC.progress, listener)
@@ -244,6 +256,15 @@ const storyApi = {
   cancelAnalysis: (requestId: string): Promise<boolean> => ipcRenderer.invoke(STORY_IPC.cancelAnalysis, requestId)
 }
 
+const kiriApi = {
+  hasKey: (): Promise<boolean> => ipcRenderer.invoke(KIRI_IPC.hasKey),
+  setKey: (key: string): Promise<void> => ipcRenderer.invoke(KIRI_IPC.setKey, key),
+  clearKey: (): Promise<void> => ipcRenderer.invoke(KIRI_IPC.clearKey),
+  listVoices: (): Promise<KiriListResult> => ipcRenderer.invoke(KIRI_IPC.listVoices),
+  cloneVoice: (name: string, sourcePath?: string, options?: import('@shared/kiriTts').KiriCloneOptions): Promise<KiriCloneResult> => ipcRenderer.invoke(KIRI_IPC.cloneVoice, { name, sourcePath, options }),
+  pickCloneSource: (): Promise<import('@shared/kiriTts').KiriCloneSource> => ipcRenderer.invoke(KIRI_IPC.pickCloneSource)
+}
+
 const exportApi = {
   pickOutputDir: (): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke(EXPORT_IPC.pickOutputDir),
   getCapabilities: (): Promise<ExportCapabilities> => ipcRenderer.invoke(EXPORT_IPC.getCapabilities),
@@ -252,8 +273,9 @@ const exportApi = {
     sequence: ProjectSequence,
     mediaById: Record<string, { originalPath: string }>,
     aspectRatio: '16:9' | '9:16' | '1:1',
-    options: ExportOptions
-  ): Promise<void> => ipcRenderer.invoke(EXPORT_IPC.startExport, { requestId, sequence, mediaById, aspectRatio, options }),
+    options: ExportOptions,
+    overlay?: ExportOverlay
+  ): Promise<void> => ipcRenderer.invoke(EXPORT_IPC.startExport, { requestId, sequence, mediaById, aspectRatio, options, overlay }),
   cancelExport: (requestId: string): Promise<boolean> => ipcRenderer.invoke(EXPORT_IPC.cancelExport, requestId),
   openOutput: (outputPath: string): Promise<boolean> => ipcRenderer.invoke(EXPORT_IPC.openOutput, outputPath),
   writeTextFile: (dir: string, name: string, extension: string, content: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
@@ -307,12 +329,25 @@ const dubbingApi = {
   validateInstall: (installDir: string): Promise<ValidateVoxCpmInstallResult> => ipcRenderer.invoke(DUBBING_IPC.validateInstall, installDir),
   detectInstalls: (knownPath?: string): Promise<string[]> => ipcRenderer.invoke(DUBBING_IPC.detectInstalls, knownPath),
   pickInstallFolder: (): Promise<string | null> => ipcRenderer.invoke(DUBBING_IPC.pickInstallFolder),
+  pickVideosAndSrt: (): Promise<{ videoPaths: string[]; srt: { fileName: string; srtText: string } | null; srts: { fileName: string; srtText: string }[] }> => ipcRenderer.invoke(DUBBING_IPC.pickVideosAndSrt),
+  detectEchoLines: (args: { originalPath: string; lines: { id: string; startTime: number; endTime: number }[] }): Promise<{ id: string; score: number }[]> =>
+    ipcRenderer.invoke(DUBBING_IPC.detectEchoLines, args),
+  audioUrl: (filePath: string): Promise<string | null> => ipcRenderer.invoke(DUBBING_IPC.audioUrl, filePath),
+  renderAudioEffect: (jobId: string, inputPath: string, start: number, end: number, filter: string): Promise<{ ok: true; outputPath: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke(DUBBING_IPC.renderAudioEffect, { jobId, inputPath, start, end, filter }),
+  detectBurnedSubtitles: (videoPath: string, lineMiddles: number[]): Promise<{ x: number; y: number; w: number; h: number; score: number } | null> =>
+    ipcRenderer.invoke(DUBBING_IPC.detectBurnedSubtitles, { videoPath, lineMiddles }),
+  saveEpisodeSrts: (files: { fileName: string; srtText: string }[]): Promise<{ folder: string; written: number } | null> =>
+    ipcRenderer.invoke(DUBBING_IPC.saveEpisodeSrts, files),
   /** Runs real VoxCPM2 generation over every voice group in `request`,
    * sequentially. Resolves once every group has been attempted; per-line
    * results stream separately via `onGenerationProgress` as they complete
    * (see that channel's own doc comment in shared/dubbing.ts for why). */
   generateBatch: (request: DubbingGenerationRequest): Promise<void> => ipcRenderer.invoke(DUBBING_IPC.generateBatch, request),
   cancelGeneration: (batchId?: string): Promise<boolean> => ipcRenderer.invoke(DUBBING_IPC.cancelGeneration, batchId),
+  /** Emotion + performance per line, by Gemini, each line with its context. */
+  analyzePerformance: (jobId: string, lines: AnalyzePerformanceLine[]): Promise<AnalyzePerformanceResult> =>
+    ipcRenderer.invoke(DUBBING_IPC.analyzePerformance, { jobId, lines }),
   stitchAudio: (inputPaths: string[], gapSeconds: number, level = false): Promise<{ ok: true; outputPath: string } | { ok: false; error: string }> =>
     ipcRenderer.invoke(DUBBING_IPC.stitchAudio, { inputPaths, gapSeconds, level }),
   refitClipAudio: (jobId: string, sourcePath: string, speed: number): Promise<RefitClipAudioResult> =>
@@ -369,6 +404,7 @@ const api = {
   localAi: localAiApi,
   story: storyApi,
   export: exportApi,
+  kiri: kiriApi,
   windowControls: windowControlsApi,
   updater: updaterApi,
   narration: narrationApi,

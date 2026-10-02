@@ -53,6 +53,10 @@ interface HistoryContextValue {
    * as a spurious "undo back to empty" entry, corrupting the stack order for
    * every real edit that follows. */
   suppressNextRecord: () => void
+  /** Call right before swapping in a different Timeline wholesale (AI
+   * Dubber opening another episode): the swap itself is not an edit, and
+   * Undo must never step back into the previous episode's Timeline. */
+  resetHistory: () => void
 }
 
 const HistoryContext = createContext<HistoryContextValue | null>(null)
@@ -130,6 +134,11 @@ export function HistoryProvider({ children }: { children: ReactNode }): JSX.Elem
     applyingRef.current = true
   }, [])
 
+  const resetHistory = useCallback(() => {
+    applyingRef.current = true
+    setHistoryState(createHistoryState())
+  }, [])
+
   // Deliberately NOT using the setHistoryState(updater) form here: an
   // updater function must be pure, and calling other components' setState
   // (restoreScenesByMedia/restoreSequence/setBrandPreset) from inside one is
@@ -183,9 +192,10 @@ export function HistoryProvider({ children }: { children: ReactNode }): JSX.Elem
       redo,
       beginTransaction: beginTx,
       endTransaction: endTx,
-      suppressNextRecord
+      suppressNextRecord,
+      resetHistory
     }),
-    [historyState.past.length, historyState.future.length, undo, redo, beginTx, endTx, suppressNextRecord]
+    [historyState.past.length, historyState.future.length, undo, redo, beginTx, endTx, suppressNextRecord, resetHistory]
   )
 
   useEffect(() => {

@@ -7,7 +7,7 @@ import { useHistory } from '../history/HistoryContext'
 import { usePlaybackControls } from '../playback/PlaybackContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useTimelineView } from './TimelineViewContext'
-import { trackDisplayHeight, getMainVideoTrackId, nextTrackId, isNarrationTrackId } from './trackModel'
+import { trackDisplayHeight, getMainVideoTrackId, nextTrackId, isNarrationTrackId, DUBBING_TRACK_ID } from './trackModel'
 import { buildSnapCandidates, findSnapMatch, type SnapCandidate } from './snapping'
 import type { RippleScope } from './timelineViewPrefs'
 import { VideoFilmstrip } from './VideoFilmstrip'
@@ -828,7 +828,7 @@ function ClipTrackImpl({
 
   return (
     <div
-      className={`timeline-track clip-track clip-track-kind-${track.kind} clip-track-tool-${tool}${track.hidden ? ' timeline-track-hidden' : ''}${track.isMain ? ' timeline-track-sticky-main' : ''}`}
+      className={`timeline-track clip-track clip-track-kind-${track.kind} clip-track-tool-${tool}${track.hidden ? ' timeline-track-hidden' : ''}${track.isMain ? ' timeline-track-sticky-main' : ''}${track.id === DUBBING_TRACK_ID ? ' clip-track-dubbing' : ''}`}
       style={{ width: Math.max(1, duration * pixelsPerSecond, visualMinWidthPx ?? 0), height: rowHeight }}
       data-track-id={track.id}
       data-track-kind={track.kind}

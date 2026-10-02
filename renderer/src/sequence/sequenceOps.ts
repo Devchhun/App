@@ -11,7 +11,7 @@ import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
 import { clipRate, sourceEnd } from '@shared/clipTiming'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import type { KeyframeableProperty, KeyframeEasing } from '@shared/keyframes'
-import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry, findOrCreateNarrationTrack, findOrCreateDubbingTrack, type OccupiedRange } from '../timeline/trackModel'
+import { addTrack as addTrackToRegistry, removeTrack as removeTrackFromRegistry, findOrCreateNarrationTrack, findOrCreateDubbingTrack, findOrCreateTrack, ensureTrack, type OccupiedRange } from '../timeline/trackModel'
 import { closeGap } from '../timeline/reflow'
 import { planRippleInsert, extendRippleInsertWithLinkedPartners } from '../timeline/rippleCollision'
 
@@ -350,7 +350,11 @@ export function trimClip(
   if (partner?.locked) return sequence
   const partnerSourceLimit = partner ? partnerSourceDurationSeconds ?? sourceEnd(partner) : undefined
   let boundedPointerTime = clampTrimToNeighbours(sequence.clips, target, edge, pointerTime)
-  if (edge === 'right' && Number.isFinite(sourceDurationSeconds)) {
+  // A still image has no source end -- its probed "duration" (a single
+  // frame, ~0.04 s) must never cap it, or its right edge cannot be dragged
+  // out at all. applyTrim already treats images this way; this pre-bound
+  // used to apply the source length to them anyway.
+  if (edge === 'right' && target.type !== 'image' && Number.isFinite(sourceDurationSeconds)) {
     boundedPointerTime = Math.min(boundedPointerTime, target.startTime + ((sourceDurationSeconds as number) - target.sourceIn) / clipRate(target))
   }
   if (partner && !partner.locked) {
@@ -615,7 +619,7 @@ export function setClipsMuted(sequence: ProjectSequence, clipIds: string[], mute
  * timing/track/media/link identity. Includes `keyframes` so pasting a
  * keyframed clip's attributes onto another carries its animation too,
  * consistent with every other appearance property here. */
-export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform' | 'keyframes'>>
+export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform' | 'keyframes' | 'motion'>>
 
 export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
   return {
@@ -625,7 +629,8 @@ export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
     fadeIn: clip.fadeIn,
     fadeOut: clip.fadeOut,
     transform: clip.transform,
-    keyframes: clip.keyframes
+    keyframes: clip.keyframes,
+    motion: clip.motion
   }
 }
 
@@ -686,7 +691,8 @@ export function resetClipProperties(sequence: ProjectSequence, clipIds: string[]
     fadeIn: 0,
     fadeOut: 0,
     transform: undefined,
-    keyframes: undefined
+    keyframes: undefined,
+    motion: undefined
   })
 }
 
@@ -956,6 +962,23 @@ export function setClipStartTimes(sequence: ProjectSequence, updates: { clipId: 
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
 
+/** Points a clip at another file of the same sound (an Audio Effects
+ * render, or back to the original), keeping its place and length. */
+export function setClipAudioSource(
+  sequence: ProjectSequence,
+  clipId: string,
+  patch: { mediaId: string; sourceIn: number; sourceOut: number; audioEffect: TimelineClip['audioEffect'] }
+): ProjectSequence {
+  return {
+    ...sequence,
+    clips: sequence.clips.map((c) => {
+      if (c.id !== clipId || c.locked) return c
+      const { audioEffect: _old, ...rest } = c
+      return { ...rest, mediaId: patch.mediaId, sourceIn: patch.sourceIn, sourceOut: patch.sourceOut, ...(patch.audioEffect ? { audioEffect: patch.audioEffect } : {}) }
+    })
+  }
+}
+
 export function replaceClipMedia(sequence: ProjectSequence, clipId: string, newMediaId: string, newSourceDurationSeconds: number): ProjectSequence {
   const target = sequence.clips.find((c) => c.id === clipId)
   if (!target || target.locked) return sequence
@@ -1063,4 +1086,46 @@ export function removeKeyframe(sequence: ProjectSequence, clipId: string, proper
     return { ...c, keyframes: { ...c.keyframes, [property]: c.keyframes[property]!.filter((k) => k.id !== keyframeId) } }
   })
   return { ...sequence, clips }
+}
+
+/** "Remove Vocal": the instrumental -- a whole-file copy of the video's own
+ * sound -- under each of these video clips, cut and timed exactly like the
+ * clip above it (same place and length on the Timeline, same point in the
+ * file, same speed), with the clip's own sound (and a linked audio
+ * partner's) muted. A clip cut and slowed by Video Sync, starting partway
+ * into the file, therefore still lines up. One sequence change: one Undo. */
+export function addMirroredAudioClips(sequence: ProjectSequence, videoClipIds: string[], audioMediaId: string, makeId: IdFactory = defaultMakeId): ProjectSequence {
+  let tracks = sequence.tracks
+  const added: TimelineClip[] = []
+  const mute = new Set<string>()
+  for (const id of videoClipIds) {
+    const video = sequence.clips.find((c) => c.id === id && c.type === 'video')
+    if (!video) continue
+    // Already has it (Remove Vocal pressed again): nothing to add twice.
+    const has = (c: TimelineClip): boolean => c.mediaId === audioMediaId && Math.abs(c.startTime - video.startTime) < 1e-6 && Math.abs(c.sourceIn - video.sourceIn) < 1e-6
+    if (sequence.clips.some(has)) {
+      mute.add(video.id)
+      continue
+    }
+    const occupied: OccupiedRange[] = [...sequence.clips, ...added].map((c) => ({ trackId: c.trackId, startTime: c.startTime, endTime: c.startTime + c.duration }))
+    const routing = findOrCreateTrack(tracks, occupied, video.startTime, video.duration, 'audio')
+    if (routing.newTrack) tracks = ensureTrack(tracks, routing.newTrack)
+    added.push({
+      id: makeId(),
+      mediaId: audioMediaId,
+      type: 'audio',
+      trackId: routing.trackId,
+      startTime: video.startTime,
+      duration: video.duration,
+      sourceIn: video.sourceIn,
+      sourceOut: video.sourceOut,
+      locked: false,
+      ...(video.playbackRate !== undefined && video.playbackRate !== 1 ? { playbackRate: video.playbackRate } : {})
+    })
+    mute.add(video.id)
+    if (video.linkedClipId) mute.add(video.linkedClipId)
+  }
+  if (added.length === 0 && !sequence.clips.some((c) => mute.has(c.id) && !c.muted)) return sequence
+  const clips = [...sequence.clips.map((c) => (mute.has(c.id) ? { ...c, muted: true } : c)), ...added]
+  return { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) }
 }

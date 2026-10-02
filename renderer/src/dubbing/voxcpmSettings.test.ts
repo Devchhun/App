@@ -3,7 +3,7 @@ import { DEFAULT_VOXCPM_SETTINGS, parseStoredVoxCpmSettings, serializeVoxCpmSett
 
 describe('parseStoredVoxCpmSettings / serializeVoxCpmSettings', () => {
   it('round-trips a valid stored value exactly', () => {
-    const settings = { engine: 'edge-tts' as const, installDir: 'D:\\Tools\\VoxCPM2', device: 'cuda' as const, pitchMatch: false, tone: 'natural' as const }
+    const settings = { engine: 'edge-tts' as const, installDir: 'D:\\Tools\\VoxCPM2', device: 'cuda' as const, pitchMatch: false, tone: 'natural' as const, steadyPace: false, kiriActing: true }
     expect(parseStoredVoxCpmSettings(serializeVoxCpmSettings(settings))).toEqual(settings)
   })
 
@@ -11,6 +11,11 @@ describe('parseStoredVoxCpmSettings / serializeVoxCpmSettings', () => {
     const parsed = parseStoredVoxCpmSettings(JSON.stringify({ engine: 'voxcpm2', installDir: 'D:\\Tools\\VoxCPM2', device: 'cuda' }))
     expect(parsed.pitchMatch).toBe(true)
     expect(parseStoredVoxCpmSettings(JSON.stringify({ pitchMatch: 'no' })).pitchMatch).toBe(true)
+  })
+
+  it('turns steady voice speed on for a value stored before the setting existed', () => {
+    expect(parseStoredVoxCpmSettings(JSON.stringify({ engine: 'kiritts', installDir: 'D:\Tools\VoxCPM2', device: 'cuda' })).steadyPace).toBe(true)
+    expect(parseStoredVoxCpmSettings(JSON.stringify({ steadyPace: false })).steadyPace).toBe(false)
   })
 
   it('rejects an unknown engine, keeping the rest', () => {
