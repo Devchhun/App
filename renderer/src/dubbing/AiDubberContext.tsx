@@ -699,7 +699,10 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
   const addSubtitleAt = useCallback(
     (time: number, preferMediaId?: string): string | null => {
       const startTime = Math.max(0, time)
-      const endTime = startTime + DEFAULT_NEW_SUBTITLE_DURATION
+      // Up to the next line, not over it (unless there is no room at all).
+      const nextStart = segments.find((s) => s.startTime > startTime + 1e-3)?.startTime
+      const roomy = nextStart !== undefined && nextStart - 0.05 - startTime >= 0.4
+      const endTime = roomy ? Math.min(startTime + DEFAULT_NEW_SUBTITLE_DURATION, nextStart - 0.05) : startTime + DEFAULT_NEW_SUBTITLE_DURATION
       const id = crypto.randomUUID()
       const newSegment: TranscriptSegment = {
         id,
@@ -737,7 +740,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       setSelectedSubtitleId(id)
       return id
     },
-    [state.videoMediaId, sequence.clips, transcripts, setImportedTranscript, selectMedia, prepareDubbingTrack]
+    [state.videoMediaId, segments, sequence.clips, transcripts, setImportedTranscript, selectMedia, prepareDubbingTrack]
   )
 
   const addSubtitle = useCallback((): string => {

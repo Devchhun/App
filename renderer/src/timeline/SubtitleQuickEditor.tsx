@@ -20,7 +20,45 @@ function storedEngine(): DubbingEngine {
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = seconds - m * 60
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+  return `${m}:${s.toFixed(2).padStart(5, '0')}`
+}
+
+/** "1:23.45", "83.45" or "1:23" -> seconds; null when it is not a time. */
+function parseTime(text: string): number | null {
+  const m = /^\s*(?:(\d+):)?(\d+(?:[.,]\d+)?)\s*$/.exec(text)
+  if (!m) return null
+  const value = (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2].replace(',', '.'))
+  return Number.isFinite(value) ? value : null
+}
+
+/** A start or end time typed in place, applied on Enter or leaving it. */
+function TimeField({ label, value, onCommit }: { label: string; value: number; onCommit: (seconds: number) => void }): JSX.Element {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = (): void => {
+    if (draft === null) return
+    const parsed = parseTime(draft)
+    setDraft(null)
+    if (parsed !== null && Math.abs(parsed - value) > 0.004) onCommit(parsed)
+  }
+  return (
+    <label className="subtitle-quick-editor-timefield">
+      <span>{label}</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={draft ?? formatTime(value)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            e.stopPropagation()
+            commit()
+          }
+        }}
+      />
+    </label>
+  )
 }
 
 /** Where the user last dragged the panel: it opens there again (this
@@ -60,6 +98,8 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
   // generator reads the line as the Timeline has it).
   const [pending, setPending] = useState<{ engine: DubbingEngine; voiceId: string } | null>(null)
   const [requested, setRequested] = useState(false)
+  // Times typed by hand are kept: a new line stops following its words.
+  const timedByHandRef = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const textRef = useRef<HTMLTextAreaElement>(null)
   const [pos, setPos] = useState({ left: 0, top: 0, ready: false })
@@ -129,7 +169,7 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
     // next line): it starts at 2 s, which is short for a sentence. The
     // length goes first: it rewrites the whole list as this render has it,
     // and the text set after it lands on top instead of being wiped.
-    if (isNew && words) {
+    if (isNew && words && !timedByHandRef.current) {
       const index = aiDubber.segments.findIndex((s) => s.id === segmentId)
       const next = aiDubber.segments[index + 1]
       const wanted = segment.startTime + Math.max(2, kiriExpectedSeconds(words) + 0.4)
@@ -190,6 +230,10 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
   }
 
   if (!segment) return null
+  const index = aiDubber.segments.findIndex((s) => s.id === segmentId)
+  const lineNumber = index + 1
+  const next = aiDubber.segments[index + 1]
+  const overlap = next && segment.endTime > next.startTime + 0.01 ? index + 2 : null
   const status = generating
     ? { kind: 'busy', label: `Making the voice with ${ENGINE_LABEL[engine]}…` }
     : requested && segState.status === 'generated'
@@ -220,8 +264,8 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
           ⋮⋮
         </span>
         <span className="subtitle-quick-editor-title">{isNew ? 'New subtitle' : 'Subtitle'}</span>
-        <span className="subtitle-quick-editor-time">
-          {formatTime(segment.startTime)} – {formatTime(segment.endTime)}
+        <span className="subtitle-quick-editor-time" title="Its number in the subtitle list (SRT), in time order">
+          #{lineNumber} of {aiDubber.segments.length}
         </span>
         <button className="subtitle-quick-editor-close" onClick={close} aria-label="Close" title="Close (Esc)">
           ✕
@@ -245,6 +289,26 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
           }
         }}
       />
+      <div className="subtitle-quick-editor-times">
+        <TimeField
+          label="Start"
+          value={segment.startTime}
+          onCommit={(seconds) => {
+            timedByHandRef.current = true
+            aiDubber.updateSegmentTiming(segmentId, 'start', Math.max(0, seconds))
+          }}
+        />
+        <TimeField
+          label="End"
+          value={segment.endTime}
+          onCommit={(seconds) => {
+            timedByHandRef.current = true
+            aiDubber.updateSegmentTiming(segmentId, 'end', seconds)
+          }}
+        />
+        <span className="subtitle-quick-editor-duration">{(segment.endTime - segment.startTime).toFixed(2)} s</span>
+      </div>
+      {overlap && <p className="subtitle-quick-editor-status subtitle-quick-editor-status-info">Runs into line #{overlap} — set its End before that line starts.</p>}
       <div className="subtitle-quick-editor-engines" role="tablist" aria-label="Voice engine">
         {ENGINES.map((option) => (
           <button key={option} role="tab" aria-selected={engine === option} className={engine === option ? 'subtitle-quick-editor-engine subtitle-quick-editor-engine-active' : 'subtitle-quick-editor-engine'} onClick={() => setEngine(option)}>

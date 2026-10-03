@@ -170,6 +170,9 @@ interface SequenceContextValue {
    * section 16). Applies to exactly one clip (the panel only ever edits the
    * first selected one); a no-op for a locked clip. */
   updateClipProperties: (clipId: string, patch: ClipPropertyPatch) => void
+  /** The same property patch on several clips at once, one Undo step
+   * (Clip Properties' "same volume on all"); locked clips are left alone. */
+  updateClipsProperties: (clipIds: string[], patch: ClipPropertyPatch) => void
   /** "Reset Attributes" (clip context menu) -- clears every ClipPropertyPatch
    * field on the given clips back to its un-adjusted default. */
   resetClipProperties: (clipIds: string[]) => void
@@ -553,6 +556,10 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     return !!entry && entry.clips.length > 0
   }, [])
 
+  const updateClipsProperties = useCallback((clipIds: string[], patch: ClipPropertyPatch) => {
+    if (clipIds.length > 0) setSequence((prev) => applyClipPropertiesOp(prev, clipIds, patch))
+  }, [])
+
   const updateClipProperties = useCallback((clipId: string, patch: ClipPropertyPatch) => {
     setSequence((prev) => applyClipPropertiesOp(prev, [clipId], patch))
   }, [])
@@ -717,6 +724,7 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       cutSelected,
       pasteAtTime,
       pasteAttributesToSelected,
+      updateClipsProperties,
       hasClipboardContent,
       updateClipProperties,
       resetClipProperties,
@@ -784,6 +792,7 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       cutSelected,
       pasteAtTime,
       pasteAttributesToSelected,
+      updateClipsProperties,
       hasClipboardContent,
       updateClipProperties,
       resetClipProperties,

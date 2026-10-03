@@ -885,6 +885,7 @@ function ClipTrackImpl({
                   duration={clip.duration * clipRate(clip)}
                   widthPx={widthPx}
                   heightPx={bodyHeightPx}
+                  volume={clip.volume ?? 1}
                 />
               )}
               {selected && activeKeyframeProperty && (

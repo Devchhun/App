@@ -1,7 +1,9 @@
 import { REMOVE_BACKGROUND_EVENT } from '../media/removeBackgroundEvent'
 import { MotionPicker } from './MotionPicker'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMedia } from '../media/MediaContext'
+import { useBrandPreset } from '../brand/BrandPresetContext'
+import { clipFillScale } from './clipFill'
 import { useSequence } from './SequenceContext'
 import { usePlaybackTime } from '../playback/PlaybackContext'
 import { useTimelineView } from '../timeline/TimelineViewContext'
@@ -295,10 +297,10 @@ function AudioEffectsSection({ clip, trackName, trackClipIds, locked }: { clip: 
       </Row>
       <div className="cp-fx-actions">
         <button className="cp-fx-apply" disabled={locked || busy} onClick={() => void run([clip.id], draft)}>
-          Apply
+          Apply effect
         </button>
         <button className="cp-fx-apply cp-fx-apply-all" disabled={busy || trackClipIds.length === 0} title={`The same effect on all ${trackClipIds.length} audio clip(s) on ${trackName}`} onClick={() => void run(trackClipIds, draft)}>
-          Apply to all audio on {trackName} ({trackClipIds.length})
+          Apply effect to all on {trackName} ({trackClipIds.length})
         </button>
       </div>
       {busy && <div className="cp-speed-note">Rendering {progress.done} / {progress.total}…</div>}
@@ -314,8 +316,12 @@ function AudioEffectsSection({ clip, trackName, trackClipIds, locked }: { clip: 
 
 export function ClipPropertiesPanel(): JSX.Element {
   const { items } = useMedia()
-  const { sequence, selectedTimelineClipIds, toggleClipLock, toggleClipMute, moveClip, trimClip, updateClipProperties } = useSequence()
+  const { sequence, selectedTimelineClipIds, toggleClipLock, toggleClipMute, moveClip, trimClip, updateClipProperties, updateClipsProperties } = useSequence()
   const { currentTime } = usePlaybackTime()
+  const [volumeNote, setVolumeNote] = useState<string | null>(null)
+  // Each clip starts without the last clip's message.
+  useEffect(() => setVolumeNote(null), [selectedTimelineClipIds])
+  const { brandPreset } = useBrandPreset()
   const [tab, setTab] = useState<'basic' | 'animation'>('basic')
   const { linkageOn } = useTimelineView()
   const historyFieldProps = useHistoryFieldProps()
@@ -388,6 +394,8 @@ export function ClipPropertiesPanel(): JSX.Element {
     }
   }
 
+  const clipMedia = items.find((item) => item.id === clip.mediaId)
+  const fillScale = clipFillScale(clipMedia?.metadata, brandPreset.defaultAspectRatio)
   const opacityPercent = Math.round((clip.opacity ?? 1) * 100)
   const volumePercent = Math.round((clip.volume ?? 1) * 100)
   const isVisual = clip.type === 'video' || clip.type === 'image'
@@ -485,6 +493,20 @@ export function ClipPropertiesPanel(): JSX.Element {
                 <RotateIcon size={12} />
               </button>
             </Row>
+            <div className="cp-fit-row" role="group" aria-label="Fit or fill the frame">
+              <button type="button" className="cp-fit-btn" disabled={locked} title="The whole picture inside the frame (black bars where shapes differ)" onClick={() => setTransform({ scaleX: 1, scaleY: 1, x: 0, y: 0 })}>
+                Fit
+              </button>
+              <button
+                type="button"
+                className="cp-fit-btn"
+                disabled={locked || !fillScale}
+                title="Fill the whole frame, no black bars (the edges that do not fit are cut off)"
+                onClick={() => fillScale && setTransform({ scaleX: fillScale, scaleY: fillScale, x: 0, y: 0 })}
+              >
+                Fill
+              </button>
+            </div>
             <div className="cp-align-row" role="group" aria-label="Align in frame">
               {(['left', 'hcenter', 'right'] as Align[]).map((k) => (
                 <button key={k} type="button" className="cp-align-btn" disabled={locked} title={k === 'left' ? 'Align left' : k === 'right' ? 'Align right' : 'Center horizontally'} onClick={() => align(k)}>
@@ -593,6 +615,33 @@ export function ClipPropertiesPanel(): JSX.Element {
               <Slider min={0} max={MAX_CLIP_VOLUME * 100} value={volumePercent} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
               <NumberField value={volumePercent} unit="%" min={0} max={MAX_CLIP_VOLUME * 100} disabled={locked || Boolean(clip.muted)} onChange={(v) => updateClipProperties(clip.id, { volume: v / 100 })} />
             </Row>
+            {(() => {
+              // This clip's volume on others: its track's clips, or every
+              // sound clip on the Timeline (dub lines, music, voice-over).
+              const sameTrack = sequence.clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id && !c.locked && (c.type === 'audio' || c.type === clip.type))
+              const allAudio = sequence.clips.filter((c) => c.type === 'audio' && c.id !== clip.id && !c.locked)
+              const volume = clip.volume ?? 1
+              const apply = (clips: TimelineClip[], where: string): void => {
+                updateClipsProperties(clips.map((c) => c.id), { volume })
+                const keyframed = clips.filter((c) => (c.keyframes?.volume?.length ?? 0) > 1).length
+                const total = clips.length + 1
+                setVolumeNote(`${volumePercent}% on ${total} clips ${where}${keyframed ? ` -- ${keyframed} have volume keyframes, which still decide their level` : ''}`)
+              }
+              return (
+                <div className="cp-volume-all">
+                  <span className="cp-volume-all-label">Same volume ({volumePercent}%) on</span>
+                  <div className="cp-volume-all-buttons">
+                    <button type="button" className="cp-fx-apply" disabled={locked || sameTrack.length === 0} title={`Every clip on ${trackLabel}`} onClick={() => apply(sameTrack, `on ${clip.trackId}`)}>
+                      All on {clip.trackId} ({sameTrack.length + 1})
+                    </button>
+                    <button type="button" className="cp-fx-apply" disabled={locked || allAudio.length === 0} title="Every sound clip on every track: dub lines, music, voice-over" onClick={() => apply(allAudio, 'in the Timeline')}>
+                      All audio ({allAudio.length + (clip.type === 'audio' ? 1 : 0)})
+                    </button>
+                  </div>
+                  {volumeNote && <span className="cp-speed-note">{volumeNote}</span>}
+                </div>
+              )
+            })()}
             <Row label="Mute">
               <Switch label="Mute" checked={Boolean(clip.muted)} disabled={locked} onChange={() => toggleClipMute(clip.id)} />
             </Row>

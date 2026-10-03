@@ -5,6 +5,7 @@ import { useTranscript } from '../transcript/TranscriptContext'
 import { useBrandPreset } from '../brand/BrandPresetContext'
 import { useHistory } from '../history/HistoryContext'
 import { useChangeAspectRatio } from '../scenes/useAspectRatioChange'
+import { useAutoAspectRatio } from '../scenes/useAutoAspectRatio'
 import { useUiState } from './UiStateContext'
 import { useExport } from '../export/ExportContext'
 import type { BrandPreset } from '@shared/project'
@@ -177,6 +178,8 @@ export function Titlebar(): JSX.Element {
   const { canUndo, canRedo, undo, redo } = useHistory()
   const changeAspectRatio = useChangeAspectRatio()
   const { openDialog: openExportDialog } = useExport()
+  // The first video on an empty project sets its shape (16:9 / 9:16 / 1:1).
+  useAutoAspectRatio()
 
   return (
     <div className="titlebar-wrap">

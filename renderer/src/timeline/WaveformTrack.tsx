@@ -14,6 +14,9 @@ interface Props {
   duration: number
   widthPx: number
   heightPx: number
+  /** The clip's volume (1 = as recorded, up to 3): the bars grow and
+   * shrink with it, as CapCut's do, inside the clip. */
+  volume?: number
 }
 
 const BAR_WIDTH = 2
@@ -27,6 +30,9 @@ const LOUDNESS_CURVE = 0.85
  * every picket overlaps, a touch deeper at the tips. */
 const WAVE_CORE = '#9fdcff'
 const WAVE_EDGE = '#52b1ff'
+/** At 100 % the file's loudest moment fills this much of the clip's
+ * height -- room left above it for a raised volume to show. */
+const HEADROOM = 0.6
 
 /** Drawn on either side of the visible window, so ordinary scrolling
  * never shows an undrawn edge before the next redraw lands. */
@@ -61,7 +67,7 @@ function filePeak(waveform: WaveformData | undefined): number {
  * waveform. The canvas follows the Timeline's horizontal scroll: it is
  * repositioned and redrawn as the visible window moves, so a clip of any
  * length costs one screen's worth of canvas. */
-export function WaveformTrack({ waveform, sourceDurationSeconds, sourceIn, duration, widthPx, heightPx }: Props): JSX.Element {
+export function WaveformTrack({ waveform, sourceDurationSeconds, sourceIn, duration, widthPx, heightPx, volume = 1 }: Props): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // The slice of the clip (in clip px) the canvas currently covers.
   const [slice, setSlice] = useState<{ start: number; width: number }>({ start: 0, width: Math.min(widthPx, MAX_CANVAS_PX) })
@@ -146,10 +152,11 @@ export function WaveformTrack({ waveform, sourceDurationSeconds, sourceIn, durat
     for (let x = 0; x < w; x += BAR_STEP) {
       let amp = 0
       for (let i = x; i < Math.min(w, x + BAR_WIDTH); i++) amp = Math.max(amp, bars[i].avg)
-      const height = Math.max(MIN_BAR_PX, Math.pow(amp / peak, LOUDNESS_CURVE) * usable)
+      const level = Math.pow((amp * Math.max(0, volume)) / peak, LOUDNESS_CURVE) * HEADROOM
+      const height = volume <= 0 ? MIN_BAR_PX : Math.max(MIN_BAR_PX, Math.min(1, level) * usable)
       ctx.fillRect(x, bottom - height, BAR_WIDTH, height)
     }
-  }, [waveform, sourceDurationSeconds, sourceIn, duration, widthPx, heightPx, slice])
+  }, [waveform, sourceDurationSeconds, sourceIn, duration, widthPx, heightPx, slice, volume])
 
   return <canvas ref={canvasRef} className="clip-track-clip-waveform" style={{ left: slice.start, width: slice.width, height: heightPx }} />
 }
