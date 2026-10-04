@@ -11,6 +11,7 @@ import { computeStageSize } from './previewStageSize'
 import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode, getPreviewQualityStorageKey, parseStoredPreviewQuality, type PreviewQuality, getScopeStorageKey, parseStoredScopeVisible } from './previewPreferences'
 import { ColorScope } from './ColorScope'
 import { VideoOverlayLayer } from './VideoOverlayLayer'
+import { ClipTransformGizmo } from './ClipTransformGizmo'
 import { setElementLevel } from './audioBoost'
 import { useAiDubber } from '../dubbing/AiDubberContext'
 import { StillFrameExportDialog } from './StillFrameExportDialog'
@@ -104,7 +105,7 @@ export function PreviewPlayer(): JSX.Element {
   const { importPaths } = useMedia()
   const confirm = useConfirm()
   const { scenesByMedia, selectedSceneId } = useScenes()
-  const { sequence } = useSequence()
+  const { sequence, selectedTimelineClipIds } = useSequence()
   const { brandPreset } = useBrandPreset()
   const narration = useNarration()
   const { videoOverlay, setVideoOverlay, overlayLines } = useAiDubber()
@@ -237,6 +238,16 @@ export function PreviewPlayer(): JSX.Element {
   // however many video-kind tracks exist, the highest-order one wins (same
   // "topmost track renders/plays on top" rule Preview compositing uses).
   const activeV1Clip = useMemo(() => resolveActiveVideoClip(activeClips, sequence.tracks, currentTime), [activeClips, sequence.tracks, currentTime])
+  /** The one selected picture (video or image) on screen now: it gets the
+   * move / size / rotate frame (ClipTransformGizmo), as in CapCut. */
+  const gizmoClip = useMemo(() => {
+    if (previewMode !== 'project' || selectedTimelineClipIds.length !== 1) return null
+    const clip = sequence.clips.find((c) => c.id === selectedTimelineClipIds[0])
+    if (!clip || (clip.type !== 'video' && clip.type !== 'image') || clip.enabled === false) return null
+    if (currentTime < clip.startTime || currentTime >= clip.startTime + clip.duration) return null
+    if (sequence.tracks.find((track) => track.id === clip.trackId)?.hidden) return null
+    return clip
+  }, [previewMode, selectedTimelineClipIds, sequence.clips, sequence.tracks, currentTime])
   const activeMedia = activeV1Clip ? mediaById[activeV1Clip.mediaId] : undefined
   const activeSrc = mediaUrl(activeMedia, previewQuality)
   const lastSyncedClipRef = useRef<{ id: string | undefined; src: string | undefined; mediaId?: string }>({ id: undefined, src: undefined })
@@ -854,6 +865,15 @@ export function PreviewPlayer(): JSX.Element {
                 )}
               </div>
               <SceneSelectionOverlay stageRef={stageRef} currentTime={currentTime} brand={brandPreset} />
+              {gizmoClip && stageSize && !isPlaying && (
+                <ClipTransformGizmo
+                  clip={gizmoClip}
+                  stageSize={stageSize}
+                  mediaSize={mediaById[gizmoClip.mediaId]?.metadata}
+                  fit={gizmoClip.id === activeV1Clip?.id ? fitMode : 'contain'}
+                  currentTime={currentTime}
+                />
+              )}
             </div>
           </div>
           <div className="preview-transport">

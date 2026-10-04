@@ -15,6 +15,7 @@ import { useAudioEffects } from '../audioFx/AudioEffectsContext'
 import { AUDIO_EFFECT_PRESETS, createDefaultAudioEffectSettings, type AudioEffectSettings } from '@shared/audioEffects'
 import type { ClipTransform, TimelineClip } from '@shared/project'
 import type { KeyframeableProperty } from '@shared/keyframes'
+import { positionScale } from '@shared/clipPosition'
 
 function formatSeconds(value: number): string {
   return value.toFixed(2)
@@ -376,8 +377,11 @@ export function ClipPropertiesPanel(): JSX.Element {
   const align = (kind: Align): void => {
     const stage = stageSizePx()
     if (!stage) return
-    const dx = (stage.width * (1 - transform.scaleX)) / 2
-    const dy = (stage.height * (1 - transform.scaleY)) / 2
+    // In Position's reference units (shared/clipPosition.ts), not the
+    // Player's pixels.
+    const unit = positionScale(stage)
+    const dx = (stage.width * (1 - transform.scaleX)) / 2 / unit
+    const dy = (stage.height * (1 - transform.scaleY)) / 2 / unit
     switch (kind) {
       case 'left':
         return setTransform({ x: -dx })

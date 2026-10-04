@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { frameCountForWidth, filmstripCacheKey, readFilmstripCache, writeFilmstripCache } from './filmstripCache'
+import { captureOrder, frameCountForWidth, frameForSlot, filmstripCacheKey, nextSlotToCapture, readFilmstripCache, writeFilmstripCache } from './filmstripCache'
 
 interface Props {
   src: string | undefined
@@ -9,6 +9,9 @@ interface Props {
    * represent its own `[sourceIn, sourceOut]` window instead of always
    * starting from the underlying file's beginning. */
   startOffset?: number
+  /** The video's thumbnail: every slot shows it until its own frame is
+   * read, so a clip just added is a full strip at once. */
+  poster?: string
 }
 
 const CAPTURE_WIDTH = 160
@@ -58,51 +61,101 @@ function waitForMedia(video: HTMLVideoElement, successEvent: string, timeoutMs: 
   })
 }
 
-/** Real per-frame filmstrip for the V1 video track, extracted via an
- * offscreen <video> + <canvas> (seek -> draw -> toDataURL) rather than
- * tiling one static thumbnail -- a single repeated frame reads as broken
- * next to a real editor's timeline. Frames render progressively as they're
- * captured, and regeneration is debounced so scrubbing the zoom slider
- * doesn't trigger a burst of re-extraction.
+/** Slots kept around the visible ones: drawn and read just before they
+ * scroll into view. */
+const MARGIN_SLOTS = 6
+/** How long a finished run keeps its decoder open for the next scroll. */
+const IDLE_KEEP_MS = 1500
+
+/** Real per-frame filmstrip for a video clip, CapCut style: the clip is cut
+ * into fixed slots about a thumbnail wide, each showing its own moment.
+ * Frames are extracted via an offscreen <video> + <canvas> (seek -> draw ->
+ * toDataURL), and only for the slots on screen: a 47-minute clip is ~850
+ * slots, of which a dozen or so are visible -- those are read (coarse to
+ * fine) and drawn, the rest as they scroll into view. Until a slot's own
+ * frame is read it shows the nearest one read so far, or the video's
+ * thumbnail, so a clip just added is a full strip at once and nothing
+ * moves as frames arrive.
  *
- * Viewport-gated: extraction only STARTS while this clip's filmstrip is
- * actually (near) visible in the Timeline's own scroll container. Every
- * mounted filmstrip previously spun up its own offscreen <video> element
- * (a real WebMediaPlayer instance) regardless of scroll position -- a
- * project with hundreds of simultaneously-mounted video clips could exceed
- * Chromium's hard per-page WebMediaPlayer limit, silently failing to render
- * filmstrips (and logging console errors) past that point. This only
- * changes *when* frame extraction runs; the frames themselves, clip
- * timing/thumbnails/selection/zoom, and every other Timeline behavior are
- * untouched. */
-export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Props): JSX.Element {
+ * Viewport-gated too: extraction only STARTS while this clip is (near)
+ * visible in the Timeline's own scroll container. Every mounted filmstrip
+ * used to spin up its own offscreen <video> (a real WebMediaPlayer)
+ * regardless of scroll position, and hundreds of clips exceeded Chromium's
+ * per-page WebMediaPlayer limit. */
+export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0, poster }: Props): JSX.Element {
   const frameCount = frameCountForWidth(widthPx)
   const key = src && duration > 0 && widthPx > 0 ? filmstripCacheKey(src, startOffset, duration, frameCount) : null
 
-  const [frames, setFrames] = useState<string[]>(() => (key ? (readFilmstripCache(key)?.frames ?? []) : []))
+  const [frames, setFrames] = useState<(string | null)[]>(() => (key ? (readFilmstripCache(key)?.frames ?? []) : []))
   const [failed, setFailed] = useState(false)
   const lastKeyRef = useRef(key)
   const [isVisible, setIsVisible] = useState(false)
+  /** Slots on screen, with MARGIN_SLOTS either side (inclusive). */
+  const [view, setView] = useState<{ from: number; to: number } | null>(null)
+  const viewRef = useRef(view)
   const containerRef = useRef<HTMLDivElement>(null)
   const requestIdRef = useRef(0)
   /** The offscreen element the in-flight extraction is using, so cleanup can
    * actually tear its decoder down (see releaseVideo below). */
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const runningRef = useRef(false)
+  /** Wakes a run waiting for the Timeline to scroll. */
+  const wakeRef = useRef<(() => void) | null>(null)
+  /** Starts a new run when one is not going (bumped on scroll). */
+  const [wakeTick, setWakeTick] = useState(0)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
       root: el.closest('.timeline-scroll-2d'),
-      // Small buffer so a filmstrip starts loading just before it scrolls
-      // into view rather than popping in -- large enough to feel smooth,
-      // nowhere near large enough to defeat the whole point of gating.
       rootMargin: '200px 400px',
       threshold: 0
     })
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
+
+  // Which slots are on screen, kept current while the Timeline scrolls,
+  // zooms or resizes.
+  useEffect(() => {
+    if (!isVisible) return
+    const el = containerRef.current
+    const root = el?.closest('.timeline-scroll-2d')
+    if (!el || !root) return
+    let frame = 0
+    const measure = (): void => {
+      frame = 0
+      const box = el.getBoundingClientRect()
+      const area = root.getBoundingClientRect()
+      let next: { from: number; to: number } | null = null
+      if (box.width > 0) {
+        const from = Math.floor(((Math.max(area.left, box.left) - box.left) / box.width) * frameCount) - MARGIN_SLOTS
+        const to = Math.floor(((Math.min(area.right, box.right) - box.left) / box.width) * frameCount) + MARGIN_SLOTS
+        if (to >= from) next = { from: Math.max(0, from), to: Math.min(frameCount - 1, to) }
+      }
+      const prev = viewRef.current
+      if (prev?.from === next?.from && prev?.to === next?.to) return
+      viewRef.current = next
+      setView(next)
+      if (runningRef.current) wakeRef.current?.()
+      else setWakeTick((t) => t + 1)
+    }
+    const schedule = (): void => {
+      if (!frame) frame = requestAnimationFrame(measure)
+    }
+    measure()
+    root.addEventListener('scroll', schedule, { passive: true })
+    window.addEventListener('resize', schedule)
+    const resize = new ResizeObserver(schedule)
+    resize.observe(el)
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      root.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+      resize.disconnect()
+    }
+  }, [isVisible, frameCount])
 
   useEffect(() => {
     if (!key || !src) {
@@ -119,14 +172,15 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
     // Show whatever's already been extracted for this exact key immediately,
     // on the very first render after a remount -- no blank gap, no flicker.
     if (cached) setFrames(cached.frames)
-    // Nothing left to do: every frame this width calls for is already cached.
     if (cached?.complete) return
-
-    // Deliberately NOT clearing `frames` here. Scrolling out of the
-    // virtualization window used to wipe completed frames, so coming back
-    // re-decoded the whole strip from scratch; the frames on screen stay
+    // Deliberately NOT clearing `frames` here: the frames on screen stay
     // valid until better ones replace them.
     if (!isVisible) return
+    const order = captureOrder(frameCount)
+    const results: (string | null)[] = Array.from({ length: frameCount }, (_, i) => cached?.frames[i] ?? null)
+    const tried = new Set(results.flatMap((frame, i) => (frame ? [i] : [])))
+    // Nothing on screen left to read: no decoder needed.
+    if (viewRef.current && nextSlotToCapture(order, tried, viewRef.current) === null) return
 
     const extract = async (requestId: number): Promise<void> => {
       const release = await acquireExtractionSlot()
@@ -135,6 +189,7 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
         release()
         return
       }
+      runningRef.current = true
       const video = document.createElement('video')
       videoRef.current = video
       video.src = src
@@ -156,42 +211,57 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
           return null
         }
       }
+      const waitForScroll = (): Promise<boolean> =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            wakeRef.current = null
+            resolve(false)
+          }, IDLE_KEEP_MS)
+          wakeRef.current = () => {
+            clearTimeout(timer)
+            wakeRef.current = null
+            resolve(true)
+          }
+        })
 
       const run = async (): Promise<void> => {
         if (video.readyState < 1 && !await waitForMedia(video, 'loadedmetadata', MEDIA_READY_TIMEOUT_MS)) {
           if (requestIdRef.current === requestId) setFailed(true)
           return
         }
-        // Resume rather than restart: an earlier run for this same key may
-        // have been cut short by the clip scrolling out of view.
-        const results: string[] = [...(readFilmstripCache(key)?.frames ?? [])]
-        for (let i = results.length; i < frameCount; i++) {
+        for (;;) {
           if (requestIdRef.current !== requestId) return
+          const visible = viewRef.current
+          const i = visible ? nextSlotToCapture(order, tried, visible) : null
+          if (i === null) {
+            // Everything on screen is read: keep the decoder a moment for
+            // the next scroll, then let it go.
+            if (await waitForScroll()) continue
+            return
+          }
+          tried.add(i)
           // The file stopped decoding (a damaged file): every further seek
           // would only wait out its timeout.
-          if (video.error) break
+          if (video.error) return
           const t = startOffset + Math.min(Math.max(0, duration - 0.05), (duration * (i + 0.5)) / frameCount)
           const frame = await captureAt(t)
           if (requestIdRef.current !== requestId) return
           if (!frame) continue
-          results.push(frame)
-          writeFilmstripCache(key, { frames: [...results], complete: results.length >= frameCount })
+          results[i] = frame
+          writeFilmstripCache(key, { frames: [...results], complete: results.every(Boolean) })
           setFrames([...results])
-        }
-        // Ran the whole range: mark it done even if individual captures came
-        // back empty, so a frame this file simply can't decode isn't retried
-        // from scratch on every remount forever.
-        if (requestIdRef.current === requestId) {
-          writeFilmstripCache(key, { frames: [...results], complete: true })
-          if (results.length === 0) setFailed(true)
         }
       }
 
       await run().finally(() => {
         release()
+        wakeRef.current = null
         // Only the run that's still current owns the element -- a superseded
         // one already had its own released by the cleanup that superseded it.
-        if (requestIdRef.current === requestId) releaseVideo(videoRef)
+        if (requestIdRef.current === requestId) {
+          runningRef.current = false
+          releaseVideo(videoRef)
+        }
       })
     }
 
@@ -200,21 +270,40 @@ export function VideoFilmstrip({ src, duration, widthPx, startOffset = 0 }: Prop
     return () => {
       clearTimeout(timer)
       requestIdRef.current++
+      runningRef.current = false
+      wakeRef.current?.()
       // Each extraction's offscreen <video> is a real Chromium
-      // WebMediaPlayer holding a decoder and buffered frames. Aborting a run
-      // without this left one dangling per abort, waiting on GC -- with
-      // virtualization remounting clips constantly while dragging, they
-      // piled up fast, which is the other half of why this got slow.
+      // WebMediaPlayer holding a decoder and buffered frames: torn down now,
+      // not left to GC.
       releaseVideo(videoRef)
     }
-  }, [isVisible, src, key, duration, frameCount, startOffset])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wakeTick restarts a finished run after a scroll; the run itself reads viewRef.
+  }, [isVisible, src, key, duration, frameCount, startOffset, wakeTick])
 
+  // Fixed slots, as CapCut lays them out: each its own stretch of the clip,
+  // its frame at its natural width, never stretched. Frames used to be flex
+  // items -- the first one filled the whole clip, two split it, three... --
+  // the strip re-laid itself out with every frame read, which looked like it
+  // was stuttering. Only the slots on screen are in the page.
+  const anyFrame = frames.some(Boolean)
+  const slots: number[] = []
+  if (view) for (let i = view.from; i <= view.to; i++) slots.push(i)
   return (
     <div className="video-filmstrip" ref={containerRef}>
-      {failed && frames.length === 0 && <span className="video-filmstrip-error">Preview unavailable</span>}
-      {frames.map((frame, i) => (
-        <img key={i} src={frame} alt="" className="video-filmstrip-frame" draggable={false} />
-      ))}
+      {failed && !anyFrame && !poster ? (
+        <span className="video-filmstrip-error">Preview unavailable</span>
+      ) : (
+        slots.map((i) => {
+          const frame = frameForSlot(frames, i, poster)
+          return (
+            <div
+              key={i}
+              className="video-filmstrip-frame"
+              style={{ left: `${(i * 100) / frameCount}%`, width: `${100 / frameCount}%`, backgroundImage: frame ? `url("${frame}")` : undefined }}
+            />
+          )
+        })
+      )}
     </div>
   )
 }

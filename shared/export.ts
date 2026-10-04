@@ -6,6 +6,7 @@
 import { buildOverlayFilterSteps, type BlurSettings } from './videoOverlay'
 import type { ProjectSequence, TimelineClip } from './project'
 import { clipRate, sourceEnd } from './clipTiming'
+import { positionScale } from './clipPosition'
 import { clipMotionExprs } from './clipMotion'
 import type { TimelineTrack } from './timelineTracks'
 import { isTrackAudioMuted } from './timelineTracks'
@@ -427,8 +428,10 @@ export function buildExportFilterGraph(
   const place = (rc: ResolvedExportClip, clipTime: string): { x: string; y: string } => {
     const t = rc.clip.transform
     const motion = rc.clip.motion ? clipMotionExprs(rc.clip.motion, `${clipTime}+${seconds(rc.motionOffset ?? 0)}`) : null
-    const x = `(W-w)/2${t?.x ? `+${t.x}` : ''}${motion?.dx ? `+${motion.dx}` : ''}`
-    const y = `(H-h)/2${t?.y ? `+${t.y}` : ''}${motion?.dy ? `+${motion.dy}` : ''}`
+    // Position in reference units, scaled to this frame (shared/clipPosition.ts).
+    const unit = positionScale(dimensions)
+    const x = `(W-w)/2${t?.x ? `+${t.x * unit}` : ''}${motion?.dx ? `+${motion.dx}` : ''}`
+    const y = `(H-h)/2${t?.y ? `+${t.y * unit}` : ''}${motion?.dy ? `+${motion.dy}` : ''}`
     return { x: `'${x}'`, y: `'${y}'` }
   }
 
@@ -554,12 +557,15 @@ export function buildExportFilterGraph(
 
   let audioOutLabel: string | null = null
   if (audioLabels.length > 0) {
-    if (audioLabels.length === 1) {
-      audioOutLabel = audioLabels[0]
-    } else {
-      filterParts.push(`${audioLabels.map((l) => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:normalize=0[aout]`)
-      audioOutLabel = 'aout'
-    }
+    const mixed = audioLabels.length === 1 ? audioLabels[0] : 'amixed'
+    if (audioLabels.length > 1) filterParts.push(`${audioLabels.map((l) => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:normalize=0[amixed]`)
+    // The sound's times counted from its samples. A clip placed later on
+    // the Timeline (adelay) from a file opened partway (-ss) came out with
+    // times running backwards; AAC refused them ("Queue input is backward
+    // in time", "non monotonically increasing dts") and an 18-minute export
+    // of three clips failed at once -- on the GPU, then on the CPU.
+    filterParts.push(`[${mixed}]asetpts=N/SR/TB[aout]`)
+    audioOutLabel = 'aout'
   }
 
   const args: string[] = ['-y', ...inputArgs, '-filter_complex', filterParts.join(';')]

@@ -65,7 +65,7 @@ export interface Transcript {
   /** 'srt' for a user-imported subtitle file (Story Narration Workspace); undefined/'whisper'
    * for the normal AI-transcription pipeline. Segments are the same shape either way -- this
    * is purely so UI (e.g. "detected language") can tell the two sources apart. */
-  source?: 'whisper' | 'srt' | 'speaker-detection'
+  source?: 'whisper' | 'srt' | 'speaker-detection' | 'screen-subtitles'
 }
 
 export type SpeakerGender = 'male' | 'female' | 'unknown'
@@ -106,7 +106,13 @@ export interface DetectSpeakersRequest {
   /** Where VoxCPM2 is installed, if known: its runtime separates the speech
    * from the music before Gemini hears it. Searched for when absent. */
   voxCpmInstallDir?: string
+  /** Where the words come from: "voice" -- Gemini listens; "screen" --
+   * read off the subtitles burned into the picture; "auto" -- the picture
+   * when the video has such subtitles, else Gemini. Absent: "voice". */
+  textSource?: AutoSrtTextSource
 }
+
+export type AutoSrtTextSource = 'auto' | 'voice' | 'screen'
 
 export interface DetectSpeakersResult {
   transcript: Transcript

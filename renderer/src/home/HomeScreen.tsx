@@ -60,6 +60,10 @@ export function HomeScreen(): JSX.Element {
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  /** Select mode: a click ticks a card instead of opening it, and the
+   * header acts on every ticked project at once. */
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const renameInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
@@ -101,6 +105,78 @@ export function HomeScreen(): JSX.Element {
     const q = search.trim().toLowerCase()
     return q ? source.filter((p) => p.name.toLowerCase().includes(q)) : source
   }, [view, projects, trashed, search])
+
+  /** The open project is in use (and autosave would write it straight
+   * back), so it is never part of a batch move to Trash. */
+  const selectable = useMemo(() => shown.filter((p) => !(view === 'projects' && p.id === projectId)), [shown, view, projectId])
+  const ticked = useMemo(() => selectable.filter((p) => selected.has(p.id)), [selectable, selected])
+  const allTicked = selectable.length > 0 && ticked.length === selectable.length
+
+  const stopSelecting = useCallback((): void => {
+    setSelecting(false)
+    setSelected(new Set())
+  }, [])
+
+  // Another view starts with nothing ticked; Escape leaves Select mode.
+  useEffect(() => {
+    setSelected(new Set())
+  }, [view])
+  useEffect(() => {
+    if (!selecting) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') stopSelecting()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selecting, stopSelecting])
+
+  const toggleTicked = (id: string): void => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const tickAll = (): void => setSelected(allTicked ? new Set() : new Set(selectable.map((p) => p.id)))
+
+  const countLabel = (n: number): string => `${n} project${n === 1 ? '' : 's'}`
+
+  const trashTicked = async (): Promise<void> => {
+    if (ticked.length === 0) return
+    const ok = await confirm({
+      title: `Move ${countLabel(ticked.length)} to Trash?`,
+      message: 'They stay in Trash until you delete them forever, so this can be undone. Media files on disk are never touched.',
+      confirmLabel: 'Move to Trash',
+      danger: true
+    })
+    if (!ok) return
+    for (const p of ticked) await window.api.project.trash(p.id)
+    stopSelecting()
+    await refresh()
+  }
+
+  const restoreTicked = async (): Promise<void> => {
+    if (ticked.length === 0) return
+    for (const p of ticked) await window.api.project.restore(p.id)
+    stopSelecting()
+    await refresh()
+  }
+
+  const deleteTickedForever = async (): Promise<void> => {
+    if (ticked.length === 0) return
+    const ok = await confirm({
+      title: `Delete ${countLabel(ticked.length)} forever?`,
+      message: 'The project files are removed and cannot be brought back. Media files on disk are never touched.',
+      confirmLabel: 'Delete forever',
+      danger: true
+    })
+    if (!ok) return
+    for (const p of ticked) await window.api.project.deleteForever(p.id)
+    stopSelecting()
+    await refresh()
+  }
 
   const openProject = async (id: string): Promise<void> => {
     if (busy) return
@@ -223,6 +299,39 @@ export function HomeScreen(): JSX.Element {
               {view === 'trash' ? 'Trash' : 'Projects'} <span className="home-list-count">({shown.length})</span>
             </h2>
             <div className="home-list-tools">
+              {selecting ? (
+                <div className="home-select-bar">
+                  <button className="home-tool-button" disabled={selectable.length === 0} onClick={tickAll}>
+                    <span className={allTicked ? 'home-check home-check-on' : 'home-check'} aria-hidden />
+                    {allTicked ? 'Clear all' : 'Select all'}
+                  </button>
+                  <span className="home-select-count">{ticked.length} selected</span>
+                  {view === 'projects' ? (
+                    <button className="home-tool-button home-tool-button-danger-solid" disabled={ticked.length === 0} onClick={() => void trashTicked()}>
+                      <TrashIcon size={15} />
+                      Move to Trash{ticked.length > 0 ? ` (${ticked.length})` : ''}
+                    </button>
+                  ) : (
+                    <>
+                      <button className="home-tool-button" disabled={ticked.length === 0} onClick={() => void restoreTicked()}>
+                        Restore{ticked.length > 0 ? ` (${ticked.length})` : ''}
+                      </button>
+                      <button className="home-tool-button home-tool-button-danger-solid" disabled={ticked.length === 0} onClick={() => void deleteTickedForever()}>
+                        <TrashIcon size={15} />
+                        Delete forever{ticked.length > 0 ? ` (${ticked.length})` : ''}
+                      </button>
+                    </>
+                  )}
+                  <button className="home-tool-button" onClick={stopSelecting}>
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <button className="home-tool-button" disabled={shown.length === 0} onClick={() => setSelecting(true)} title="Pick several projects to move to Trash (or, in Trash, to restore or delete) at once">
+                  <span className="home-check" aria-hidden />
+                  Select
+                </button>
+              )}
               <input className="home-search" type="search" placeholder="Search projects…" value={search} onChange={(e) => setSearch(e.target.value)} />
               <div className="home-layout-switch" role="group" aria-label="Layout">
                 <button className={layout === 'grid' ? 'home-layout-button home-layout-button-active' : 'home-layout-button'} title="Grid" onClick={() => chooseLayout('grid')}>
@@ -232,7 +341,7 @@ export function HomeScreen(): JSX.Element {
                   <ListViewIcon size={15} />
                 </button>
               </div>
-              {view === 'projects' ? (
+              {selecting ? null : view === 'projects' ? (
                 <button className="home-tool-button" onClick={() => setView('trash')}>
                   <TrashIcon size={15} />
                   Trash
@@ -256,21 +365,33 @@ export function HomeScreen(): JSX.Element {
               {shown.map((p) => {
                 const current = p.id === projectId && view === 'projects'
                 const isRenaming = renaming?.id === p.id
+                const isTicked = selecting && selected.has(p.id)
+                const canTick = selecting && !current
                 return (
                   <div
                     key={p.id}
-                    className={['home-card', current ? 'home-card-current' : '', view === 'trash' ? 'home-card-trashed' : ''].filter(Boolean).join(' ')}
+                    className={['home-card', current ? 'home-card-current' : '', view === 'trash' ? 'home-card-trashed' : '', selecting ? 'home-card-selecting' : '', isTicked ? 'home-card-ticked' : '', selecting && current ? 'home-card-locked' : ''].filter(Boolean).join(' ')}
                     role="button"
                     tabIndex={0}
-                    title={view === 'trash' ? p.name : `Open ${p.name}`}
+                    aria-pressed={selecting ? isTicked : undefined}
+                    title={selecting ? (current ? 'This project is open -- it is not part of the selection' : p.name) : view === 'trash' ? p.name : `Open ${p.name}`}
                     onClick={() => {
+                      if (selecting) {
+                        if (canTick) toggleTicked(p.id)
+                        return
+                      }
                       if (view === 'projects' && !isRenaming) void openProject(p.id)
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && view === 'projects' && !isRenaming) void openProject(p.id)
+                      if (e.key !== 'Enter' && e.key !== ' ') return
+                      if (selecting) {
+                        e.preventDefault()
+                        if (canTick) toggleTicked(p.id)
+                      } else if (e.key === 'Enter' && view === 'projects' && !isRenaming) void openProject(p.id)
                     }}
                   >
                     <div className="home-card-thumb">
+                      {canTick && <span className={isTicked ? 'home-card-tick home-card-tick-on' : 'home-card-tick'} aria-hidden />}
                       {p.thumbnailUrl ? <img src={p.thumbnailUrl} alt="" draggable={false} /> : <span className="home-card-thumb-empty" aria-hidden />}
                       {p.durationSeconds > 0 && <span className="home-card-duration">{formatDuration(p.durationSeconds)}</span>}
                       {current && <span className="home-card-open-badge">Open</span>}
@@ -298,7 +419,7 @@ export function HomeScreen(): JSX.Element {
                         {p.clipCount} {p.clipCount === 1 ? 'clip' : 'clips'} · {formatEdited(p.updatedAt)}
                       </div>
                     </div>
-                    {view === 'projects' ? (
+                    {selecting ? null : view === 'projects' ? (
                       <div className="home-card-menu-wrap" onPointerDown={(e) => e.stopPropagation()}>
                         <button
                           className="home-card-menu-button"

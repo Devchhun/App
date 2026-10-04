@@ -128,6 +128,8 @@ export async function runExport(params: RunExportParams): Promise<{ outputPath: 
     textAssPath = join(tmpdir(), `cae-texts-${requestId.replace(/[^\w-]/g, '_')}.ass`)
     await writeFile(textAssPath, buildAssTexts(overlay.texts, dimensions), 'utf-8')
   }
+  // Timeline > Cover: the MP4's cover art (its thumbnail before it plays).
+  const coverPath = wantVideo && overlay?.coverPath && (await pathExists(overlay.coverPath)) ? overlay.coverPath : undefined
   const filterOverlay =
     overlay && (assPath || textAssPath || overlay.blur) ? { blur: overlay.blur, assPath, textAssPath, fontsDir: assPath || textAssPath ? subtitleFontsDir() : undefined } : undefined
   if (buildExportFilterGraph(videoClips, audioClips, durationSeconds, dimensions, options.frameRate, options, tmpPath, filterOverlay).isEmpty) {
@@ -185,8 +187,22 @@ export async function runExport(params: RunExportParams): Promise<{ outputPath: 
       await runOnce(
         (codec, onGpu) => buildExportFilterGraph(videoClips, audioClips, durationSeconds, dimensions, options.frameRate, options, tmpPath, filterOverlay, { seekInputs: true, videoCodecArgs: codec, gpuDecode: onGpu }).args,
         durationSeconds,
-        (percent) => onProgress?.(percent)
+        coverPath ? (percent) => onProgress?.(percent * 0.97) : (percent) => onProgress?.(percent)
       )
+      // The cover goes in by copying the streams into a new file -- the
+      // picture is not encoded again.
+      if (coverPath) {
+        const withCover = join(options.outputDir, `.${requestId}.cover.tmp.${ext}`)
+        try {
+          await runFfmpeg(`${requestId}:cover`, ['-y', '-i', tmpPath, ...coverArtArgs(coverPath, 1), '-c', 'copy', ...coverArtCodecArgs(), '-movflags', '+faststart', withCover])
+          await rename(withCover, tmpPath)
+        } catch (err) {
+          // A cover that will not go in never costs the export itself.
+          await removeLeftover(withCover)
+          if (err instanceof Error && err.name === 'CanceledError') throw err
+          console.warn(`[export] cover art not added: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`)
+        }
+      }
     } else {
       // MOV pieces: exact per-frame times (MKV rounds them to whole
       // milliseconds, and 1/30 s frames then collided at every join).
@@ -261,7 +277,9 @@ export async function runExport(params: RunExportParams): Promise<{ outputPath: 
       const listPath = join(pieceDir, 'pieces.txt')
       await writeFile(listPath, pieces.map((piece) => `file '${piece.replace(/'/g, "'\\''")}'`).join('\n'), 'utf-8')
       const audioArgs = options.includeAudio ? ['-c:a', options.audioFormat === 'mp3' && !wantVideo ? 'libmp3lame' : 'aac', '-b:a', '192k'] : ['-an']
-      await runFfmpeg(requestId, ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-map', '0', ...(wantVideo ? ['-c:v', 'copy'] : ['-vn']), ...audioArgs, ...(wantVideo ? ['-movflags', '+faststart'] : []), '-progress', 'pipe:1', '-nostats', tmpPath], {
+      // The cover joins here too, as the file's cover art (no extra pass).
+      const cover = coverPath ? coverArtArgs(coverPath, 1) : []
+      await runFfmpeg(requestId, ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, ...(cover.length ? cover : ['-map', '0']), ...(wantVideo ? ['-c:v', 'copy'] : ['-vn']), ...audioArgs, ...(cover.length ? coverArtCodecArgs() : []), ...(wantVideo ? ['-movflags', '+faststart'] : []), '-progress', 'pipe:1', '-nostats', tmpPath], {
         onProgress: (percent) => onProgress?.(96 + percent * 0.04),
         totalDurationSeconds: durationSeconds
       })
@@ -299,6 +317,18 @@ async function gpuVideoCodecArgs(options: ExportOptions): Promise<string[] | nul
   return null
 }
 
+/** Input and stream maps that add `coverPath` (input number `index`) as a
+ * second video stream after everything in input 0. */
+function coverArtArgs(coverPath: string, index: number): string[] {
+  return ['-i', coverPath, '-map', '0', '-map', `${index}:v:0`]
+}
+
+/** The cover stream as a JPEG marked as the file's attached picture (MP4
+ * cover art), at most 1280 px wide. */
+function coverArtCodecArgs(): string[] {
+  return ['-c:v:1', 'mjpeg', '-q:v:1', '3', '-filter:v:1', "scale='min(1280,iw)':-2", '-disposition:v:1', 'attached_pic']
+}
+
 /** Second-pass palette-based GIF from an already-exported (or about to be
  * re-exported at GIF-appropriate settings) video -- reuses whatever
  * composite exists rather than a separate compositing pipeline. */
@@ -311,6 +341,9 @@ export async function exportGif(requestId: string, sourceVideoPath: string, outp
       '-y',
       '-i',
       sourceVideoPath,
+      // The video itself, never its cover art.
+      '-map',
+      '0:v:0',
       '-vf',
       'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
       '-progress',

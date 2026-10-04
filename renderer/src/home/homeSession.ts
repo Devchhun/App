@@ -1,6 +1,6 @@
 /** Whether the Home screen has been left this session. Opening a project
- * from Home goes through a window reload (see HomeScreen.tsx), and that
- * reload must land in the editor -- while a fresh launch starts on Home. */
+ * from Home starts the app's state afresh (project/projectSession.ts), and
+ * that must land in the editor -- while a fresh launch starts on Home. */
 const HOME_SEEN_KEY = 'cae-home-seen'
 
 export function markHomeSeen(): void {

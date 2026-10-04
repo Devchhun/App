@@ -25,6 +25,8 @@ export interface TimelineViewPrefs {
   linkageOn: boolean
   snappingOn: boolean
   skimmerOn: boolean
+  /** Marks a skimmer choice made since it became on by default. */
+  skimmerOnV2: boolean
   tool: TimelineTool
   overwriteMode: OverwriteMode
   showWaveforms: boolean
@@ -74,7 +76,9 @@ export const DEFAULT_TIMELINE_VIEW_PREFS: TimelineViewPrefs = {
   rippleScope: 'current',
   linkageOn: true,
   snappingOn: true,
-  skimmerOn: false,
+  // The faint line that follows the mouse over the Timeline, as in CapCut.
+  skimmerOn: true,
+  skimmerOnV2: true,
   tool: 'select',
   overwriteMode: 'stack',
   showWaveforms: true,
@@ -133,7 +137,10 @@ export function parseStoredTimelineViewPrefs(raw: string | null): TimelineViewPr
       rippleScope: RIPPLE_SCOPES.includes(parsed.rippleScope as RippleScope) ? (parsed.rippleScope as RippleScope) : DEFAULT_TIMELINE_VIEW_PREFS.rippleScope,
       linkageOn: typeof parsed.linkageOn === 'boolean' ? parsed.linkageOn : DEFAULT_TIMELINE_VIEW_PREFS.linkageOn,
       snappingOn: typeof parsed.snappingOn === 'boolean' ? parsed.snappingOn : DEFAULT_TIMELINE_VIEW_PREFS.snappingOn,
-      skimmerOn: typeof parsed.skimmerOn === 'boolean' ? parsed.skimmerOn : DEFAULT_TIMELINE_VIEW_PREFS.skimmerOn,
+      // Off by default until `skimmerOnV2`: an "off" stored before then was
+      // never a choice, so the line comes on once; one chosen since stays.
+      skimmerOn: typeof parsed.skimmerOn === 'boolean' && parsed.skimmerOnV2 === true ? parsed.skimmerOn : DEFAULT_TIMELINE_VIEW_PREFS.skimmerOn,
+      skimmerOnV2: true,
       tool: TOOLS.includes(parsed.tool as TimelineTool) ? (parsed.tool as TimelineTool) : DEFAULT_TIMELINE_VIEW_PREFS.tool,
       overwriteMode: OVERWRITE_MODES.includes(parsed.overwriteMode as OverwriteMode) ? (parsed.overwriteMode as OverwriteMode) : DEFAULT_TIMELINE_VIEW_PREFS.overwriteMode,
       // `showWaveformsV2` marks a choice made since the picket-style

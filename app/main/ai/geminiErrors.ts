@@ -59,6 +59,30 @@ export function explainGeminiError(error: unknown): string {
   return text
 }
 
+/** The day's (or the plan's) allowance used up: waiting minutes does not
+ * bring it back, unlike the per-minute limit. */
+const DAILY_QUOTA_PATTERN = /per ?day|perday|daily/i
+
+/** Gemini's per-minute limit (HTTP 429 that is not the day's quota, not
+ * credits): it passes in under a minute -- worth waiting for. */
+export function isRateLimited(error: unknown): boolean {
+  const text = describeError(error)
+  return QUOTA_PATTERN.test(text) && !DAILY_QUOTA_PATTERN.test(text) && !CREDITS_PATTERN.test(text) && !KEY_PATTERN.test(text)
+}
+
+/** No point trying again today (or ever, without a change in Settings):
+ * a bad key, no credits, the day's quota used up. */
+export function isFatalGeminiError(error: unknown): boolean {
+  const text = describeError(error)
+  return KEY_PATTERN.test(text) || CREDITS_PATTERN.test(text) || (QUOTA_PATTERN.test(text) && DAILY_QUOTA_PATTERN.test(text))
+}
+
+/** The wait Gemini asks for in a 429 ("retryDelay": "37s"), in ms. */
+export function suggestedRetryDelayMs(error: unknown): number | null {
+  const m = /retry ?delay\W+(\d+(?:\.\d+)?)s/i.exec(describeError(error))
+  return m ? Math.ceil(Number(m[1]) * 1000) : null
+}
+
 export async function sleepUnlessCanceled(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) throw new CanceledError()
   await new Promise<void>((resolve, reject) => {

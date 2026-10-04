@@ -1,9 +1,17 @@
-const FRAME_TARGET_WIDTH_PX = 100
-const MAX_FRAMES = 40
+/** About one thumbnail's natural width on the track (16:9 at the track's
+ * height): each thumbnail is its own moment, as in CapCut. */
+const FRAME_TARGET_WIDTH_PX = 80
+/** A 47-minute clip at ordinary zoom is tens of thousands of px: a cap of
+ * 40 frames left each one repeated across hundreds of px (the same picture
+ * for over a minute). Only the slots on screen are ever read (see
+ * nextSlotToCapture), so a high cap costs nothing off screen. */
+const MAX_FRAMES = 4000
 const MAX_CACHE_ENTRIES = 200
 
 export interface FilmstripCacheEntry {
-  frames: string[]
+  /** One per slot, in Timeline order; null where that slot's frame is not
+   * read yet (slots are filled coarse to fine, see captureOrder). */
+  frames: (string | null)[]
   /** False while extraction was cut short (the clip scrolled out of the
    * Timeline's virtualization window mid-run, say) -- the frames are still
    * good to show, there are just fewer of them than the width calls for, so
@@ -25,7 +33,7 @@ export interface FilmstripCacheEntry {
 const cache = new Map<string, FilmstripCacheEntry>()
 
 /** How many frames a strip this wide is cut into. Deliberately coarse (one
- * per ~100px, capped): the frame COUNT is part of the cache key, so keying on
+ * per ~80px, capped): the frame COUNT is part of the cache key, so keying on
  * this rather than the raw pixel width means small zoom/trim adjustments that
  * don't change the count re-use the same extraction instead of redoing it. */
 export function frameCountForWidth(widthPx: number): number {
@@ -59,6 +67,46 @@ export function writeFilmstripCache(key: string, entry: FilmstripCacheEntry): vo
     if (oldest === undefined) break
     cache.delete(oldest)
   }
+}
+
+/** The order the slots are read in: the first, then halves, quarters,
+ * eighths... -- after a few seeks the whole strip already looks right,
+ * where left-to-right left most of a long clip empty for a while. */
+export function captureOrder(count: number): number[] {
+  const order: number[] = []
+  const seen = new Set<number>()
+  let step = 1
+  while (step * 2 < count) step *= 2
+  for (; step >= 1; step /= 2) {
+    for (let i = 0; i < count; i += step) {
+      if (!seen.has(i)) {
+        seen.add(i)
+        order.push(i)
+      }
+    }
+  }
+  return order
+}
+
+/** The next slot to read: the first (in `order`, coarse to fine) of the
+ * slots on screen (`visible`, inclusive) not tried yet; null when they all
+ * have been -- the slots off screen wait until they scroll into view. */
+export function nextSlotToCapture(order: number[], tried: Set<number>, visible: { from: number; to: number }): number | null {
+  for (const i of order) if (i >= visible.from && i <= visible.to && !tried.has(i)) return i
+  return null
+}
+
+/** What slot `index` shows: its own frame, else the nearest one read so far
+ * (left first), else `fallback` (the video's thumbnail). */
+export function frameForSlot(frames: (string | null)[], index: number, fallback?: string): string | undefined {
+  if (frames[index]) return frames[index] as string
+  for (let d = 1; d < frames.length; d++) {
+    const left = frames[index - d]
+    if (left) return left
+    const right = frames[index + d]
+    if (right) return right
+  }
+  return fallback
 }
 
 /** Test-only: the cache is module-level and deliberately survives unmounts,

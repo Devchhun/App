@@ -6,6 +6,7 @@
 import type { TimelineClip } from '@shared/project'
 import { interpolateKeyframes, isAnimated } from '@shared/keyframes'
 import { clipMotionAt } from '@shared/clipMotion'
+import { positionScale } from '@shared/clipPosition'
 
 /** True if ANY property on this clip has enough keyframes to actually vary
  * over time -- lets a caller decide whether its style/volume computation
@@ -66,7 +67,9 @@ export function computeClipVisualStyle(
     const scaleY = interpolateKeyframes(kf?.scaleY, timeWithinClip, t?.scaleY ?? 1)
     const rotation = interpolateKeyframes(kf?.rotation, timeWithinClip, t?.rotation ?? 0)
     const m = motion ?? { dx: 0, dy: 0, scale: 1, rotate: 0 }
-    style.transform = `translate(${x + m.dx}px, ${y + m.dy}px) scale(${scaleX * m.scale}, ${scaleY * m.scale}) rotate(${rotation + m.rotate}deg)`
+    // Position is in reference units (shared/clipPosition.ts), as Export reads it.
+    const unit = frame ? positionScale(frame) : 1
+    style.transform = `translate(${x * unit + m.dx}px, ${y * unit + m.dy}px) scale(${scaleX * m.scale}, ${scaleY * m.scale}) rotate(${rotation + m.rotate}deg)`
 
     const top = interpolateKeyframes(kf?.cropTop, timeWithinClip, t?.cropTop ?? 0) * 100
     const right = interpolateKeyframes(kf?.cropRight, timeWithinClip, t?.cropRight ?? 0) * 100

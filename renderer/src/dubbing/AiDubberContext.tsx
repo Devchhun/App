@@ -1,6 +1,6 @@
 import { kiriVoiceId, kiriVoiceOf } from '@shared/kiriTts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { DetectSpeakersResult, SpeakerAgeCategory, SpeakerGender, TranscriptSegment, Transcript } from '@shared/transcription'
+import type { AutoSrtTextSource, DetectSpeakersResult, SpeakerAgeCategory, SpeakerGender, TranscriptSegment, Transcript } from '@shared/transcription'
 import type { MediaItem } from '@shared/media'
 import { createEmptySequence, type ProjectSequence, type TimelineClip } from '@shared/project'
 import { parseSrtToSegments, transcriptSegmentsToSrt } from '@shared/srt'
@@ -287,6 +287,10 @@ export interface AiDubberContextValue {
   batchJob: { clipId: string; percent: number; message: string } | null
   batchMessage: string | null
   dismissBatchMessage: () => void
+  /** Where Auto SRT takes the words from (remembered): the subtitles drawn
+   * into the picture, Gemini listening, or the picture when it has them. */
+  autoSrtTextSource: AutoSrtTextSource
+  setAutoSrtTextSource: (source: AutoSrtTextSource) => void
   /** One SRT per video, in that video's own time, into a chosen folder. */
   saveBatchSrts: () => Promise<void>
   /** Auto SRT's Clear: every video of the list off the Timeline, with the
@@ -391,6 +395,8 @@ function storedVoxCpmInstallDir(): string | undefined {
   }
 }
 
+const AUTO_SRT_TEXT_SOURCE_KEY = 'cae-auto-srt-text-source-v1'
+
 export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Element {
   const { items, importPaths, select: selectMedia } = useMedia()
   const { transcripts, setImportedTranscript, removeTranscript, updateSegmentText: updateTranscriptSegmentText, moveSegment, moveSegments, selectedModelId, language } = useTranscript()
@@ -481,6 +487,24 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
   transcriptsRef.current = transcripts
   const transcribeSettingsRef = useRef({ selectedModelId, language })
   transcribeSettingsRef.current = { selectedModelId, language }
+  const [autoSrtTextSource, setAutoSrtTextSourceState] = useState<AutoSrtTextSource>(() => {
+    try {
+      const stored = localStorage.getItem(AUTO_SRT_TEXT_SOURCE_KEY)
+      return stored === 'voice' || stored === 'screen' || stored === 'auto' ? stored : 'auto'
+    } catch {
+      return 'auto'
+    }
+  })
+  const autoSrtTextSourceRef = useRef(autoSrtTextSource)
+  autoSrtTextSourceRef.current = autoSrtTextSource
+  const setAutoSrtTextSource = useCallback((source: AutoSrtTextSource) => {
+    setAutoSrtTextSourceState(source)
+    try {
+      localStorage.setItem(AUTO_SRT_TEXT_SOURCE_KEY, source)
+    } catch {
+      // not remembered this time
+    }
+  }, [])
 
   /** Puts a video at 0 on the first free video track of `onto` (the
    * Timeline these calls are about to change). */
@@ -2006,7 +2030,8 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
             originalPath: item.originalPath,
             modelId: transcribeSettingsRef.current.selectedModelId,
             language: transcribeSettingsRef.current.language,
-            voxCpmInstallDir: storedVoxCpmInstallDir()
+            voxCpmInstallDir: storedVoxCpmInstallDir(),
+            textSource: autoSrtTextSourceRef.current
           })
           applyEpisodeTranscript(mediaId, result)
           finished++
@@ -2149,7 +2174,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         detectedLanguage: result.transcript.detectedLanguage,
         generatedAt: new Date().toISOString(),
         audioSourcePath: '',
-        source: fromSrt ? 'srt' : 'speaker-detection'
+        source: fromSrt ? 'srt' : (result.transcript.source ?? 'speaker-detection')
       }
       setImportedTranscript(holder, transcript)
       // The next video in this run reads it before a render.
@@ -2162,7 +2187,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         const speakers: DubbingWorkspaceState['speakers'] = {}
         for (const [id, speaker] of Object.entries(prev.speakers)) if (!id.startsWith(`${part.clipId}:`)) speakers[id] = speaker
         for (const speaker of placed.speakers) speakers[speaker.id] = speaker as DubbingSpeakerProfile
-        return { ...prev, active: true, videoMediaId: holder, srtFileName: fromSrt ?? prev.srtFileName ?? 'Auto SRT (Gemini)', segments: nextSegments, speakers }
+        return { ...prev, active: true, videoMediaId: holder, srtFileName: fromSrt ?? prev.srtFileName ?? (result.transcript.source === 'screen-subtitles' ? 'Auto SRT (on-screen subtitles)' : 'Auto SRT (Gemini)'), segments: nextSegments, speakers }
       })
       selectMedia(holder)
       return placed.segments.length
@@ -2216,7 +2241,8 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
                 originalPath: media.originalPath,
                 modelId: transcribeSettingsRef.current.selectedModelId,
                 language: transcribeSettingsRef.current.language,
-                voxCpmInstallDir: storedVoxCpmInstallDir()
+                voxCpmInstallDir: storedVoxCpmInstallDir(),
+                textSource: autoSrtTextSourceRef.current
               }))
             resultByMedia.set(part.mediaId, result)
             // Where the clip is NOW (it can be moved while Gemini works).
@@ -2298,6 +2324,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
           modelId: transcribeSettingsRef.current.selectedModelId,
           language: transcribeSettingsRef.current.language,
           voxCpmInstallDir: storedVoxCpmInstallDir(),
+          textSource: autoSrtTextSourceRef.current,
           ranges: gaps.map((g) => ({ start: g.fileStart, end: g.fileEnd }))
         })
         // Own ids and speakers for this pass: its "Speaker 1" is not the
@@ -2658,7 +2685,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       dismissBatchMessage,
       saveBatchSrts,
       clearBatchVideos,
-      fillBatchGaps
+      fillBatchGaps,
+      autoSrtTextSource,
+      setAutoSrtTextSource
     }),
     [
       state,
@@ -2742,7 +2771,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       dismissBatchMessage,
       saveBatchSrts,
       clearBatchVideos,
-      fillBatchGaps
+      fillBatchGaps,
+      autoSrtTextSource,
+      setAutoSrtTextSource
     ]
   )
 

@@ -10,6 +10,7 @@ interface FfprobeStream {
   channels?: number
   r_frame_rate?: string
   avg_frame_rate?: string
+  pix_fmt?: string
 }
 
 interface FfprobeFormat {
@@ -73,6 +74,7 @@ export async function probeMedia(filePath: string): Promise<MediaMetadata> {
     height: videoStream?.height,
     frameRate: parseFrameRate(videoStream?.avg_frame_rate ?? videoStream?.r_frame_rate),
     videoCodec: videoStream?.codec_name,
+    videoPixelFormat: videoStream?.pix_fmt,
     audioCodec: audioStream?.codec_name,
     hasVideo: Boolean(videoStream),
     hasAudio: Boolean(audioStream),

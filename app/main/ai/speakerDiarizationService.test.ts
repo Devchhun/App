@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, safeStorage: { isEncryptionAvailable: () => false } }))
 
-const { cleanPartLines, isTooSparse, timesLookCompressed, repairMinuteSecondTimes, salvageCoversPart, buildGeminiCueTextPrompt, buildGeminiSpeakerDetectionPrompt, buildGeminiSrtPrompt, buildGeminiTimedTranscriptPrompt, cleanGeminiSrt, extractGeminiJsonObject, parseGeminiCueText, parseGeminiTimedTranscript, restoreChunkLines, splitSpan, MIN_SPLIT_SECONDS, TruncatedTranscriptionError, parseTimestampSeconds, unreadableTranscriptMessage } = await import('./speakerDiarizationService')
+const { cleanPartLines, fitOverlongLine, isTooSparse, timesLookCompressed, repairMinuteSecondTimes, salvageCoversPart, buildGeminiCueTextPrompt, buildGeminiSpeakerDetectionPrompt, buildGeminiSrtPrompt, buildGeminiTimedTranscriptPrompt, cleanGeminiSrt, extractGeminiJsonObject, parseGeminiCueText, parseGeminiTimedTranscript, restoreChunkLines, splitSpan, MIN_SPLIT_SECONDS, TruncatedTranscriptionError, parseTimestampSeconds, unreadableTranscriptMessage } = await import('./speakerDiarizationService')
 
 describe('Gemini timestamped transcript mode', () => {
   it('requests literal timestamp rows without translation or story narration', () => {
@@ -351,5 +351,24 @@ describe('answers with unusable timing or too little in them', () => {
     expect(lines).toHaveLength(1)
     expect(lines[0].startTime).toBeCloseTo(62.4)
     expect(lines[0].endTime).toBeCloseTo(63.5)
+  })
+})
+
+describe('Gemini line clean-up', () => {
+  const line = (startTime: number, endTime: number, verbatimText: string) => ({ startTime, endTime, verbatimText, speakerNumber: 1, language: 'zh', transcriptionConfidence: 0.95, identityConfidence: 0 })
+
+  it('ends a few words stretched over the music after them, and marks them for review', () => {
+    // Measured: "Oh!" held 119.2-182 s.
+    const fitted = fitOverlongLine(line(119.2, 182, 'Oh!'))
+    expect(fitted.endTime).toBeCloseTo(121)
+    expect(fitted.transcriptionConfidence).toBe(0.5)
+    // A real long sentence keeps its time.
+    const long = line(10, 22, '我等了你整整十年今天终于等到你回来了')
+    expect(fitOverlongLine(long)).toBe(long)
+    expect(fitOverlongLine(line(1, 4, '好'))).toEqual(line(1, 4, '好'))
+  })
+
+  it('drops a lone letter (the voice column leaking into the text)', () => {
+    expect(cleanPartLines([line(1, 2, 'M'), line(3, 4, '好'), line(5, 6, 'F.')], 64).map((l) => l.verbatimText)).toEqual(['好'])
   })
 })

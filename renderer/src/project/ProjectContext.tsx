@@ -13,6 +13,7 @@ import type { ProjectFile, MediaSource, Scene } from '@shared/project'
 import { withoutTransientDubbingState } from '@shared/dubbing'
 import { pendingStageFor } from './pendingStage'
 import { markHomeSeen } from '../home/homeSession'
+import { startProjectSession } from './projectSession'
 
 interface ProjectContextValue {
   projectId: string | null
@@ -25,11 +26,15 @@ interface ProjectContextValue {
   privacyMode: ProjectFile['privacyMode'] | null
   renameProject: (name: string) => void
   /** Timeline > Cover: the PNG the app just wrote becomes the project's
-   * cover (see ProjectFile.coverPath). */
-  setCover: (path: string) => void
+   * cover (see ProjectFile.coverPath); null takes the cover away. */
+  setCover: (path: string | null) => void
+  /** The cover's PNG, if one was set: the Home card's picture and the
+   * exported video's thumbnail (cover art). */
+  coverPath: string | null
   /** Home screen: make another project (or a new one) the one to reopen,
-   * then reload the window so every provider hydrates from it. Flushes a
-   * pending autosave of the current project first. */
+   * then start every provider afresh from it (no window reload -- see
+   * projectSession.ts). Flushes a pending autosave of the current project
+   * first. */
   switchProject: (id: string | 'new') => Promise<void>
 }
 
@@ -216,7 +221,11 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
       }
 
       return window.api.project.save(snapshot).then((savedPath) => {
-        setProject(snapshot)
+        // The project as saved -- but a name or cover set while the save was
+        // on its way is newer than this snapshot: it stays (and the save it
+        // scheduled writes it). Replacing the whole project lost a cover
+        // chosen a moment after an autosave began.
+        setProject((prev) => (prev && prev.id === snapshot.id ? { ...snapshot, name: prev.name, coverPath: prev.coverPath } : prev))
         setProjectPath(savedPath)
         setLastSavedAt(new Date().toISOString())
       })
@@ -264,11 +273,16 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
     if (id === 'new') await window.api.project.create('Untitled Project')
     else await window.api.project.open(id)
     markHomeSeen()
-    window.location.reload()
+    startProjectSession()
   }, [])
 
-  const setCover = useCallback((path: string) => {
-    setProject((prev) => (prev && prev.coverPath !== path ? { ...prev, coverPath: path } : prev))
+  const setCover = useCallback((path: string | null) => {
+    setProject((prev) => {
+      if (!prev || (prev.coverPath ?? null) === path) return prev
+      if (path) return { ...prev, coverPath: path }
+      const { coverPath: _gone, ...rest } = prev
+      return rest
+    })
   }, [])
 
   const renameProject = useCallback((name: string) => {
@@ -287,9 +301,10 @@ export function ProjectProvider({ children }: { children: ReactNode }): JSX.Elem
       privacyMode: project?.privacyMode ?? null,
       renameProject,
       setCover,
+      coverPath: project?.coverPath ?? null,
       switchProject
     }),
-    [project?.id, project?.name, project?.createdAt, project?.privacyMode, lastSavedAt, projectPath, renameProject, setCover, switchProject]
+    [project?.id, project?.name, project?.createdAt, project?.privacyMode, project?.coverPath, lastSavedAt, projectPath, renameProject, setCover, switchProject]
   )
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>

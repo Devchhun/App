@@ -17,11 +17,50 @@ export interface MediaMetadata {
   height?: number
   frameRate?: number
   videoCodec?: string
+  /** ffprobe's pix_fmt (yuv420p, yuv420p10le...). */
+  videoPixelFormat?: string
   audioCodec?: string
   hasVideo: boolean
   hasAudio: boolean
   containerFormat: string
   fileSizeBytes: number
+}
+
+const BROWSER_VIDEO_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1'])
+/** 8-bit 4:2:0 -- what Chromium's (hardware) decoders take. */
+const BROWSER_PIXEL_FORMAT = /^(yuv420p|yuvj420p|nv12)$/
+
+/** Whether a video needs the lighter 480p preview copy (proxy) to play and
+ * scrub smoothly in the editor -- or is fine as it is, as CapCut uses it.
+ * Every video used to get one: a 47-minute 2560x1440 H.264 file sat at
+ * "48%" for minutes before it was ready, though Chromium plays it directly.
+ * Kept for what Chromium cannot decode smoothly or at all: HEVC, ProRes,
+ * 10-bit, H.264 in MKV, 4K, above 60 fps. */
+export function needsPreviewProxy(metadata: MediaMetadata): boolean {
+  if (!metadata.hasVideo) return false
+  const codec = metadata.videoCodec ?? ''
+  if (!BROWSER_VIDEO_CODECS.has(codec)) return true
+  if (metadata.videoPixelFormat && !BROWSER_PIXEL_FORMAT.test(metadata.videoPixelFormat)) return true
+  // MP4/MOV for any of them; Matroska/WebM only for the WebM codecs.
+  const container = metadata.containerFormat
+  const inMp4 = /mov|mp4/.test(container)
+  const inWebm = /webm|matroska/.test(container) && codec !== 'h264'
+  if (!inMp4 && !inWebm) return true
+  const width = metadata.width ?? 0
+  const height = metadata.height ?? 0
+  if (!width || !height) return true
+  if (Math.max(width, height) > 2560 || Math.min(width, height) > 1440) return true
+  return (metadata.frameRate ?? 30) > 61
+}
+
+/** Templates > My Logos: a logo saved for every project. */
+export interface LogoTemplate {
+  id: string
+  name: string
+  /** The app's own copy of the picture. */
+  path: string
+  /** For <img>. */
+  url: string
 }
 
 export type MediaProcessingStage =
@@ -117,6 +156,16 @@ export const MEDIA_IPC = {
    * same importPaths pipeline every imported file already goes through,
    * rather than a parallel ingest path. */
   saveGeneratedFile: 'media:saveGeneratedFile',
+  /** Timeline > Cover > Choose image: pick a picture (the thumbnail made
+   * for the video) and get back the path of the app's own copy of it --
+   * null when nothing was picked. */
+  pickCoverImage: 'media:pickCoverImage',
+  /** Templates > My Logos: the logos saved for every project (the app's
+   * own copies, in its data folder). */
+  listLogoTemplates: 'media:listLogoTemplates',
+  /** Pick a picture and save it as a logo template; null when nothing was picked. */
+  addLogoTemplate: 'media:addLogoTemplate',
+  removeLogoTemplate: 'media:removeLogoTemplate',
   /** Player's "Export still frames": writes an encoded image to a folder
    * the user chose (default: the system Videos folder), never colliding
    * with an existing file. */

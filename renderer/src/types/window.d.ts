@@ -84,6 +84,10 @@ declare global {
         retryJob: (mediaId: string) => Promise<void>
         getFfmpegStatus: () => Promise<FfmpegAvailability>
         rehydrate: (sources: MediaSource[]) => Promise<MediaItem[]>
+        pickCoverImage: () => Promise<string | null>
+        listLogoTemplates: () => Promise<import('@shared/media').LogoTemplate[]>
+        addLogoTemplate: () => Promise<import('@shared/media').LogoTemplate | null>
+        removeLogoTemplate: (id: string) => Promise<void>
         saveGeneratedFile: (fileName: string, data: Uint8Array) => Promise<string>
         saveStillFrame: (dirPath: string, fileName: string, data: Uint8Array) => Promise<string>
         getDefaultStillDir: () => Promise<string>

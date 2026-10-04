@@ -1,5 +1,6 @@
 import type { MediaItem } from '@shared/media'
 import { formatDuration } from './format'
+import { PlusIcon, TrashIcon } from '../nav/icons'
 
 interface Props {
   item: MediaItem
@@ -9,6 +10,8 @@ interface Props {
    * open for inspection/Preview source). */
   multiSelected?: boolean
   compact?: boolean
+  /** On the Timeline already (CapCut's "Added"). */
+  added?: boolean
   onSelect: (e: React.MouseEvent) => void
   onCancel: () => void
   onRetry: () => void
@@ -23,7 +26,7 @@ interface Props {
 
 const TERMINAL_STAGES = new Set(['ready', 'error', 'canceled'])
 
-export function MediaListItem({ item, selected, multiSelected = false, compact = false, onSelect, onCancel, onRetry, onDelete, onAddToTimeline, onDragStart }: Props): JSX.Element {
+export function MediaListItem({ item, selected, multiSelected = false, compact = false, added = false, onSelect, onCancel, onRetry, onDelete, onAddToTimeline, onDragStart }: Props): JSX.Element {
   const stillWorking = !TERMINAL_STAGES.has(item.stage)
   // `readyToUse` (set once probing knows duration/hasAudio and has a
   // playable original URL) is a separate, earlier gate than `stage ===
@@ -49,7 +52,7 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
       }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
-      +
+      <PlusIcon size={compact ? 11 : 14} />
     </button>
   )
 
@@ -63,12 +66,14 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
       }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
-      ✕
+      <TrashIcon size={compact ? 13 : 13} />
     </button>
   )
 
+  // Usable already, only the preview copy still being made: its Cancel
+  // shows on hover, not as if the import were stuck (CapCut shows nothing).
   const actions = (showCancel || showRetry) && (
-    <div className="media-card-actions">
+    <div className={`media-card-actions${backgroundBusy && !showRetry ? ' media-card-actions-on-hover' : ''}`}>
       {showCancel && (
         <button
           onClick={(e) => {
@@ -155,7 +160,9 @@ export function MediaListItem({ item, selected, multiSelected = false, compact =
         ) : (
           <div className="media-thumb-placeholder">{item.kind === 'audio' ? '♪' : '▶'}</div>
         )}
-        {selected && <span className="media-card-check">✓</span>}
+        {/* As in CapCut: "Added" once it is on the Timeline, the length
+            top right, the name under the picture. */}
+        {added && <span className="media-card-added">Added</span>}
         {item.metadata && <span className="media-card-duration">{formatDuration(item.metadata.durationSeconds)}</span>}
         {addButton}
         {deleteButton}

@@ -14,6 +14,7 @@ import type { CloudRequestPreview } from '@shared/suggestions'
 import type { TranscriptSegment } from '@shared/transcription'
 import { defaultDubbingSegmentState, type DubbingSegmentState } from '@shared/dubbing'
 import { effectiveInnerVoice } from '@shared/innerVoice'
+import { CaptionTrackIcon, ChatIcon, ChipIcon, GlobeIcon, TrashIcon } from '../nav/icons'
 
 function formatSeconds(value: number): string {
   return value.toFixed(2)
@@ -60,10 +61,9 @@ function AiDubberSetup(): JSX.Element {
           className="ai-dubber-setup-add-button ai-dubber-setup-header-add"
           onClick={() => void handleAdd()}
           disabled={importing}
-          title="Pick your video(s) and/or its .srt together -- the video goes straight onto the Timeline. Pick every episode of a series at once for Auto SRT."
+          title="MP4, MOV, AVI… and/or .srt — one or many. Pick your video(s) and/or its .srt together -- the video goes straight onto the Timeline. Pick every episode of a series at once for Auto SRT."
         >
           <span className="ai-dubber-setup-add-button-title">{importing ? 'Adding…' : '+ Add Video & SRT'}</span>
-          <span className="ai-dubber-setup-add-button-hint">MP4, MOV, AVI… and/or .srt — one or many</span>
         </button>
       </div>
 
@@ -75,6 +75,17 @@ function AiDubberSetup(): JSX.Element {
 
 /** The open video has no subtitles yet (Add Video puts it straight on the
  * Timeline): bring an SRT in, or have Gemini Auto SRT write one. */
+/** Detect Emotions' icon: a theatre mask, in the same line style as the
+ * rest of the toolbar's icons. */
+function MaskIcon(): JSX.Element {
+  return (
+    <svg width={14} height={14} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3.5 4.5c4.2 1.4 8.8 1.4 13 0v5.2c0 3.6-2.9 6.8-6.5 6.8s-6.5-3.2-6.5-6.8z" />
+      <path d="M7 9.2c.6-.5 1.4-.5 2 0M11 9.2c.6-.5 1.4-.5 2 0M7.6 12.6c1.4 1 3.4 1 4.8 0" />
+    </svg>
+  )
+}
+
 function NoSubtitlesYet(): JSX.Element {
   const aiDubber = useAiDubber()
   const [error, setError] = useState<string | null>(null)
@@ -469,45 +480,68 @@ function AiDubberSubtitleEditor(): JSX.Element {
                 height just to say a number. */}
             <span className="ai-dubber-count-badge">{aiDubber.segments.length}</span>
           </h2>
-          <div className="ai-dubber-editor-header-actions">
-            <button className="ai-dubber-remove-srt-button" title="Translate every subtitle into Khmer" onClick={() => void handleTranslateClick()} disabled={translating}>
-              {translating ? 'Translating…' : 'Translate to Khmer'}
-            </button>
-          </div>
         </div>
         <EpisodeBar />
-        {/* Its own row: the title row has no room left in a narrow panel. */}
-        <div className="ai-dubber-performance-bar">
-          <span className="ai-dubber-performance-bar-label">Emotion &amp; performance per line</span>
+        {/* Every tool for the list on one tidy grid: same size, same line
+            icons, three to a row -- what each does is in its tooltip.
+            (They used to be spread over the title row, a labelled row,
+            and the column header.) */}
+        <div className="ai-dubber-toolbar" role="toolbar" aria-label="Subtitle tools">
+          <button className="ai-dubber-tool ai-dubber-tool-blue" title="Translate every subtitle into Khmer" onClick={() => void handleTranslateClick()} disabled={translating}>
+            <GlobeIcon size={14} />
+            <span>{translating ? 'Translating…' : 'Translate'}</span>
+          </button>
           <button
-            className="ai-dubber-remove-srt-button"
-            title="Decide how every line should be acted (emotion, intensity, style, pace), reading each line with the lines around it"
+            className="ai-dubber-tool ai-dubber-tool-amber"
+            title="Detect Emotions: decide how every line should be acted (emotion, intensity, style, pace), reading each line with the lines around it"
             onClick={handleDetectEmotions}
             disabled={aiDubber.analysisRunning || aiDubber.segments.length === 0}
           >
-            {aiDubber.analysisRunning ? 'Detecting…' : '🎭 Detect Emotions'}
+            <MaskIcon />
+            <span>{aiDubber.analysisRunning ? 'Detecting…' : 'Emotions'}</span>
           </button>
           <button
-            className="ai-dubber-remove-srt-button"
+            className="ai-dubber-tool ai-dubber-tool-violet"
             title="Find the lines a character only thinks (inner voice): the echo in the original audio and the subtitle text. They are dubbed with an echo. Local, no Gemini."
             onClick={() => void aiDubber.detectInnerVoices()}
             disabled={aiDubber.innerVoiceRunning || aiDubber.segments.length === 0}
           >
-            {aiDubber.innerVoiceRunning ? 'Listening…' : '💭 Inner Voice'}
+            <ChatIcon size={14} />
+            <span>{aiDubber.innerVoiceRunning ? 'Listening…' : 'Inner Voice'}</span>
           </button>
           <button
-            className={`ai-dubber-remove-srt-button${showOverlayPanel ? ' ai-dubber-debug-toggle-on' : ''}`}
+            className={`ai-dubber-tool ai-dubber-tool-teal${showOverlayPanel ? ' ai-dubber-tool-on' : ''}`}
             title="Draw the subtitles on the video, and blur the original subtitles -- live in the Player, burned in on Export"
             onClick={() => setShowOverlayPanel((v) => !v)}
           >
-            📝 Subtitle &amp; Blur
+            <CaptionTrackIcon size={14} />
+            <span>Sub &amp; Blur</span>
           </button>
           <button
-            className={`ai-dubber-remove-srt-button${showDebug ? ' ai-dubber-debug-toggle-on' : ''}`}
+            className={`ai-dubber-tool ai-dubber-tool-slate${showDebug ? ' ai-dubber-tool-on' : ''}`}
             title="Show what generation did for each line: the exact VoxCPM2 prompt, seed, attempt and scores"
             onClick={toggleDebug}
           >
-            Debug
+            <ChipIcon size={14} />
+            <span>Debug</span>
+          </button>
+          <button
+            className="ai-dubber-tool ai-dubber-tool-red ai-dubber-tool-danger"
+            title="Clear the SRT (every subtitle) and start over"
+            disabled={aiDubber.segments.length === 0}
+            onClick={() => {
+              void confirm({
+                title: 'Clear the SRT?',
+                message: ['Every subtitle is removed, from this list and from the Timeline, with its voice, pitch and speed settings.', 'The video and any dubbing clips already generated stay on the Timeline.'],
+                confirmLabel: 'Remove',
+                danger: true
+              }).then((ok) => {
+                if (ok) aiDubber.clearWorkspace()
+              })
+            }}
+          >
+            <TrashIcon size={14} />
+            <span>Clear SRT</span>
           </button>
         </div>
         {showOverlayPanel && <SubtitleOverlayPanel onClose={() => setShowOverlayPanel(false)} />}
@@ -527,26 +561,6 @@ function AiDubberSubtitleEditor(): JSX.Element {
         <span className="ai-dubber-subtitle-time">Start</span>
         <span className="ai-dubber-subtitle-time">End</span>
         <span className="ai-dubber-subtitle-text-label">Text (Editable)</span>
-        {/* Sits at the right end of the column-header line, over the rows'
-            own ✕ column, rather than up in the title row -- the destructive
-            action for the whole list belongs with the list, and the title
-            row had grown to two buttons wide. */}
-        <button
-          className="ai-dubber-remove-srt-button ai-dubber-remove-srt-inline"
-          title="Remove SRT and start over"
-          onClick={() => {
-            void confirm({
-              title: 'Remove SRT?',
-              message: ['Every subtitle is removed, from this list and from the Timeline, with its voice, pitch and speed settings.', 'The video and any dubbing clips already generated stay on the Timeline.'],
-              confirmLabel: 'Remove',
-              danger: true
-            }).then((ok) => {
-              if (ok) aiDubber.clearWorkspace()
-            })
-          }}
-        >
-          Remove SRT
-        </button>
       </div>
       <div ref={setListEl} className="panel-scroll-body editor-scroll ai-dubber-subtitle-list">
         {aiDubber.segments.length === 0 && <NoSubtitlesYet />}

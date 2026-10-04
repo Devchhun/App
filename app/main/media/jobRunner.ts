@@ -59,6 +59,26 @@ export interface RunFfmpegResult {
   stdout?: Buffer
 }
 
+/** An ffmpeg line that says what went wrong -- not the encoder statistics
+ * it prints on the way out ("[libx264 @ …] kb/s:…", "Qavg: …"). */
+const PROBLEM_LINE = /error|invalid|fail|cannot|could not|couldn't|unable|no such|not supported|unsupported|denied|too large|exceed|corrupt|mismatch|not enough|out of memory|impossible|backward|non monoton|no space|enospc|not enough space/i
+const STATS_LINE = /kb\/s:|Qavg|frame [IPB]:|mb [IPB] |consecutive B-frames|coded y,uv|i16 v,h|i8 v,h|i4 v,h|i8c dc|Weighted P-Frames|ref [PB] L|8x8 transform|direct mvs|SSIM|PSNR/
+
+/** The message for a failed run: the lines that name the problem -- kept
+ * through the whole run, where a long encode's closing statistics used to
+ * push them out of the message ("Export failed: [libx264] i8c dc,h,v,p …
+ * Qavg … Conversion failed!" said nothing) -- then the last line. */
+export function ffmpegFailureMessage(problemLines: string[], stderr: string, code: number | null): string {
+  const tail = stderr
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !STATS_LINE.test(line))
+    .slice(-1)
+  const lines = [...new Set([...problemLines.slice(-4), ...tail])]
+  return lines.join('\n') || `ffmpeg exited with code ${code}`
+}
+
 export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptions = {}): Promise<RunFfmpegResult> {
   return new Promise((resolve, reject) => {
     const proc = runInBackground(spawn(ffmpegPath, args))
@@ -75,6 +95,8 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
     // the next chunk instead of the entire buffer.
     let progressTail = ''
     let timedOut = false
+    const problemLines: string[] = []
+    let stderrTail = ''
 
     let stallTimer: ReturnType<typeof setTimeout>
     let stallMs = STALL_TIMEOUT_MS
@@ -108,6 +130,15 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
       armStall()
       stderr += text
       if (stderr.length > 8000) stderr = stderr.slice(-8000)
+      const lines = (stderrTail + text).split(/\r?\n|\r/)
+      stderrTail = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed && PROBLEM_LINE.test(trimmed) && !STATS_LINE.test(trimmed)) {
+          problemLines.push(trimmed.slice(0, 400))
+          if (problemLines.length > 20) problemLines.shift()
+        }
+      }
     })
 
     proc.on('error', (err) => {
@@ -128,7 +159,7 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
       } else if (code === 0) {
         resolve({ stdout: options.captureStdout ? Buffer.concat(stdoutChunks) : undefined })
       } else {
-        reject(new Error(stderr.trim().split('\n').slice(-5).join('\n') || `ffmpeg exited with code ${code}`))
+        reject(new Error(ffmpegFailureMessage(problemLines, stderr, code)))
       }
     })
   })

@@ -9,7 +9,7 @@ import type { WaveformData } from '@shared/media'
 import { generateVideoProxy } from './proxy'
 import { synthesizeVideoFromImage } from './stillImage'
 import { registerMediaToken } from './protocol'
-import { SUPPORTED_IMAGE_EXTENSIONS } from '@shared/media'
+import { needsPreviewProxy, SUPPORTED_IMAGE_EXTENSIONS } from '@shared/media'
 import type { MediaItem, MediaProgressUpdate } from '@shared/media'
 
 export type ProgressCallback = (update: MediaProgressUpdate) => void
@@ -91,10 +91,12 @@ export async function processMediaFile(
   // frame (see stillImage.ts) -- there's no real quality/bitrate benefit to
   // a separate lower-res proxy of that, only the cost of an extra encode
   // delaying `ready`. The synthesized video already IS the lightweight
-  // asset; only real video footage gets a 480p proxy.
+  // asset; only real video footage Chromium cannot play smoothly as it is
+  // gets a 480p proxy (needsPreviewProxy) -- an ordinary H.264 file is
+  // ready the moment it is probed, as in CapCut.
   let proxyPath: string | undefined
   let proxyUrl: string | undefined
-  if (metadata.hasVideo && !isStillImage) {
+  if (metadata.hasVideo && !isStillImage && needsPreviewProxy(metadata)) {
     onProgress({ mediaId, stage: 'proxy', percent: 45, fileName, originalPath: filePath })
     const proxy = await generateVideoProxy(mediaId, sourcePath, cacheDir, metadata.durationSeconds, (p) => {
       onProgress({ mediaId, stage: 'proxy', percent: 45 + p * 0.55, fileName, originalPath: filePath })

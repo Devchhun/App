@@ -124,6 +124,7 @@ export function TimelineViewProvider({ children }: { children: ReactNode }): JSX
           linkageOn,
           snappingOn,
           skimmerOn,
+          skimmerOnV2: true,
           tool,
           overwriteMode,
           showWaveforms,

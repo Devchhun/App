@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
 import { basename, join } from 'path'
-import { rename, unlink, writeFile } from 'fs/promises'
+import { readFile, rename, unlink, writeFile } from 'fs/promises'
 import { GoogleGenAI, FileState } from '@google/genai'
 import { cacheKeyForFile, ensureCacheDir } from '../media/cache'
 import { measureLineLoudness } from '../media/dubbingMaster'
@@ -8,22 +8,49 @@ import { cancelJob, CanceledError, runFfmpeg } from '../media/jobRunner'
 import { extractTranscriptionAudio } from '../media/audioExtract'
 import { probeMedia } from '../media/probe'
 import { separateSpeechForTranscription } from '../media/vocalRemoval'
+import { looksLikeSubtitles, readScreenSubtitles, type ScreenSubtitleLine } from '../media/screenSubtitles'
 import { toSimplifiedChinese } from './simplifiedChinese'
 import { detectVoxCpmInstalls } from '../media/voxcpmDiscovery'
 import { validateVoxCpmInstall } from '../media/voxcpmTts'
 import { getSharedWorker, WorkerCanceledError } from './workerProcess'
 import { getGeminiApiKey } from './geminiApiKeyStore'
-import { explainGeminiError, isRetryableError, sleepUnlessCanceled } from './geminiErrors'
+import { explainGeminiError, isFatalGeminiError, isRateLimited, isRetryableError, sleepUnlessCanceled, suggestedRetryDelayMs } from './geminiErrors'
 import { clusterSpeakerObservations, combineSpeakerGender } from '@shared/speakerDiarization'
 import { parseSrtToSegments, transcriptSegmentsToSrt } from '@shared/srt'
+import {
+  CHUNK_CONTEXT_SECONDS,
+  CHUNK_CORE_SECONDS,
+  buildGeminiTimedTranscriptPrompt,
+  cleanGeminiSrt,
+  cleanPartLines,
+  isTooSparse,
+  mapWithConcurrency,
+  parseGeminiTimedTranscript,
+  repairMinuteSecondTimes,
+  restoreChunkLines,
+  timesLookCompressed,
+  type GeminiLine
+} from '@shared/geminiTranscript'
+// Pure Auto SRT steps, shared with the Android app (shared/geminiTranscript.ts).
+export {
+  buildGeminiTimedTranscriptPrompt,
+  cleanGeminiSrt,
+  cleanPartLines,
+  fitOverlongLine,
+  isTooSparse,
+  mapWithConcurrency,
+  parseGeminiTimedTranscript,
+  parseTimestampSeconds,
+  repairMinuteSecondTimes,
+  restoreChunkLines,
+  timesLookCompressed
+} from '@shared/geminiTranscript'
 import type { DetectSpeakersProgress, DetectSpeakersRequest, DetectSpeakersResult, SpeakerAgeCategory, SpeakerDiarizationObservation, SpeakerGender, Transcript, TranscriptSegment } from '@shared/transcription'
 
 // Deliberately independent from GEMINI_VIDEO_MODEL: Story Narration and
 // verbatim subtitle generation are separate products and must never share a
 // task-specific model override or prompt path.
 const MODEL = process.env.GEMINI_SPEAKER_MODEL?.trim() || 'gemini-2.5-flash'
-const CHUNK_CORE_SECONDS = 60
-const CHUNK_CONTEXT_SECONDS = 2
 /** 2.5 models think before answering, and those thinking tokens are spent
  * from the SAME maxOutputTokens budget as the transcript. A dense minute of
  * speech could therefore finish as MAX_TOKENS with an empty or half-written
@@ -143,20 +170,6 @@ export function splitSpan(startTime: number, endTime: number, minSeconds = MIN_S
   return [startTime, (startTime + endTime) / 2]
 }
 interface ActiveJob { mediaId: string; controller: AbortController; ffmpegJobIds: Set<string> }
-interface GeminiLine {
-  startTime: number
-  endTime: number
-  verbatimText: string
-  speakerNumber: number
-  language: string
-  transcriptionConfidence: number
-  identityConfidence: number
-  /** Gemini's ear for this line's voice (the VOICE column). Combined with
-   * the pitch rule per speaker -- see combineSpeakerGender. */
-  voice?: SpeakerGender
-  /** VOICE marked with *: an inner voice (thought), see shared/innerVoice.ts. */
-  innerVoice?: boolean
-}
 interface GeminiSpeaker { speakerNumber: number; gender: SpeakerGender; genderConfidence: number; ageCategory: SpeakerAgeCategory; ageConfidence: number; identityConfidence: number }
 const activeJobs = new Map<string, ActiveJob>()
 
@@ -216,108 +229,6 @@ STRICT OUTPUT RULES:
 - If there is no speech, return exactly NO_SPEECH.`
 }
 
-export function cleanGeminiSrt(text: string): string {
-  const cleaned = text.trim().replace(/^```(?:srt|subrip|text)?\s*/i, '').replace(/\s*```$/i, '').trim()
-  if (!cleaned || /^NO_SPEECH\.?$/i.test(cleaned)) return ''
-  return cleaned
-}
-
-export function buildGeminiTimedTranscriptPrompt(language: string, chunkDurationSeconds: number): string {
-  return `Transcribe every spoken utterance in this ${chunkDurationSeconds.toFixed(3)}-second audio file.
-
-Return ONLY plain text rows in this exact format:
-START_SECONDS<TAB>END_SECONDS<TAB>VOICE<TAB>EXACT_SPOKEN_TEXT
-
-Example:
-1.360\t2.920\tM\t你好
-3.200\t4.800\tF\t你去哪里
-
-RULES:
-- START_SECONDS and END_SECONDS are decimal seconds relative to this audio file, whose first sample is 0.000.
-- VOICE is the voice of that line as you hear it: M = a man (also when he shouts, cries or is angry), F = a woman, U = unsure (a child, overlapping voices, too short to tell). Judge the whole voice, not only how high it is.
-- Add * right after VOICE (M*, F*, U*) when the line is a character's INNER VOICE -- a thought heard as a voice-over, not spoken aloud, usually with an echo or reverb on it. Ordinary speech gets no *.
-- Include every audible spoken utterance exactly once, chronologically.
-- Audio is the only source. Preserve the exact language and words actually spoken.
-- Recognition hint: ${language === 'auto' ? 'auto-detect' : language}; if it conflicts with the audio, follow the audio.
-- Never translate, summarize, paraphrase, add recap/narration, describe actions/scenes, add speaker names, or invent speech.
-- Do not output JSON, SRT numbering, Markdown fences, headings, notes, or explanations.
-- Do not transcribe singing (theme songs, sung lyrics over music) -- only spoken dialogue, narration and inner voice.
-- If the speech is Chinese, write it in Simplified Chinese characters.
-- Silent sections produce no row. If there is no speech, output exactly NO_SPEECH.`
-}
-
-/** Reads one timestamp as seconds. Gemini is asked for plain decimal seconds
- * ("61.360"), but with thinking off it often falls back to its native audio
- * clock format ("01:01.360", "0:01:01,360") -- which used to match nothing,
- * so a perfectly good transcript was rejected as "no timestamped dialogue". */
-export function parseTimestampSeconds(token: string): number {
-  // "1.02.400" -- minutes.seconds.milliseconds, seen in real answers.
-  const dotted = /^(\d+)\.(\d{2})\.(\d+)$/.exec(token.trim())
-  if (dotted) return Number(dotted[1]) * 60 + Number(`${dotted[2]}.${dotted[3]}`)
-  const parts = token.trim().replace(',', '.').split(':')
-  if (parts.length > 3 || parts.some((part) => !/^\d+(?:\.\d+)?$/.test(part))) return Number.NaN
-  return parts.reduce((total, part) => total * 60 + Number(part), 0)
-}
-
-// The lookahead stops a timestamp from giving back its own last digits as
-// "text": without it the SRT timing line "00:00:01,100 --> 00:00:02,300"
-// read as a row whose dialogue was "00".
-const TIMESTAMP = String.raw`\d+\.\d{2}\.\d+(?![\d.,]|:\d)|\d+(?::\d{1,2}){0,2}(?:[.,]\d+)?(?![\d.,]|:\d)`
-const TIMED_ROW = new RegExp(String.raw`^\s*(?:\d+[.)]\s+)?[\[(]?\s*(${TIMESTAMP})\s*(?:\t|\||-->|-|–|—|to)\s*(${TIMESTAMP})\s*[\])]?\s*(?:\t|\||:|-)?\s*(.+?)\s*$`, 'i')
-
-const LEADING_VOICE = /^\s*(M|F|U|male|female|unknown|unsure)(\*)?\s*(?:\t|\|)\s*(\d.*)$/i
-const VOICE_COLUMN = /^(M|F|U|male|female|unknown|unsure|\?)(\*)?\s*(?:\t|\|)\s*(.+)$/i
-
-const VOICE_COLUMN_LAST = /^(.+?)\s*(?:\t|\|)\s*(M|F|U|male|female|unknown|unsure|\?)(\*)?$/i
-
-function voiceOf(token: string): SpeakerGender {
-  const t = token.toLowerCase()
-  return t === 'm' || t === 'male' ? 'male' : t === 'f' || t === 'female' ? 'female' : 'unknown'
-}
-
-export function parseGeminiTimedTranscript(text: string): GeminiLine[] {
-  const cleaned = text.trim().replace(/^```(?:text|tsv)?\s*/i, '').replace(/\s*```$/i, '').trim()
-  if (!cleaned || /^NO_SPEECH\.?$/i.test(cleaned)) return []
-  const lines: GeminiLine[] = []
-  for (const rawRow of cleaned.split(/\r?\n/)) {
-    // The VOICE column put FIRST ("M<TAB>1.36<TAB>2.92<TAB>text"): moved
-    // behind the text, where it is read like any other. The timestamp
-    // pattern needs the row to start with a time -- such rows were
-    // silently dropped, lines missing from the SRT.
-    const leadingVoice = LEADING_VOICE.exec(rawRow)
-    const row = leadingVoice ? `${leadingVoice[3]}\t${leadingVoice[1]}${leadingVoice[2] ?? ''}` : rawRow
-    const match = row.match(TIMED_ROW)
-    if (!match) continue
-    const startTime = parseTimestampSeconds(match[1])
-    const endTime = parseTimestampSeconds(match[2])
-    // The VOICE column, when Gemini gave one: "M<TAB>text" / "F | text".
-    // Also after the text ("你好<TAB>M"): left in, that letter would be
-    // spoken by the dub.
-    const cell = match[3].trim()
-    const before = VOICE_COLUMN.exec(cell)
-    const after = before ? null : VOICE_COLUMN_LAST.exec(cell)
-    const verbatimText = (before ? before[3] : after ? after[1] : cell).trim()
-    const voice = before ? voiceOf(before[1]) : after ? voiceOf(after[2]) : undefined
-    // "M*": the character's inner voice (a thought, usually echoed).
-    const innerVoice = before ? !!before[2] : after ? !!after[3] : false
-    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime || !verbatimText) continue
-    lines.push({ startTime, endTime, verbatimText, speakerNumber: 1, language: 'auto', transcriptionConfidence: 1, identityConfidence: 0, ...(voice ? { voice } : {}), ...(innerVoice ? { innerVoice } : {}) })
-  }
-  if (lines.length > 0) return lines.sort((left, right) => left.startTime - right.startTime)
-
-  // Be tolerant when a model revision returns ordinary SRT despite the TSV
-  // request. The app still owns final numbering and absolute timestamps.
-  const parsedSrt = parseSrtToSegments(cleanGeminiSrt(cleaned))
-  return parsedSrt.segments.map((segment) => ({
-    startTime: segment.startTime,
-    endTime: segment.endTime,
-    verbatimText: segment.text,
-    speakerNumber: 1,
-    language: segment.language,
-    transcriptionConfidence: 1,
-    identityConfidence: 0
-  }))
-}
 
 function assertActive(jobId: string): ActiveJob {
   const active = activeJobs.get(jobId)
@@ -375,95 +286,6 @@ export function unreadableTranscriptMessage(text: string, finishReason: string):
   const reason = finishReason && !/^(STOP|FINISH_REASON_UNSPECIFIED)$/i.test(finishReason) ? ` Gemini stopped with ${finishReason}.` : ''
   const excerpt = text.trim().replace(/\s+/g, ' ').slice(0, 120)
   return `Gemini did not return timestamped dialogue for this audio part.${reason}${excerpt ? ` It returned: "${excerpt}${text.trim().length > 120 ? '…' : ''}"` : ' It returned an empty answer.'}`
-}
-
-/** What a part's lines must pass before they are kept:
- * - a repetition loop ("啊!" 69 times, one every half second -- measured on
- *   a real fallback answer) keeps its first line only;
- * - a line timed past the part's end (a nonsense "00:01:59" in a 64 s part)
- *   is dropped;
- * - inner-voice marks on most of the part are implausible (measured: every
- *   line of ordinary dialogue marked M*) and are dropped, so ordinary lines
- *   never get the thought echo;
- * - a row that is not speech at all is dropped: "NO_SPEECH" written as a
- *   row's text (measured: 27 such rows in one real minute, each a subtitle),
- *   or only a sound tag / music note ("[音乐]", "(sighs)", "♪"). */
-/** Every line squeezed into the first few percent of a part of real
- * length: the times were written in some other unit ("0.584" for 58.4 s),
- * not as seconds. Measured on a real Khmer episode, three whole minutes. */
-export function timesLookCompressed(lines: { endTime: number }[], durationSeconds: number): boolean {
-  // Five or more: three quick words ("走! 走! 走!") at a part's start are real.
-  if (lines.length < 5 || durationSeconds < 20) return false
-  return Math.max(...lines.map((line) => line.endTime)) <= durationSeconds / 20
-}
-
-/** Last resort for compressed times (see timesLookCompressed), used only
- * when asking again in SRT form did not give better lines. Read as a
- * hundred times too small -- "0.584" for 58.4 s -- with the odd one as
- * minutes.seconds ("1.040" for 1:04.0); when some time fits neither, the
- * whole part is stretched in proportion so its last line ends at the end. */
-export function repairMinuteSecondTimes<T extends { startTime: number; endTime: number }>(lines: T[], durationSeconds: number): T[] {
-  if (!timesLookCompressed(lines, durationSeconds)) return lines
-  const latest = Math.max(...lines.map((line) => line.endTime))
-  const limit = durationSeconds + 2
-  const reread = (value: number): number | null => {
-    const scaled = Math.round(value * 1000) / 10
-    if (scaled <= limit) return scaled
-    const minutes = Math.floor(value + 1e-9)
-    const seconds = Math.round((value - minutes) * 1000) / 10
-    const minuteSeconds = minutes * 60 + seconds
-    return seconds < 60 && minuteSeconds <= limit ? minuteSeconds : null
-  }
-  const repaired: T[] = []
-  for (const line of lines) {
-    const startTime = reread(line.startTime)
-    const endTime = reread(line.endTime)
-    if (startTime === null || endTime === null) {
-      const scale = latest > 0 ? durationSeconds / latest : 1
-      return lines.map((l) => ({ ...l, startTime: l.startTime * scale, endTime: l.endTime * scale }))
-    }
-    repaired.push({ ...line, startTime, endTime })
-  }
-  return repaired
-}
-
-const NOT_SPEECH_ROW = /^\s*(?:NO[_ ]?SPEECH|\[[^\]]*\]|\([^)]*\)|（[^）]*）|【[^】]*】|[♪♫\s]+)\s*[.。]?\s*$/i
-
-export function cleanPartLines(lines: GeminiLine[], durationSeconds: number): GeminiLine[] {
-  lines = repairMinuteSecondTimes(lines, durationSeconds)
-  const kept: GeminiLine[] = []
-  let runText = ''
-  let runLength = 0
-  for (const line of lines) {
-    if (line.startTime > durationSeconds + 1) continue
-    if (NOT_SPEECH_ROW.test(line.verbatimText)) continue
-    const text = line.verbatimText.replace(/[\s\p{P}]/gu, '')
-    runLength = text === runText ? runLength + 1 : 1
-    runText = text
-    // The 2nd and 3rd repeat can be real ("走! 走! 走!"); from the 4th on it is a loop.
-    if (runLength <= 3) kept.push(line)
-  }
-  // A loop is a loop: drop its first three too when it went on and on.
-  const cleaned = kept.filter((line, i) => {
-    const text = line.verbatimText.replace(/[\s\p{P}]/gu, '')
-    const total = lines.filter((l) => l.verbatimText.replace(/[\s\p{P}]/gu, '') === text).length
-    return !(total >= 8 && text.length <= 3) || kept.findIndex((l) => l.verbatimText.replace(/[\s\p{P}]/gu, '') === text) === i
-  })
-  const marked = cleaned.filter((line) => line.innerVoice).length
-  if (cleaned.length >= 4 && marked / cleaned.length > 0.6) return cleaned.map(({ innerVoice: _drop, ...line }) => line)
-  return cleaned
-}
-
-/** Too little for a part this long: nothing at all, or a line or two in
- * a small corner of a part of 40 s or more. Measured on a real episode:
- * a minute of narration came back as one 0.07 s line; another as the same
- * word-per-row stamp 200 times, cleaned down to one line. Such a part is
- * doubted like "no speech" -- asked again, and the better answer kept. */
-export function isTooSparse(lines: { startTime: number; endTime: number }[], durationSeconds: number): boolean {
-  if (lines.length === 0) return true
-  if (durationSeconds < 40 || lines.length > 2) return false
-  const covered = Math.max(...lines.map((line) => line.endTime)) - Math.min(...lines.map((line) => line.startTime))
-  return covered < durationSeconds * 0.25
 }
 
 /** Loud enough to hold speech: a part this quiet really can be "no speech". */
@@ -683,38 +505,6 @@ async function transcribeTimedCuesWithGemini(
   }
 }
 
-/** Breaks a long episode into output-safe windows. Each upload includes two
- * seconds of context around its core; midpoint ownership keeps each spoken
- * cue exactly once while still allowing a sentence crossing a boundary to
- * be heard intact. Returned timestamps are restored to source-video time. */
-export function restoreChunkLines(
-  lines: GeminiLine[],
-  sourceStart: number,
-  coreStart: number,
-  coreEnd: number,
-  isLast: boolean
-): GeminiLine[] {
-  // A part given as ABSOLUTE video times (a line 5 s into part 5 written as
-  // 245 s, not 5 s) instead of times in the part it was sent: every line
-  // then lands past the part and was dropped -- whole minutes missing from
-  // the SRT. Recognised when the lines only fit the part once its start is
-  // taken off them, and put back into the part's own time.
-  const spanLength = coreEnd - sourceStart + CHUNK_CONTEXT_SECONDS + 0.5
-  if (sourceStart > 0 && lines.length > 0) {
-    const starts = lines.map((line) => line.startTime).sort((a, b) => a - b)
-    const median = starts[Math.floor(starts.length / 2)]
-    const fitsAbsolute = lines.every((line) => line.startTime - sourceStart >= -1 && line.endTime - sourceStart <= spanLength + 1)
-    if (median > spanLength && fitsAbsolute) lines = lines.map((line) => ({ ...line, startTime: line.startTime - sourceStart, endTime: line.endTime - sourceStart }))
-  }
-  return lines.flatMap((line) => {
-    const absoluteStart = sourceStart + line.startTime
-    const absoluteEnd = sourceStart + line.endTime
-    const midpoint = (absoluteStart + absoluteEnd) / 2
-    if (midpoint < coreStart || (!isLast && midpoint >= coreEnd)) return []
-    return [{ ...line, startTime: Math.max(0, absoluteStart), endTime: Math.max(absoluteStart + 0.01, absoluteEnd) }]
-  })
-}
-
 /** Transcribes one span of the extracted audio, returning lines whose
  * timestamps are relative to `spanStart`. If the model still runs out of
  * output budget, the span is halved and each half transcribed on its own --
@@ -803,27 +593,9 @@ async function transcribeSpanWithGemini(options: {
  * another only added waiting; three stays well inside the free tier's
  * requests-per-minute limit. */
 const PARALLEL_PARTS = 3
-
-/** Runs `worker` over 0..count-1 with at most `limit` in flight, keeping the
- * results in index order. The first failure stops new work from starting. */
-export async function mapWithConcurrency<T>(count: number, limit: number, worker: (index: number) => Promise<T>): Promise<T[]> {
-  const results = new Array<T>(count)
-  let next = 0
-  let failed = false
-  const lane = async (): Promise<void> => {
-    while (!failed && next < count) {
-      const index = next++
-      try {
-        results[index] = await worker(index)
-      } catch (error) {
-        failed = true
-        throw error
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, count) }, lane))
-  return results
-}
+/** Tries per audio part, waits in between (Gemini's per-minute limit is
+ * waited out, a dropped connection given time to come back). */
+const PART_ATTEMPTS = 5
 
 /** When the drives were last searched for a VoxCPM2 install and none was
  * there: not searched again for a while (a batch of nine episodes searched
@@ -872,106 +644,198 @@ async function speechOnlyAudio(
   }
 }
 
+/** The on-screen subtitles as lines, or null to listen with Gemini instead:
+ * "auto" only takes them when the video clearly has burned-in subtitles. */
+async function screenSubtitleLines(
+  request: DetectSpeakersRequest,
+  textSource: 'auto' | 'screen',
+  cacheDir: string,
+  duration: number,
+  signal: AbortSignal,
+  onProgress: (message: string, fraction: number) => void
+): Promise<{ startTime: number; endTime: number; text: string; confidence: number; frames: number }[] | null> {
+  const ranges = request.ranges?.filter((r) => r.end > r.start)
+  let lines: ScreenSubtitleLine[] | null
+  try {
+    lines = await readScreenSubtitles({ videoPath: request.originalPath, cacheDir, ranges, requireBand: textSource === 'auto', signal, onProgress })
+  } catch (error) {
+    if (signal.aborted || textSource === 'screen') throw error
+    // "auto": no reader (offline on first use, no Python) -- listen instead.
+    console.warn('[screen-subtitles] falling back to Gemini:', error)
+    return null
+  }
+  const span = ranges?.length ? ranges.reduce((sum, r) => sum + (Math.min(duration, r.end) - Math.max(0, r.start)), 0) : duration
+  if (textSource === 'auto' && (!lines || !looksLikeSubtitles(lines, span))) return null
+  if (!lines || lines.length === 0) {
+    if (ranges?.length) return []
+    throw new Error("No subtitles could be read in this video's picture. Choose \"Listen (Gemini)\" under Auto SRT's Text from for a video without burned-in subtitles.")
+  }
+  return lines.map((line) => ({ startTime: line.start, endTime: line.end, text: line.text, confidence: line.confidence, frames: line.frames }))
+}
+
 export async function detectSpeakersAndGenerateSrt(request: DetectSpeakersRequest, onProgress: (progress: DetectSpeakersProgress) => void): Promise<DetectSpeakersResult> {
   if (activeJobs.has(request.jobId)) throw new Error(`Speaker detection job already exists: ${request.jobId}`)
   const controller = new AbortController()
   activeJobs.set(request.jobId, { mediaId: request.mediaId, controller, ffmpegJobIds: new Set() })
   const report = (stage: DetectSpeakersProgress['stage'], percent: number, message: string): void => onProgress({ jobId: request.jobId, stage, percent, message })
-  let ai: GoogleGenAI | undefined
   try {
-    const apiKey = await getGeminiApiKey()
-    if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-    ai = new GoogleGenAI({ apiKey })
     report('extracting-audio', 2, 'Extracting original audio…')
     const cacheDir = await ensureCacheDir(await cacheKeyForFile(request.originalPath))
     const audio = await extractTranscriptionAudio(request.mediaId, request.originalPath, cacheDir)
     assertActive(request.jobId)
     const duration = (await probeMedia(audio.outputPath)).durationSeconds ?? 0
     if (!(duration > 0)) throw new Error('Could not determine the extracted audio duration.')
-    // Gemini hears the speech without the music under it; the voice
-    // matching below still reads the original mix.
-    report('extracting-audio', 4, 'Separating speech from music…')
-    const speechPath = await speechOnlyAudio(request, cacheDir, controller.signal, assertActive(request.jobId).ffmpegJobIds, (fraction) =>
-      report('extracting-audio', 4 + Math.round(fraction * 8), 'Separating speech from music…')
-    )
-    assertActive(request.jobId)
-    const chunkCount = Math.max(1, Math.ceil(duration / CHUNK_CORE_SECONDS))
     let segmentsWithoutSpeakers: TranscriptSegment[] = []
     /** Gemini's VOICE per line, same order as segmentsWithoutSpeakers. */
     let lineVoices: (SpeakerGender | undefined)[] = []
     let detectedLanguage: string = request.language
     /** Seconds of audio Gemini could not transcribe cleanly (see onDegraded). */
     let degradedSeconds = 0
-    try {
-      const active = assertActive(request.jobId)
-      const geminiAi = ai
-      let finished = 0
-      degradedSeconds = 0
-      // Fill gaps: only the parts that overlap the requested ranges.
-      const ranges = request.ranges?.filter((r) => r.end > r.start)
-      const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i).filter(
-        (i) => !ranges?.length || ranges.some((r) => r.start < Math.min(duration, (i + 1) * CHUNK_CORE_SECONDS) && r.end > i * CHUNK_CORE_SECONDS)
-      )
-      const partPercent = (): number => 12 + (finished / chunkIndices.length) * 56
-      report('transcribing', partPercent(), `Gemini is transcribing ${chunkIndices.length} audio part${chunkIndices.length === 1 ? '' : 's'}…`)
-      const parts = await mapWithConcurrency(chunkIndices.length, PARALLEL_PARTS, async (k) => {
-        const chunkIndex = chunkIndices[k]
-        assertActive(request.jobId)
-        const coreStart = chunkIndex * CHUNK_CORE_SECONDS
-        const coreEnd = Math.min(duration, coreStart + CHUNK_CORE_SECONDS)
-        const sourceStart = Math.max(0, coreStart - CHUNK_CONTEXT_SECONDS)
-        const sourceEnd = Math.min(duration, coreEnd + CHUNK_CONTEXT_SECONDS)
-        const spanOptions = {
-          ai: geminiAi,
-          audioPath: speechPath ?? audio.outputPath,
-          cacheDir,
-          jobId: `${request.jobId}:chunk-${chunkIndex + 1}`,
-          wholeFile: chunkCount === 1,
-          spanStart: sourceStart,
-          spanEnd: sourceEnd,
-          language: request.language,
-          signal: controller.signal,
-          ffmpegJobs: active.ffmpegJobIds,
-          onSplit: () => report('transcribing', partPercent(), `Audio part ${chunkIndex + 1} of ${chunkCount} is long — transcribing it in two halves…`),
-          onDegraded: (start: number, end: number) => { degradedSeconds += end - start }
-        }
-        let result: { detectedLanguage: string; lines: GeminiLine[] }
-        try {
-          result = await transcribeSpanWithGemini(spanOptions)
-        } catch (firstError) {
-          if (controller.signal.aborted) throw firstError
-          report('transcribing', partPercent(), `Gemini is retrying audio part ${chunkIndex + 1} of ${chunkCount}...`)
-          // Give a dropped connection a moment to come back first.
-          if (isRetryableError(firstError)) await sleepUnlessCanceled(3000, controller.signal)
-          result = await transcribeSpanWithGemini(spanOptions)
-        }
-        finished++
-        report('transcribing', partPercent(), `Transcribed ${finished} of ${chunkIndices.length} audio parts…`)
-        return { detectedLanguage: result.detectedLanguage, lines: restoreChunkLines(result.lines, sourceStart, coreStart, coreEnd, chunkIndex === chunkCount - 1) }
-      })
-      assertActive(request.jobId)
-      const allLines = parts
-        .flatMap((part) => part.lines)
-        .filter((line) => !ranges?.length || ranges.some((r) => (line.startTime + line.endTime) / 2 >= r.start && (line.startTime + line.endTime) / 2 < r.end))
-      allLines.sort((left, right) => left.startTime - right.startTime || left.endTime - right.endTime)
-      detectedLanguage = parts.map((part) => part.detectedLanguage).find(Boolean) || request.language
-      lineVoices = allLines.map((line) => line.voice)
-      const lineTexts = toSimplifiedChinese(allLines.map((line) => line.verbatimText), detectedLanguage)
-      segmentsWithoutSpeakers = allLines.map((line, index) => ({
-        id: `gemini-speaker-${index + 1}`, words: [], startTime: line.startTime, endTime: line.endTime,
-        language: line.language || detectedLanguage, confidence: Number(line.transcriptionConfidence ?? 0), text: lineTexts[index],
-        needsReview: Number(line.transcriptionConfidence ?? 0) < 0.65,
-        ...(line.innerVoice ? { innerVoice: true } : {})
+    /** Parts Gemini never managed, even after waiting and retrying. */
+    let missingParts: { start: number; end: number }[] = []
+    // A video with its subtitles drawn into the picture (most Chinese
+    // dramas) already holds the exact words and times: reading them off
+    // the screen beats Gemini's listening, which mishears names and
+    // homophones (姚惜雪 heard as 有吸血) and invents lines in the music.
+    // The speakers are still matched by their voices below.
+    const textSource = request.textSource ?? 'voice'
+    const screenLines =
+      textSource === 'voice' || (textSource === 'auto' && request.language === 'km')
+        ? null
+        : await screenSubtitleLines(request, textSource, cacheDir, duration, controller.signal, (message, fraction) => report('transcribing', 4 + Math.round(fraction * 64), message))
+    assertActive(request.jobId)
+    const fromScreen = !!screenLines
+    if (screenLines) {
+      const texts = toSimplifiedChinese(screenLines.map((line) => line.text), 'zh')
+      detectedLanguage = texts.some((text) => /[\u3400-\u9fff]/.test(text)) ? 'zh' : request.language
+      segmentsWithoutSpeakers = screenLines.map((line, index) => ({
+        id: `screen-sub-${index + 1}`, words: [], startTime: line.startTime, endTime: line.endTime,
+        language: detectedLanguage, confidence: line.confidence, text: texts[index],
+        needsReview: line.confidence < 0.85 || line.frames < 3
       }))
-    } catch (geminiError) {
-      if (controller.signal.aborted) throw geminiError
-      throw new Error(explainGeminiError(geminiError))
+    } else {
+      const apiKey = await getGeminiApiKey()
+      if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
+      const ai = new GoogleGenAI({ apiKey })
+      // Gemini hears the speech without the music under it; the voice
+      // matching below still reads the original mix.
+      report('extracting-audio', 4, 'Separating speech from music…')
+      const speechPath = await speechOnlyAudio(request, cacheDir, controller.signal, assertActive(request.jobId).ffmpegJobIds, (fraction) =>
+        report('extracting-audio', 4 + Math.round(fraction * 8), 'Separating speech from music…')
+      )
+      assertActive(request.jobId)
+      const chunkCount = Math.max(1, Math.ceil(duration / CHUNK_CORE_SECONDS))
+      try {
+        const active = assertActive(request.jobId)
+        const geminiAi = ai
+        let finished = 0
+        degradedSeconds = 0
+        // Fill gaps: only the parts that overlap the requested ranges.
+        const ranges = request.ranges?.filter((r) => r.end > r.start)
+        const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i).filter(
+          (i) => !ranges?.length || ranges.some((r) => r.start < Math.min(duration, (i + 1) * CHUNK_CORE_SECONDS) && r.end > i * CHUNK_CORE_SECONDS)
+        )
+        const partPercent = (): number => 12 + (finished / chunkIndices.length) * 56
+        report('transcribing', partPercent(), `Gemini is transcribing ${chunkIndices.length} audio part${chunkIndices.length === 1 ? '' : 's'}…`)
+        // A long video is many parts, and one part failing used to end the
+        // whole run, every finished part thrown away: a 47-minute episode
+        // ran into Gemini's per-minute limit (429) and stopped. Now Gemini's
+        // per-minute limit is waited out (every part pauses together), each
+        // part is tried up to PART_ATTEMPTS times, finished parts are kept on
+        // disk (a run again picks up where it stopped), and a part that still
+        // fails leaves a gap to fill later instead of failing the rest.
+        let cooldownUntil = 0
+        let fatalError: unknown = null
+        const missing: { start: number; end: number; error: unknown }[] = []
+        const parts = await mapWithConcurrency(chunkIndices.length, PARALLEL_PARTS, async (k) => {
+          if (fatalError) return { detectedLanguage: '', lines: [] as GeminiLine[] }
+          const chunkIndex = chunkIndices[k]
+          assertActive(request.jobId)
+          const coreStart = chunkIndex * CHUNK_CORE_SECONDS
+          const coreEnd = Math.min(duration, coreStart + CHUNK_CORE_SECONDS)
+          const sourceStart = Math.max(0, coreStart - CHUNK_CONTEXT_SECONDS)
+          const sourceEnd = Math.min(duration, coreEnd + CHUNK_CONTEXT_SECONDS)
+          const spanOptions = {
+            ai: geminiAi,
+            audioPath: speechPath ?? audio.outputPath,
+            cacheDir,
+            jobId: `${request.jobId}:chunk-${chunkIndex + 1}`,
+            wholeFile: chunkCount === 1,
+            spanStart: sourceStart,
+            spanEnd: sourceEnd,
+            language: request.language,
+            signal: controller.signal,
+            ffmpegJobs: active.ffmpegJobIds,
+            onSplit: () => report('transcribing', partPercent(), `Audio part ${chunkIndex + 1} of ${chunkCount} is long — transcribing it in two halves…`),
+            onDegraded: (start: number, end: number) => { degradedSeconds += end - start }
+          }
+          const cachePath = join(cacheDir, `gemini-part-v1-${request.language}-${speechPath ? 'speech' : 'mix'}-${sourceStart.toFixed(3)}-${sourceEnd.toFixed(3)}.json`)
+          let result: { detectedLanguage: string; lines: GeminiLine[] } | null = await readFile(cachePath, 'utf-8')
+            .then((text) => JSON.parse(text) as { detectedLanguage: string; lines: GeminiLine[] })
+            .catch(() => null)
+          for (let attempt = 1; !result && !fatalError; attempt++) {
+            const wait = cooldownUntil - Date.now()
+            if (wait > 0) await sleepUnlessCanceled(wait, controller.signal)
+            try {
+              result = await transcribeSpanWithGemini(spanOptions)
+              await writeFile(cachePath, JSON.stringify(result), 'utf-8').catch(() => undefined)
+            } catch (error) {
+              if (controller.signal.aborted) throw error
+              if (isFatalGeminiError(error)) {
+                fatalError = error
+                break
+              }
+              if (attempt >= PART_ATTEMPTS) {
+                missing.push({ start: coreStart, end: coreEnd, error })
+                break
+              }
+              const limited = isRateLimited(error)
+              const delay = limited ? Math.max(suggestedRetryDelayMs(error) ?? 0, 20000 * attempt) : isRetryableError(error) ? 3000 * attempt : 1500
+              if (limited) cooldownUntil = Math.max(cooldownUntil, Date.now() + delay)
+              report(
+                'transcribing',
+                partPercent(),
+                limited
+                  ? `Gemini's per-minute limit reached — waiting ${Math.round(delay / 1000)} s, then part ${chunkIndex + 1} of ${chunkCount} again…`
+                  : `Gemini is retrying audio part ${chunkIndex + 1} of ${chunkCount} (try ${attempt + 1} of ${PART_ATTEMPTS})…`
+              )
+              await sleepUnlessCanceled(delay, controller.signal)
+            }
+          }
+          finished++
+          report('transcribing', partPercent(), `Transcribed ${finished} of ${chunkIndices.length} audio parts…`)
+          if (!result) return { detectedLanguage: '', lines: [] as GeminiLine[] }
+          return { detectedLanguage: result.detectedLanguage, lines: restoreChunkLines(result.lines, sourceStart, coreStart, coreEnd, chunkIndex === chunkCount - 1) }
+        })
+        assertActive(request.jobId)
+        if (fatalError) throw fatalError
+        // Most of it missing is a failure; a few parts are gaps to fill.
+        if (missing.length > 0 && missing.length * 2 > chunkIndices.length) throw missing[missing.length - 1].error
+        for (const part of missing) degradedSeconds += part.end - part.start
+        missingParts = missing.map(({ start, end }) => ({ start, end }))
+        const allLines = parts
+          .flatMap((part) => part.lines)
+          .filter((line) => !ranges?.length || ranges.some((r) => (line.startTime + line.endTime) / 2 >= r.start && (line.startTime + line.endTime) / 2 < r.end))
+        allLines.sort((left, right) => left.startTime - right.startTime || left.endTime - right.endTime)
+        detectedLanguage = parts.map((part) => part.detectedLanguage).find(Boolean) || request.language
+        lineVoices = allLines.map((line) => line.voice)
+        const lineTexts = toSimplifiedChinese(allLines.map((line) => line.verbatimText), detectedLanguage)
+        segmentsWithoutSpeakers = allLines.map((line, index) => ({
+          id: `gemini-speaker-${index + 1}`, words: [], startTime: line.startTime, endTime: line.endTime,
+          language: line.language || detectedLanguage, confidence: Number(line.transcriptionConfidence ?? 0), text: lineTexts[index],
+          needsReview: Number(line.transcriptionConfidence ?? 0) < 0.65,
+          ...(line.innerVoice ? { innerVoice: true } : {})
+        }))
+      } catch (geminiError) {
+        if (controller.signal.aborted) throw geminiError
+        throw new Error(explainGeminiError(geminiError))
+      }
     }
     report('embedding', 72, 'Building voice embeddings for character continuity…')
     const worker = getSharedWorker()
     await worker.ensureStarted()
     const { promise } = worker.send('diarize', { audioPath: audio.outputPath, segments: segmentsWithoutSpeakers.map(({ id, startTime, endTime }) => ({ id, startTime, endTime })) }, (data) => {
-      report('embedding', 72 + Math.min(20, Number((data as { percent?: number }).percent ?? 0) * 0.2), 'Matching Gemini speakers with voice embeddings…')
+      report('embedding', 72 + Math.min(20, Number((data as { percent?: number }).percent ?? 0) * 0.2), 'Matching the speakers by their voices…')
     })
     const raw = (await promise) as { observations?: SpeakerDiarizationObservation[] }
     assertActive(request.jobId)
@@ -994,15 +858,17 @@ export async function detectSpeakersAndGenerateSrt(request: DetectSpeakersReques
       const combined = combineSpeakerGender({ gender: speaker.gender, confidence: speaker.genderConfidence }, votes)
       return { ...speaker, gender: combined.gender, genderConfidence: combined.confidence }
     })
-    const transcript: Transcript = { mediaId: request.mediaId, segments, requestedLanguage: request.language, detectedLanguage, generatedAt: new Date().toISOString(), audioSourcePath: audio.outputPath, source: 'speaker-detection' }
+    const transcript: Transcript = { mediaId: request.mediaId, segments, requestedLanguage: request.language, detectedLanguage, generatedAt: new Date().toISOString(), audioSourcePath: audio.outputPath, source: fromScreen ? 'screen-subtitles' : 'speaker-detection' }
     report('writing-srt', 97, 'Generating and importing SRT…')
     const srtText = transcriptSegmentsToSrt(segments)
-    const srtFileName = 'gemini-speakers.srt'
+    const srtFileName = fromScreen ? 'screen-subtitles.srt' : 'gemini-speakers.srt'
     const srtPath = join(cacheDir, srtFileName)
     await writeFile(srtPath, srtText, 'utf-8')
     assertActive(request.jobId)
-    const degradedNote = degradedSeconds > 0 ? ` About ${Math.round(degradedSeconds)}s of unclear audio (music or noise) could not be transcribed cleanly — check the lines marked for review.` : ''
-    report('ready', 100, `Generated SRT and detected ${speakers.length} speaker${speakers.length === 1 ? '' : 's'}.${degradedNote}`)
+    const clock = (t: number): string => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
+    const missingNote = missingParts.length > 0 ? ` Gemini could not transcribe ${missingParts.length} part(s) (${missingParts.map((m) => `${clock(m.start)}–${clock(m.end)}`).join(', ')}) — run Auto SRT again (finished parts are kept) or use Fill gaps.` : ''
+    const degradedNote = (degradedSeconds > 0 ? ` About ${Math.round(degradedSeconds)}s of unclear audio (music or noise) could not be transcribed cleanly — check the lines marked for review.` : '') + missingNote
+    report('ready', 100, `${fromScreen ? 'Read the subtitles in the picture' : 'Generated SRT'} and detected ${speakers.length} speaker${speakers.length === 1 ? '' : 's'}.${degradedNote}`)
     return { transcript, speakers, srtText, srtPath, srtFileName, unclearSeconds: Math.round(degradedSeconds) }
   } finally {
     activeJobs.delete(request.jobId)

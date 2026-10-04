@@ -262,6 +262,9 @@ export interface ExportOverlay {
   blur?: BlurSettings
   /** Add Text's plain texts (shared/plainText.ts). */
   texts?: TextOverlay[]
+  /** Timeline > Cover's picture: put into the MP4 as its cover art -- the
+   * thumbnail a file browser or player shows before it plays. */
+  coverPath?: string
 }
 
 /** The overlay worth sending to Export, or undefined when neither part is on. */

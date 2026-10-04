@@ -19,6 +19,7 @@ type ViewMode = 'grid' | 'list'
 export function ImportPanel(): JSX.Element {
   const { items, importPaths, ffmpegStatus, selectedId, select, selectedIds, selectMedia, selectAllMedia, clearMediaSelection, cancel, retry, removeMedia } = useMedia()
   const { sequence, insertClip, ensureTrack, selectClips, deleteSelected } = useSequence()
+  const usedMediaIds = useMemo(() => new Set(sequence.clips.map((clip) => clip.mediaId)), [sequence.clips])
   const confirm = useConfirm()
   const { beginTransaction, endTransaction } = useHistory()
   const { getCurrentTime } = usePlaybackControls()
@@ -275,6 +276,7 @@ export function ImportPanel(): JSX.Element {
             selected={item.id === selectedId}
             multiSelected={selectedIds.includes(item.id)}
             compact={viewMode === 'list'}
+            added={usedMediaIds.has(item.id)}
             onSelect={(e) => {
               const modifiers = { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }
               if (modifiers.ctrl || modifiers.shift) {

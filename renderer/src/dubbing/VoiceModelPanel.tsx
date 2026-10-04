@@ -146,12 +146,9 @@ export function VoiceModelPanel(): JSX.Element {
     <aside className="panel panel-brand ai-dubber-voice-panel">
       <div className="panel-fixed-head">
         <div className="ai-dubber-voice-header">
-          <h3>Voice Model</h3>
-
-          {/* Which engine actually speaks the lines, inline between the
-              title and Detect Gender rather than its own row below --
-              three related controls for "who's about to talk" read as one
-              header line instead of two stacked ones. Persisted per
+          {/* Which engine actually speaks the lines, with Detect Gender
+              beside it on one line (no "Voice Model" title: the panel's
+              tab already says it). Persisted per
               machine, so it stays put between sessions. The AI/speed
               tradeoff each option used to spell out underneath its name
               doesn't fit on one line here; it's still one hover away via

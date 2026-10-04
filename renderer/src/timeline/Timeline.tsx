@@ -1433,10 +1433,16 @@ export function Timeline(): JSX.Element {
 
   const handlePointerMove = (e: { clientX: number; clientY: number }): void => {
     if (draggingRef.current) latestPointerMoveRef.current = { clientX: e.clientX, clientY: e.clientY }
+    // The faint line follows the mouse; a click (see onMouseDownCapture)
+    // hides it -- the playhead is there now -- until the mouse moves on,
+    // and it stays hidden while the playhead or a box is being dragged.
     if (skimmerOn && skimmerRef.current) {
-      const { x } = contentLocalPoint(e.clientX, e.clientY)
-      skimmerRef.current.style.display = 'block'
-      skimmerRef.current.style.left = `${x}px`
+      if (draggingRef.current) skimmerRef.current.style.display = 'none'
+      else {
+        const { x } = contentLocalPoint(e.clientX, e.clientY)
+        skimmerRef.current.style.display = 'block'
+        skimmerRef.current.style.left = `${x}px`
+      }
     }
     if (draggingRef.current === 'pan') {
       const start = panStartRef.current
@@ -1556,9 +1562,9 @@ export function Timeline(): JSX.Element {
     setBoxRect(null)
   }
 
-  /** Pointer left .timeline-content: only the hover-only skimmer line
-   * needs hiding -- an in-progress drag keeps going on the window
-   * listeners (see trackDragOnWindow). */
+  /** Pointer left .timeline-content (or pressed in it): only the hover-only
+   * skimmer line needs hiding -- an in-progress drag keeps going on the
+   * window listeners (see trackDragOnWindow). */
   const handleContentMouseLeave = (): void => {
     if (skimmerRef.current) skimmerRef.current.style.display = 'none'
   }
@@ -1887,6 +1893,7 @@ export function Timeline(): JSX.Element {
             className="timeline-content"
             ref={contentRef}
             style={{ width: contentWidth }}
+            onMouseDownCapture={handleContentMouseLeave}
             onMouseDown={handlePointerDown}
             onMouseMove={handlePointerMove}
             onMouseUp={stopDragging}

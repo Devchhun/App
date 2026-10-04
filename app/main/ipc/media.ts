@@ -4,7 +4,7 @@ import { spawn } from 'child_process'
 import { mkdir, writeFile, rm, rename, readFile } from 'fs/promises'
 import { extname, join } from 'path'
 import { SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
-import type { MediaItem, MediaProgressUpdate, RemoveBackgroundResult, WaveformData } from '@shared/media'
+import type { LogoTemplate, MediaItem, MediaProgressUpdate, RemoveBackgroundResult, WaveformData } from '@shared/media'
 import type { MediaSource } from '@shared/project'
 import { detectFfmpeg, ffmpegPath } from '../media/ffmpeg'
 import { processMediaFile } from '../media/pipeline'
@@ -197,6 +197,78 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
     for (let n = 1; existsSync(candidate); n++) candidate = join(dir, `${stem} (${n})${ext}`)
     await writeFile(candidate, Buffer.from(args.data))
     return candidate
+  })
+
+  // Templates > My Logos: pictures kept in the app's data folder (not a
+  // project's), listed in an index file beside them.
+  const logoDir = (): string => join(app.getPath('userData'), 'logo-templates')
+  const logoIndex = (): string => join(logoDir(), 'index.json')
+  type StoredLogo = { id: string; name: string; file: string }
+  const readLogos = async (): Promise<StoredLogo[]> => {
+    try {
+      const parsed = JSON.parse(await readFile(logoIndex(), 'utf-8')) as StoredLogo[]
+      return Array.isArray(parsed) ? parsed.filter((l) => l && typeof l.id === 'string' && typeof l.file === 'string' && existsSync(join(logoDir(), l.file))) : []
+    } catch {
+      return []
+    }
+  }
+  const writeLogos = async (logos: StoredLogo[]): Promise<void> => {
+    await mkdir(logoDir(), { recursive: true })
+    const tmp = `${logoIndex()}.${Date.now()}.tmp`
+    await writeFile(tmp, JSON.stringify(logos, null, 2), 'utf-8')
+    await rename(tmp, logoIndex())
+  }
+  const toLogoTemplate = (l: StoredLogo): LogoTemplate => {
+    const path = join(logoDir(), l.file)
+    return { id: l.id, name: l.name, path, url: registerMediaToken(path) }
+  }
+
+  ipcMain.handle(MEDIA_IPC.listLogoTemplates, async (): Promise<LogoTemplate[]> => (await readLogos()).map(toLogoTemplate))
+
+  ipcMain.handle(MEDIA_IPC.addLogoTemplate, async (): Promise<LogoTemplate | null> => {
+    const win = getWindow()
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Add a logo (a PNG with a transparent background works best)',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: [...SUPPORTED_IMAGE_EXTENSIONS] }]
+    })
+    const picked = result.canceled ? undefined : result.filePaths[0]
+    if (!picked) return null
+    await mkdir(logoDir(), { recursive: true })
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const file = `${id}${extname(picked).toLowerCase()}`
+    await writeFile(join(logoDir(), file), await readFile(picked))
+    const name = picked.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, '')
+    const logo: StoredLogo = { id, name, file }
+    await writeLogos([...(await readLogos()), logo])
+    return toLogoTemplate(logo)
+  })
+
+  ipcMain.handle(MEDIA_IPC.removeLogoTemplate, async (_event, id: string): Promise<void> => {
+    const logos = await readLogos()
+    const gone = logos.find((l) => l.id === id)
+    if (!gone) return
+    await writeLogos(logos.filter((l) => l.id !== id))
+    // The picture stays on disk: a project may still use it on its Timeline.
+  })
+
+  ipcMain.handle(MEDIA_IPC.pickCoverImage, async () => {
+    const win = getWindow()
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, {
+      title: 'ជ្រើសរូប Cover (thumbnail)',
+      properties: ['openFile'],
+      filters: [{ name: 'រូបភាព', extensions: [...SUPPORTED_IMAGE_EXTENSIONS] }]
+    })
+    const picked = result.canceled ? undefined : result.filePaths[0]
+    if (!picked) return null
+    // The app's own copy: moving or deleting the original never loses the cover.
+    const dir = join(getMediaCacheRoot(), 'generated')
+    await mkdir(dir, { recursive: true })
+    const copy = join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-cover${extname(picked).toLowerCase()}`)
+    await writeFile(copy, await readFile(picked))
+    return copy
   })
 
   ipcMain.handle(MEDIA_IPC.saveGeneratedFile, async (_event, fileName: string, data: Uint8Array) => {

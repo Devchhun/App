@@ -7,6 +7,7 @@ import { useBrandPreset } from '../brand/BrandPresetContext'
 import { listAllTemplates, searchTemplates, TEMPLATE_CATEGORY_LABELS } from './registry'
 import type { TemplateDefinition } from './registry'
 import { TemplateThumbnail } from './TemplateThumbnail'
+import { MyLogosSection } from './MyLogosSection'
 import { buildTemplateSwitchPatch } from '../scenes/templateSwitch'
 import { findOrCreateTrack, type OccupiedRange } from '../timeline/trackModel'
 import { PURPOSE_LABELS, PURPOSE_VALUES } from '@shared/suggestions'
@@ -92,7 +93,9 @@ export function TemplateBrowserPanel(): JSX.Element {
         </div>
       </div>
 
-      <div className="panel-scroll-body editor-scroll template-library-grid">
+      <div className="panel-scroll-body editor-scroll template-library-scroll">
+      <MyLogosSection />
+      <div className="template-library-grid">
         {filtered.map((definition) => (
           <div key={definition.id} className="template-library-card" title={definition.description}>
             <TemplateThumbnail definition={definition} brand={brandPreset} />
@@ -116,6 +119,7 @@ export function TemplateBrowserPanel(): JSX.Element {
           </div>
         ))}
         {filtered.length === 0 && <p className="placeholder">No templates match.</p>}
+      </div>
       </div>
     </div>
   )

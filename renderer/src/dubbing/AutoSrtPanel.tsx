@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useAiDubber } from './AiDubberContext'
 import { useConfirm } from '../ui/ConfirmDialog'
+import type { AutoSrtTextSource } from '@shared/transcription'
+
+const TEXT_SOURCES: { id: AutoSrtTextSource; label: string; title: string }[] = [
+  { id: 'auto', label: 'Auto', title: 'Reads the subtitles drawn into the picture when the video has them (exact words and times, no Gemini credits); otherwise Gemini listens' },
+  { id: 'screen', label: 'Subtitles in video', title: 'Always read the subtitles burned into the picture (Chinese / English) -- no Gemini needed' },
+  { id: 'voice', label: 'Listen (Gemini)', title: 'Gemini listens to the voices -- for videos without subtitles in the picture' }
+]
 
 function formatClock(seconds: number): string {
   const s = Math.max(0, Math.round(seconds))
@@ -18,7 +25,7 @@ function formatClock(seconds: number): string {
  * single video already on the Timeline (one row). */
 export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const aiDubber = useAiDubber()
-  const { batchRows, batchJob, batchMessage } = aiDubber
+  const { batchRows, batchJob, batchMessage, autoSrtTextSource, setAutoSrtTextSource } = aiDubber
   const [transcribeOnLoad, setTranscribeOnLoad] = useState(true)
   const [loading, setLoading] = useState(false)
   const confirm = useConfirm()
@@ -98,7 +105,7 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
           </span>
           <div className="auto-srt-title">
             <strong>Auto SRT</strong>
-            <small>Transcribe one video at a time · Gemini API · speakers matched</small>
+            <small>Transcribe one video at a time · subtitles in the picture or Gemini · speakers matched</small>
           </div>
           <button className="auto-srt-close" aria-label="Close Auto SRT" onClick={onClose}>
             ×
@@ -124,6 +131,23 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
           <button className="auto-srt-clear" disabled={groups.length === 0 || running} onClick={() => void clearAll()} title="Take every video in this list off the Timeline (with its subtitles and dub) to start again">
             🗑 Clear
           </button>
+        </div>
+        <div className="auto-srt-source" role="radiogroup" aria-label="Text from">
+          <span className="auto-srt-source-label">Text from</span>
+          {TEXT_SOURCES.map((source) => (
+            <button
+              key={source.id}
+              type="button"
+              role="radio"
+              aria-checked={autoSrtTextSource === source.id}
+              className={autoSrtTextSource === source.id ? 'auto-srt-source-option active' : 'auto-srt-source-option'}
+              disabled={running}
+              title={source.title}
+              onClick={() => setAutoSrtTextSource(source.id)}
+            >
+              {source.label}
+            </button>
+          ))}
         </div>
         <label className="auto-srt-option">
           <input type="checkbox" checked={transcribeOnLoad} onChange={(e) => setTranscribeOnLoad(e.target.checked)} />
@@ -188,7 +212,7 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
             ))}
           </ol>
         )}
-        <small className="auto-srt-note">Each video&apos;s SRT goes onto the Timeline under that video. Gemini credits are used per video.</small>
+        <small className="auto-srt-note">Each video&apos;s SRT goes onto the Timeline under that video. {autoSrtTextSource === 'voice' ? 'Gemini credits are used per video.' : 'Videos with subtitles in the picture are read from it (free, exact); the others use Gemini credits.'}</small>
       </div>
     </div>,
     document.body

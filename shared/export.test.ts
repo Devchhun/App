@@ -241,12 +241,29 @@ describe('buildExportFilterGraph', () => {
     expect(result.args).not.toContain('-an')
   })
 
-  it('omits amix and maps the single audio label directly when there is only one audio clip', () => {
+  it('omits amix when there is only one audio clip', () => {
     const rc: ResolvedExportClip = { clip: clip({ id: 'a1', trackId: 'A1', startTime: 0, duration: 5, type: 'audio' }), sourcePath: '/a1.mp3', trackOrder: 0 }
     const result = buildExportFilterGraph([], [rc], 5, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4')
     const graph = result.args[result.args.indexOf('-filter_complex') + 1]
     expect(graph).not.toContain('amix')
-    expect(result.args).toContain('[a0]')
+    expect(graph).toContain('[a0]asetpts=N/SR/TB[aout]')
+    expect(result.args).toContain('[aout]')
+  })
+
+  it('times the mixed sound by its samples (a later clip from a file opened partway ran backwards)', () => {
+    // Measured: three clips, the 2nd and 3rd at 96.5 s and 1030.9 s, each
+    // opened partway into its file -- AAC refused the times and the export
+    // failed at once.
+    const a = (id: string, startTime: number, sourceIn: number): ResolvedExportClip => ({
+      clip: clip({ id, trackId: 'V1', startTime, duration: 90, sourceIn, sourceOut: sourceIn + 90 }),
+      sourcePath: `/${id}.mp4`,
+      trackOrder: 0
+    })
+    const clips = [a('v1', 0, 45.9), a('v2', 96.5, 142.9), a('v3', 1030.9, 1077.4)]
+    const result = buildExportFilterGraph(clips, clips, 1120, dims, 30, DEFAULT_EXPORT_OPTIONS, 'out.mp4', undefined, { seekInputs: true })
+    const graph = result.args[result.args.indexOf('-filter_complex') + 1]
+    expect(graph).toContain('amix=inputs=3:normalize=0[amixed];[amixed]asetpts=N/SR/TB[aout]')
+    expect(result.args[result.args.indexOf('-map', result.args.indexOf('[vout]')) + 1]).toBe('[aout]')
   })
 
   it('applies CRF from the bitrate preset, not a fixed bitrate', () => {

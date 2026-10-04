@@ -272,8 +272,9 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 11px 12px;
-  min-height: 56px;
+  /* Slim: its tallest controls are 28px. */
+  padding: 8px 12px;
+  min-height: 44px;
   box-sizing: border-box;
 }
 
@@ -317,14 +318,22 @@ body {
 
 .titlebar-project-input {
   width: 220px;
-  padding: 2px 6px;
+  height: 26px;
+  padding: 0 9px;
   font-size: 12px;
+  font-weight: 600;
   color: var(--text);
-  background: var(--surface);
+  background: var(--surface-elevated, var(--surface));
   border: 1px solid var(--accent, #4f8cff);
-  border-radius: 4px;
+  border-radius: 7px;
   outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
   -webkit-app-region: no-drag;
+}
+
+.titlebar-project-input::selection,
+.home-card-rename::selection {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .titlebar-history {
@@ -1125,6 +1134,162 @@ body {
   border-color: var(--accent);
 }
 
+.template-library-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Templates > My Logos: the channel's own logos, above the built-in templates. */
+.my-logos {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.my-logos-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.my-logos-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.my-logos-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.my-logos-add:hover {
+  background: var(--accent-hover);
+}
+
+.my-logos-empty {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.my-logos-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.my-logos-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* A checkerboard behind the logo, so its transparent background shows. */
+.my-logos-thumb {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: #2a2d34;
+  background-image:
+    linear-gradient(45deg, #353841 25%, transparent 25%),
+    linear-gradient(-45deg, #353841 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #353841 75%),
+    linear-gradient(-45deg, transparent 75%, #353841 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+  overflow: hidden;
+}
+
+.my-logos-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.my-logos-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.my-logos-card:hover .my-logos-remove {
+  opacity: 1;
+}
+
+.my-logos-remove:hover {
+  background: var(--danger);
+}
+
+.my-logos-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.my-logos-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.my-logos-actions button {
+  height: 24px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.my-logos-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.my-logos-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .template-library-grid {
   flex: 1;
   min-height: 0;
@@ -1292,7 +1457,9 @@ body {
    stacked on the border as a heavy double frame. */
 .media-search-input:focus-visible,
 .ai-dubber-voice-search:focus-visible,
-.settings-dialog-search:focus-visible {
+.settings-dialog-search:focus-visible,
+.titlebar-project-input:focus-visible,
+.home-card-rename:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -1322,17 +1489,19 @@ body {
   justify-content: center;
   width: 30px;
   height: 30px;
-  background: var(--surface);
+  /* No box of their own: just the icon on the panel. */
+  background: transparent;
   color: var(--text-dim);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
   outline: none;
+  transition: color 0.12s ease, background 0.12s ease;
 }
 
 .media-icon-button:hover {
   color: var(--text);
-  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .media-icon-button-active {
@@ -1346,8 +1515,8 @@ body {
   display: flex;
   gap: 1px;
   padding: 1px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
 }
 
@@ -1424,19 +1593,22 @@ body {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* CapCut-sized cards: as many ~100px columns as fit. */
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   align-content: start;
-  gap: 8px;
+  gap: 10px 8px;
 }
 
+/* CapCut's media card: the picture itself (rounded, "Added" and the length
+   on it), the name in small grey under it -- no box around either. */
 .media-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   cursor: pointer;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  padding: 4px;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   /* Without this, a grid item's default min-width:auto lets a large-
      intrinsic-size <img> inside .media-card-thumb push this column wider
      than its intended 1fr share -- "grid blowout" -- breaking the uniform
@@ -1444,26 +1616,22 @@ body {
   min-width: 0;
 }
 
-.media-card:hover {
-  background: var(--surface);
-}
-
-.media-card-selected {
-  border-color: var(--accent);
-  background: var(--surface);
-}
-
-.media-card-multi-selected {
+.media-card-selected .media-card-thumb,
+.media-card-multi-selected .media-card-thumb {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+.media-card:hover .media-card-thumb img {
+  filter: brightness(1.08);
 }
 
 .media-card-thumb {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 16 / 11;
   background: var(--chrome-well);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -1497,15 +1665,25 @@ body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-.media-card-duration {
+.media-card-duration,
+.media-card-added {
   position: absolute;
-  bottom: 4px;
-  right: 4px;
-  background: rgba(0, 0, 0, 0.7);
+  top: 5px;
   color: #fff;
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.media-card-duration {
+  right: 6px;
+}
+
+.media-card-added {
+  left: 6px;
 }
 
 .media-card-progress-overlay {
@@ -1542,15 +1720,13 @@ body {
 }
 
 .media-card-name {
-  font-size: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-align: center;
-  padding: 3px 5px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  text-align: left;
+  padding: 0 2px;
 }
 
 .media-progress-track {
@@ -1584,6 +1760,15 @@ body {
   padding: 0 2px;
 }
 
+.media-card-actions-on-hover {
+  visibility: hidden;
+}
+
+.media-card:hover .media-card-actions-on-hover,
+.media-row:hover .media-card-actions-on-hover {
+  visibility: visible;
+}
+
 .media-card-actions button {
   background: transparent;
   border: 1px solid var(--border);
@@ -1594,77 +1779,84 @@ body {
   cursor: pointer;
 }
 
+/* Hover buttons on a media card: small rounded squares with crisp line
+   icons -- add (accent) bottom right, delete (dark glass, red on hover)
+   bottom left. */
 .media-thumb-add-button {
   position: absolute;
   bottom: 6px;
   right: 6px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--ai);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--accent);
   color: #fff;
   border: none;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   opacity: 0;
-  transform: scale(0.85);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  transform: translateY(2px);
+  transition: opacity 0.14s ease, transform 0.14s ease, background 0.14s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.media-thumb-add-button svg {
+  stroke-width: 2.4;
 }
 
 .media-card:hover .media-thumb-add-button,
 .media-row:hover .media-thumb-add-button {
   opacity: 1;
-  transform: scale(1);
+  transform: none;
 }
 
 .media-thumb-add-button:hover {
-  filter: brightness(1.15);
+  background: var(--accent-hover);
 }
 
 .media-row-thumb .media-thumb-add-button {
   width: 16px;
   height: 16px;
-  font-size: 11px;
+  border-radius: 4px;
   bottom: 2px;
   right: 2px;
 }
 
 .media-thumb-delete-button {
   position: absolute;
-  top: 5px;
-  left: 5px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: rgba(7, 11, 16, 0.75);
-  color: var(--text-dim);
-  border: none;
-  font-size: 11px;
-  line-height: 1;
+  bottom: 6px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: rgba(10, 13, 20, 0.62);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   opacity: 0;
-  transform: scale(0.85);
-  transition: opacity 0.12s ease, transform 0.12s ease, color 0.12s ease, background 0.12s ease;
+  transform: translateY(2px);
+  transition: opacity 0.14s ease, transform 0.14s ease, color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
 }
 
 .media-card:hover .media-thumb-delete-button,
 .media-row:hover .media-thumb-delete-button {
   opacity: 1;
-  transform: scale(1);
+  transform: none;
 }
 
 .media-thumb-delete-button:hover {
   color: #fff;
   background: var(--danger);
+  border-color: transparent;
 }
 
 .media-row .media-thumb-delete-button {
@@ -1673,6 +1865,9 @@ body {
   transform: none;
   flex-shrink: 0;
   background: none;
+  border: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   width: auto;
   height: auto;
   font-size: 13px;
@@ -2347,6 +2542,97 @@ body {
   inset: 0;
   overflow: hidden;
   border-radius: inherit;
+}
+
+/* The selected picture's frame (ClipTransformGizmo), CapCut style: a cyan
+   outline with centre lines, white corner dots to size it and a round
+   handle underneath to turn it. Outside .preview-stage-clip so the
+   handles are not cut off at the picture's edge. */
+.clip-gizmo {
+  position: absolute;
+  z-index: 30;
+  box-sizing: border-box;
+  border: 1px solid #22d3ee;
+  cursor: move;
+  touch-action: none;
+}
+
+.clip-gizmo-cross {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(34, 211, 238, 0.75);
+}
+
+.clip-gizmo-cross-v {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.clip-gizmo-cross-h {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.clip-gizmo-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.clip-gizmo-nw { left: 0; top: 0; cursor: nwse-resize; }
+.clip-gizmo-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.clip-gizmo-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.clip-gizmo-sw { left: 0; top: 100%; cursor: nesw-resize; }
+
+.clip-gizmo-rotate {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 14px);
+  width: 20px;
+  height: 20px;
+  margin-left: -10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  color: #10131a;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  cursor: grab;
+}
+
+.clip-gizmo-rotate:active {
+  cursor: grabbing;
+}
+
+/* Snapped to the centre: a guide across the whole frame. */
+.clip-gizmo-guide {
+  position: absolute;
+  z-index: 29;
+  pointer-events: none;
+  background: #22d3ee;
+}
+
+.clip-gizmo-guide-v {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.clip-gizmo-guide-h {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
 }
 
 /* Overlay video/image tracks (PreviewPlayer.tsx's SecondaryTrackMedia, spec
@@ -4250,6 +4536,41 @@ body {
   cursor: pointer;
 }
 
+.export-section-name {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.export-audio-off {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #ffd27a;
+  background: rgba(232, 180, 90, 0.12);
+  border: 1px solid rgba(232, 180, 90, 0.45);
+  border-radius: var(--radius-sm);
+}
+
+.export-audio-off button {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
 .export-section-header {
   display: flex;
   align-items: center;
@@ -5538,10 +5859,11 @@ body {
   align-items: center;
   gap: 5px;
   padding: 3px 9px;
-  border: 1px dashed var(--border-strong);
+  /* Always in its lit look (it used to show only on hover). */
+  border: 1px dashed var(--tool-active);
   border-radius: 6px;
   background: var(--surface-elevated);
-  color: var(--text-dim);
+  color: var(--text);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
@@ -5550,8 +5872,7 @@ body {
 }
 
 .timeline-cover-button:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--tool-active);
+  background: var(--tool-active-soft);
 }
 
 .timeline-cover-button-saving {
@@ -5957,6 +6278,29 @@ body {
 }
 
 /* Icon column: a fixed slot so every label starts on the same x. */
+.cover-menu-current {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.cover-menu-current img {
+  width: 160px;
+  max-height: 110px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+
+.cover-menu .cover-menu-remove {
+  color: var(--danger);
+}
+
 .context-menu-popover .track-menu-item {
   display: flex;
   align-items: center;
@@ -6195,7 +6539,7 @@ body {
 .video-filmstrip {
   position: absolute;
   inset: 0;
-  display: flex;
+  overflow: hidden;
 }
 
 .video-filmstrip-error {
@@ -6209,16 +6553,13 @@ body {
 }
 
 .video-filmstrip-frame {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  border-right: 1px solid rgba(0, 0, 0, 0.35);
-}
-
-.video-filmstrip-frame:last-child {
-  border-right: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.04);
+  background-position: left center;
+  background-repeat: repeat-x;
+  background-size: auto 100%;
 }
 
 .timeline-video-label {
@@ -9998,7 +10339,8 @@ body {
 .project-details-button {
   height: 28px;
   padding: 0 14px;
-  background: var(--surface-elevated);
+  /* No fill of its own -- just the outline (Save keeps its accent fill). */
+  background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -10009,7 +10351,8 @@ body {
 }
 
 .project-details-button:hover {
-  background: var(--surface-hover);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-strong);
 }
 
 .project-details-button-primary {
@@ -12500,6 +12843,103 @@ body {
   color: var(--text-dim);
 }
 
+/* AI Dubber's list tools: one grid of equal buttons, three to a row. */
+.ai-dubber-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ai-dubber-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.ai-dubber-tool span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ai-dubber-tool svg {
+  flex-shrink: 0;
+}
+
+.ai-dubber-tool:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--border-strong);
+}
+
+.ai-dubber-tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-dubber-tool-primary {
+  color: #fff;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ai-dubber-tool-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-color: var(--accent);
+}
+
+.ai-dubber-tool-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Each tool its own colour: the icon and label in it, a faint tint and
+   edge of it behind -- told apart at a glance. */
+.ai-dubber-tool-blue { --tool: #4da3ff; }
+.ai-dubber-tool-amber { --tool: #f5b041; }
+.ai-dubber-tool-violet { --tool: #b48cff; }
+.ai-dubber-tool-teal { --tool: #2fd3c4; }
+.ai-dubber-tool-slate { --tool: #9aa7b8; }
+.ai-dubber-tool-red { --tool: #ff6b6b; }
+
+.ai-dubber-tool[class*='ai-dubber-tool-']:not(.ai-dubber-tool-primary) {
+  color: var(--tool, var(--text-dim));
+  background: color-mix(in srgb, var(--tool, transparent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--tool, var(--border)) 35%, transparent);
+}
+
+.ai-dubber-tool[class*='ai-dubber-tool-']:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--tool, var(--accent)) 28%, transparent);
+  border-color: var(--tool, var(--accent));
+}
+
+.ai-dubber-tool.ai-dubber-tool-on {
+  color: #fff;
+  background: color-mix(in srgb, var(--tool, var(--accent)) 32%, transparent);
+  border-color: var(--tool, var(--accent));
+}
+
+.ai-dubber-tool-danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
 .ai-dubber-performance-bar {
   display: flex;
   flex-wrap: wrap;
@@ -12649,14 +13089,29 @@ body {
    Detect Gender -- with the title never wrapping (the old 1fr/auto/1fr
    grid squeezed "Voice Model" onto two lines at the panel's default
    width). */
+/* Engine switch and Detect Gender on one line; should the panel ever be
+   too narrow for both, Detect Gender moves under it rather than being cut
+   off at the right edge. */
 .ai-dubber-voice-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 6px 5px;
   margin: -12px -16px 0;
   padding: 8px 10px 8px 14px;
   background: var(--toolbar-bg);
   min-width: 0;
+}
+
+/* The engine switch and Detect Gender share the header line: the switch
+   takes the room Detect Gender leaves, its three engines equal. */
+.ai-dubber-voice-header .ai-dubber-engine-switch {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-dubber-voice-header .ai-dubber-engine-option {
+  flex: 1 1 0;
 }
 
 .ai-dubber-voice-header h3 {
@@ -15138,8 +15593,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 11px 12px;
-  min-height: 56px;
+  padding: 8px 12px;
+  min-height: 44px;
   background: var(--toolbar-bg);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
@@ -15260,9 +15715,10 @@ body {
 
 .home-list-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px 12px;
   margin-bottom: 14px;
 }
 
@@ -15279,6 +15735,8 @@ body {
 
 .home-list-tools {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
 }
@@ -15343,6 +15801,104 @@ body {
 .home-tool-button-danger:hover {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.home-tool-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.home-tool-button-danger-solid {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.home-tool-button-danger-solid:hover {
+  color: #fff;
+  border-color: var(--danger);
+  filter: brightness(1.1);
+}
+
+/* Select mode's bar in the list header. */
+.home-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-select-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* A small round tick: empty, or filled with a check. */
+.home-check,
+.home-card-tick {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+}
+
+.home-check-on,
+.home-card-tick-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.home-check-on::after,
+.home-card-tick-on::after {
+  content: '';
+  position: absolute;
+  left: 3.5px;
+  top: 1px;
+  width: 3.5px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(45deg);
+}
+
+/* On a card in Select mode: top-left of the picture. */
+.home-card-tick {
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  left: 7px;
+  width: 20px;
+  height: 20px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.home-card-tick-on {
+  background: var(--accent);
+}
+
+.home-card-tick-on::after {
+  left: 6px;
+  top: 2.5px;
+  width: 5px;
+  height: 10px;
+  border-width: 0 2.2px 2.2px 0;
+}
+
+.home-card-ticked .home-card-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The open project cannot be picked in Select mode. */
+.home-card-locked {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .home-empty {
@@ -15452,13 +16008,16 @@ body {
 
 .home-card-rename {
   width: 100%;
-  padding: 3px 6px;
+  height: 26px;
+  padding: 0 8px;
   border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: var(--surface);
+  border-radius: 7px;
+  background: var(--surface-elevated, var(--surface));
   color: var(--text);
   font-size: 13px;
   font-weight: 600;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .home-card-menu-wrap {
@@ -16109,6 +16668,33 @@ body {
   box-shadow: 0 0 0 1px rgba(180, 215, 255, 0.35), 0 0 6px rgba(96, 165, 250, 0.3);
 }
 
+/* Settings gears spin while the mouse is on their button. */
+@keyframes settings-gear-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+button:hover:not(:disabled) .icon-settings-gear {
+  animation: settings-gear-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:hover:not(:disabled) .icon-settings-gear {
+    animation: none;
+  }
+}
+
+/* The yin-yang's canvas is wider than its disc (the disc is a third of
+   it, the rest is room for the energy): centred on the same spot, no ring. */
+.recap-yinyang {
+  --orb: 60px;
+  left: calc(var(--globe-x) - var(--orb) / 2);
+  margin-top: calc(var(--orb) / -2);
+  border-radius: 0;
+  box-shadow: none;
+}
+
 /* AI Animation tab -- same slate/teal language as the AI Story panel. */
 .ai-animation { display: flex; flex-direction: column; gap: 11px; }
 .ai-animation .video-story-context-label textarea { min-height: 84px; }
@@ -16483,10 +17069,19 @@ body {
 }
 
 /* AI Dubber setup: the one Add Video & SRT button, in the header under
-   the title. */
+   the title -- a small one-line button (the file types are its tooltip). */
 .ai-dubber-setup-header-add {
-  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  align-self: flex-start;
+  width: auto;
   margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.ai-dubber-setup-header-add .ai-dubber-setup-add-button-title {
+  font-size: 12px;
 }
 
 /* Auto SRT panel: over the app, dimmed backdrop behind. */
@@ -16595,6 +17190,46 @@ body {
 .auto-srt-list .ai-dubber-remove-srt-button:disabled,
 .auto-srt-actions .ai-dubber-episodes-primary:disabled {
   opacity: 0.45;
+  cursor: default;
+}
+
+.auto-srt-source {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.auto-srt-source-label {
+  margin-right: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.auto-srt-source-option {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.auto-srt-source-option:hover:not(:disabled) {
+  color: var(--text, #fff);
+}
+
+.auto-srt-source-option.active {
+  color: #fff;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.auto-srt-source-option:disabled {
+  opacity: 0.55;
   cursor: default;
 }
 

@@ -874,7 +874,7 @@ function ClipTrackImpl({
 
             <div className="clip-track-clip-body" style={{ height: bodyHeightPx }}>
               {clip.type === 'video' && media && (
-                <VideoFilmstrip src={media.proxyUrl ?? media.originalUrl} duration={clip.duration * clipRate(clip)} widthPx={widthPx} startOffset={clip.sourceIn} />
+                <VideoFilmstrip src={media.proxyUrl ?? media.originalUrl} duration={clip.duration * clipRate(clip)} widthPx={widthPx} startOffset={clip.sourceIn} poster={media.thumbnailUrl} />
               )}
               {clip.type === 'image' && media?.thumbnailUrl && <img className="clip-track-clip-thumb" src={media.thumbnailUrl} alt="" draggable={false} />}
               {isAudio && showWaveforms && (

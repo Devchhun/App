@@ -75,6 +75,14 @@ describe('clamp helpers', () => {
   })
 })
 
+describe('skimmer on by default', () => {
+  it('turns an old stored off on once, but keeps an off chosen since', () => {
+    expect(parseStoredTimelineViewPrefs(null).skimmerOn).toBe(true)
+    expect(parseStoredTimelineViewPrefs(JSON.stringify({ skimmerOn: false })).skimmerOn).toBe(true)
+    expect(parseStoredTimelineViewPrefs(JSON.stringify({ skimmerOn: false, skimmerOnV2: true })).skimmerOn).toBe(false)
+  })
+})
+
 describe('showWaveforms one-time reset', () => {
   it('turns an old stored off back on, but keeps an off chosen since', () => {
     expect(parseStoredTimelineViewPrefs(JSON.stringify({ showWaveforms: false })).showWaveforms).toBe(true)

@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { TimelineTrack } from '@shared/timelineTracks'
 import { useSequence } from '../sequence/SequenceContext'
 import { useScenes } from '../scenes/SceneContext'
@@ -234,51 +235,72 @@ export function TimelineTrackHeaders({ tracks, iconKindByTrackId, trackHasConten
   )
 }
 
-/** CapCut's "Cover" tab: the frame under the playhead becomes the
- * project's cover -- the picture its Home card
- * shows. Saved as a PNG beside the app's other generated files. */
+/** CapCut's "Cover": the video's thumbnail -- the picture a folder or
+ * player shows before it plays, and the project's card on Home. Either the
+ * frame under the playhead, or a picture made for it (Choose image).
+ * Exports carry it as their cover art (app/main/media/export.ts). */
 function CoverButton(): JSX.Element {
   const { captureFrame } = usePlaybackControls()
-  const { projectId, setCover } = useProject()
+  const { projectId, setCover, coverPath } = useProject()
   const confirm = useConfirm()
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [menuAt, setMenuAt] = useState<{ left: number; top: number } | null>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The current cover, shown at the top of the menu. */
+  const [coverUrl, setCoverUrl] = useState<string | null>(null)
 
-  const setCoverFromPlayhead = async (): Promise<void> => {
+  useEffect(() => {
+    let alive = true
+    if (!coverPath) setCoverUrl(null)
+    else void window.api.media.imageUrl(coverPath).then((url) => alive && setCoverUrl(url))
+    return () => {
+      alive = false
+    }
+  }, [coverPath])
+
+  useEffect(() => {
+    if (!menuAt) return
+    const close = (e: Event): void => {
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return
+      if (e.type === 'pointerdown' && (e.target as HTMLElement).closest?.('.cover-menu, .timeline-cover-button')) return
+      setMenuAt(null)
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', close)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('keydown', close)
+    }
+  }, [menuAt])
+
+  /** Runs `make` (which returns the cover's file, or null to stop), then
+   * makes it the cover and says so. */
+  const applyCover = async (make: () => Promise<string | null>): Promise<void> => {
+    setMenuAt(null)
     if (status === 'saving') return
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
     setStatus('saving')
     try {
-      const dataUrl = captureFrame()
-      if (!dataUrl) {
-        setStatus('error')
-        await confirm({
-          title: 'No frame for the cover',
-          message: 'Move the playhead onto a visible video or image frame in Project Preview, then press Cover again.',
-          confirmLabel: 'OK',
-          hideCancel: true
-        })
+      const savedPath = await make()
+      if (!savedPath) {
+        setStatus('idle')
         return
       }
-      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
-      const binary = atob(base64)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-      const savedPath = await window.api.media.saveGeneratedFile(`cover-${projectId ?? 'project'}.png`, bytes)
       setCover(savedPath)
       setStatus('saved')
       await confirm({
-        title: 'Project cover updated',
-        message: 'The frame under the playhead is now this project’s cover on the Home screen.',
-        confirmLabel: 'OK',
+        title: 'បានដាក់ Cover រួចហើយ',
+        message: 'រូបនេះឥឡូវជា Cover៖ ជារូប thumbnail របស់ video ដែលអ្នក Export (រូបដែល folder ឬ player បង្ហាញមុនពេលចាក់ video) និងជារូបរបស់ project នេះនៅលើទំព័រ Home។',
+        confirmLabel: 'យល់ព្រម',
         hideCancel: true
       })
     } catch (error) {
       setStatus('error')
       await confirm({
-        title: 'Could not set cover',
-        message: error instanceof Error ? error.message : 'The current frame could not be saved. Please try another frame.',
-        confirmLabel: 'OK',
+        title: 'ដាក់ Cover មិនបាន',
+        message: error instanceof Error ? error.message : 'មិនអាចរក្សាទុករូបបានទេ។ សូមព្យាយាមម្តងទៀត។',
+        confirmLabel: 'យល់ព្រម',
         hideCancel: true
       })
     } finally {
@@ -286,22 +308,109 @@ function CoverButton(): JSX.Element {
     }
   }
 
+  const fromPlayhead = (): Promise<void> =>
+    applyCover(async () => {
+      const dataUrl = captureFrame()
+      if (!dataUrl) {
+        setStatus('error')
+        await confirm({
+          title: 'គ្មានរូបសម្រាប់ Cover',
+          message: 'សូមដាក់ playhead លើរូប video ឬរូបភាពដែលមើលឃើញក្នុង Project Preview រួចព្យាយាមម្តងទៀត — ឬប្រើ «ជ្រើសរូបភាព…»។',
+          confirmLabel: 'យល់ព្រម',
+          hideCancel: true
+        })
+        return null
+      }
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      const binary = atob(base64)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+      return window.api.media.saveGeneratedFile(`cover-${projectId ?? 'project'}.png`, bytes)
+    })
+
+  const fromImage = (): Promise<void> => applyCover(() => window.api.media.pickCoverImage())
+
+  /** Set by mistake: no cover again (exports without cover art, Home shows
+   * the video's own picture). */
+  const removeCover = async (): Promise<void> => {
+    setMenuAt(null)
+    const ok = await confirm({
+      title: 'ដក Cover ចេញ?',
+      message: 'Video ដែល Export បន្ទាប់នឹងគ្មាន Cover (thumbnail) ទេ ហើយ project នៅលើទំព័រ Home នឹងបង្ហាញរូបពី video វិញ។ អ្នកអាចដាក់ Cover ថ្មីបានពេលណាក៏បាន។',
+      confirmLabel: 'ដកចេញ',
+      cancelLabel: 'បោះបង់',
+      danger: true
+    })
+    if (!ok) return
+    setCover(null)
+    setStatus('idle')
+  }
+
+  const openMenu = (): void => {
+    if (menuAt) {
+      setMenuAt(null)
+      return
+    }
+    const box = buttonRef.current?.getBoundingClientRect()
+    if (box) setMenuAt({ left: box.left, top: box.bottom + 4 })
+  }
+
   return (
-    <button
-      type="button"
-      className={`timeline-cover-button timeline-cover-button-${status}`}
-      title="Set this frame as the project cover (shown on the Home screen)"
-      disabled={status === 'saving'}
-      aria-live="polite"
-      onClick={(e) => {
-        e.stopPropagation()
-        void setCoverFromPlayhead()
-      }}
-    >
-      <svg width={13} height={13} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <path d="M4 14.5V16h1.5L15 6.5 13.5 5zM11.5 7l1.5 1.5" />
-      </svg>
-      {status === 'saving' ? 'Saving…' : status === 'saved' ? 'Cover set' : status === 'error' ? 'Try again' : 'Cover'}
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`timeline-cover-button timeline-cover-button-${status}`}
+        title={coverPath ? 'ប្តូរ Cover (រូប thumbnail របស់ video ដែល Export)' : 'ដាក់ Cover៖ រូប thumbnail របស់ video ដែល Export'}
+        disabled={status === 'saving'}
+        aria-live="polite"
+        aria-haspopup="menu"
+        aria-expanded={!!menuAt}
+        onClick={(e) => {
+          e.stopPropagation()
+          openMenu()
+        }}
+      >
+        <svg width={13} height={13} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M4 14.5V16h1.5L15 6.5 13.5 5zM11.5 7l1.5 1.5" />
+        </svg>
+        {status === 'saving' ? 'កំពុងរក្សាទុក…' : status === 'saved' ? 'បានដាក់ Cover' : status === 'error' ? 'ព្យាយាមម្តងទៀត' : 'Cover'}
+      </button>
+      {menuAt &&
+        createPortal(
+          <div className="context-menu-popover cover-menu" role="menu" style={{ left: menuAt.left, top: menuAt.top }}>
+            {coverUrl && (
+              <div className="cover-menu-current">
+                <img src={coverUrl} alt="" draggable={false} />
+                <span>Cover បច្ចុប្បន្ន</span>
+              </div>
+            )}
+            <button type="button" role="menuitem" className="track-menu-item" onClick={() => void fromImage()}>
+              <svg width={14} height={14} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <rect x="3" y="4" width="14" height="12" rx="2" />
+                <circle cx="7.5" cy="8.5" r="1.4" />
+                <path d="M3.5 14.5l4-4 3 3 2-2 4 3.5" />
+              </svg>
+              ជ្រើសរូបភាព…
+            </button>
+            <button type="button" role="menuitem" className="track-menu-item" onClick={() => void fromPlayhead()}>
+              <svg width={14} height={14} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <rect x="3" y="5" width="14" height="10" rx="1.5" />
+                <path d="M10 3v14" />
+              </svg>
+              យក frame ត្រង់ playhead
+            </button>
+            {coverPath && (
+              <button type="button" role="menuitem" className="track-menu-item cover-menu-remove" onClick={() => void removeCover()}>
+                <svg width={14} height={14} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M4 6h12M8 6V4.5h4V6M6 6l.7 10a1 1 0 0 0 1 1h4.6a1 1 0 0 0 1-1L14 6" />
+                </svg>
+                ដក Cover ចេញ
+              </button>
+            )}
+          </div>,
+          document.body
+        )}
+    </>
   )
 }

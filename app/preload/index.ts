@@ -1,4 +1,4 @@
-import type { RemoveBackgroundProgress, RemoveBackgroundResult } from '@shared/media'
+import type { LogoTemplate, RemoveBackgroundProgress, RemoveBackgroundResult } from '@shared/media'
 import { KIRI_IPC, type KiriCloneResult, type KiriListResult } from '@shared/kiriTts'
 import type { ExportOverlay } from '@shared/videoOverlay'
 import { AI_ANIMATION_IPC, type AnimationIpcResult, type AnimationProgress, type AnimationRequest } from '@shared/aiAnimation'
@@ -66,6 +66,10 @@ const mediaApi = {
   retryJob: (mediaId: string): Promise<void> => ipcRenderer.invoke(MEDIA_IPC.retryJob, mediaId),
   getFfmpegStatus: (): Promise<FfmpegAvailability> => ipcRenderer.invoke(MEDIA_IPC.ffmpegStatus),
   rehydrate: (sources: MediaSource[]): Promise<MediaItem[]> => ipcRenderer.invoke(MEDIA_IPC.rehydrate, sources),
+  pickCoverImage: (): Promise<string | null> => ipcRenderer.invoke(MEDIA_IPC.pickCoverImage),
+  listLogoTemplates: (): Promise<LogoTemplate[]> => ipcRenderer.invoke(MEDIA_IPC.listLogoTemplates),
+  addLogoTemplate: (): Promise<LogoTemplate | null> => ipcRenderer.invoke(MEDIA_IPC.addLogoTemplate),
+  removeLogoTemplate: (id: string): Promise<void> => ipcRenderer.invoke(MEDIA_IPC.removeLogoTemplate, id),
   saveGeneratedFile: (fileName: string, data: Uint8Array): Promise<string> =>
     ipcRenderer.invoke(MEDIA_IPC.saveGeneratedFile, fileName, data),
   saveStillFrame: (dirPath: string, fileName: string, data: Uint8Array): Promise<string> => ipcRenderer.invoke(MEDIA_IPC.saveStillFrame, { dirPath, fileName, data }),

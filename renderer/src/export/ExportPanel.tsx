@@ -43,10 +43,16 @@ interface SectionHeaderProps {
 function SectionHeader({ label, checked, onCheckedChange, expanded, onToggleExpand, disabled = false }: SectionHeaderProps): JSX.Element {
   return (
     <div className="export-section-title export-section-header">
-      <label className="export-checkbox-label">
-        <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onCheckedChange(e.target.checked)} />
-        <span>{label}</span>
-      </label>
+      {/* Only the box turns the section on or off: the name opens it. The
+          name used to be part of the checkbox's label, and clicking "Audio"
+          to see its settings switched the sound off -- three 47-minute
+          exports came out silent. */}
+      <span className="export-checkbox-label">
+        <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={(e) => onCheckedChange(e.target.checked)} />
+        <button type="button" className="export-section-name" onClick={onToggleExpand}>
+          {label}
+        </button>
+      </span>
       <button type="button" className="export-section-chevron" onClick={onToggleExpand} title={expanded ? 'Collapse' : 'Expand'}>
         {expanded ? '⌃' : '⌄'}
       </button>
@@ -91,7 +97,7 @@ export function ExportPanel(): JSX.Element | null {
   const { sequence } = useSequence()
   const { brandPreset } = useBrandPreset()
   const { scenesByMedia } = useScenes()
-  const { projectName } = useProject()
+  const { projectName, coverPath } = useProject()
   const { isOpen, closeDialog, capabilities, options, setOptions, pickOutputDir, phase, progress, startExport, cancelExport, resetToForm } = useExport()
   const aiDubber = useAiDubber()
   const [expanded, setExpanded] = useState({ video: true, audio: false, gif: false, srt: false })
@@ -140,6 +146,10 @@ export function ExportPanel(): JSX.Element | null {
   const srtLineCount = aiDubber.segments.length
   const mediaExport = (options.includeVideo || options.includeAudio) && durationSeconds > 0
   const srtExport = options.exportSrt && srtLineCount > 0
+  // Sound on the Timeline that this export would leave out.
+  const hiddenOrMuted = new Set(sequence.tracks.filter((t) => t.hidden || t.muted).map((t) => t.id))
+  const timelineHasSound = sequence.clips.some((c) => !hiddenOrMuted.has(c.trackId) && !c.muted && (c.type === 'audio' || c.type === 'video') && (c.volume ?? 1) > 0)
+  const silentVideo = options.includeVideo && !options.includeAudio && timelineHasSound
   const exportDisabled = !options.outputDir || (!mediaExport && !srtExport)
   const exportName = options.name || projectName || 'export'
   const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)))
@@ -165,7 +175,8 @@ export function ExportPanel(): JSX.Element | null {
         return { start: scene.startTime, end: scene.endTime, text: scene.visualText, position: scene.position ?? PLAIN_TEXT_POSITION, look: plainTextLook(scene), fadeInSeconds: fade.fadeIn, fadeOutSeconds: fade.fadeOut }
       })
     const overlay = exportOverlayFor(aiDubber.videoOverlay, aiDubber.overlayLines)
-    startExport(sequence, mediaById, brandPreset.defaultAspectRatio, texts.length > 0 ? { ...overlay, texts } : overlay)
+    const withTexts = texts.length > 0 ? { ...overlay, texts } : overlay
+    startExport(sequence, mediaById, brandPreset.defaultAspectRatio, coverPath ? { ...withTexts, coverPath } : withTexts)
   }
   const codecAvailable = (codec: ExportCodec): boolean => !capabilities || capabilities.availableCodecs.length === 0 || capabilities.availableCodecs.includes(codec)
   const openShareSite = (): void => {
@@ -240,6 +251,14 @@ export function ExportPanel(): JSX.Element | null {
                 {srtResult?.error && <div className="voiceover-recorder-error">SRT not saved: {srtResult.error}</div>}
               </div>
             </div>
+            {silentVideo && (
+              <div className="export-audio-off" role="alert">
+                <span>⚠ Audio is off — the video will have no sound.</span>
+                <button type="button" onClick={() => setOptions({ includeAudio: true })}>
+                  Turn Audio on
+                </button>
+              </div>
+            )}
             <div className="export-modal-footer">
               <span className="export-footer-stats">▦&nbsp; Duration: {formatDuration(durationSeconds)} <i /> Size: about {estimatedSizeMB < 1 ? '< 1' : Math.round(estimatedSizeMB)} MB</span>
               <div className="export-footer-actions"><button className="export-cancel-button" onClick={closeDialog}>Cancel</button><button className="export-primary-button" disabled={exportDisabled} onClick={() => void handleExport()}>Export</button></div>

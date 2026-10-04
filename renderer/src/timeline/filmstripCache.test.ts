@@ -6,15 +6,18 @@ import {
   writeFilmstripCache,
   clearFilmstripCache,
   filmstripCacheSize,
-  FILMSTRIP_CACHE_LIMIT
+  FILMSTRIP_CACHE_LIMIT,
+  captureOrder,
+  frameForSlot,
+  nextSlotToCapture
 } from './filmstripCache'
 
 beforeEach(() => clearFilmstripCache())
 
 describe('frameCountForWidth', () => {
-  it('scales with width, roughly one frame per 100px', () => {
-    expect(frameCountForWidth(500)).toBe(5)
-    expect(frameCountForWidth(1200)).toBe(12)
+  it('scales with width, roughly one frame per 80px', () => {
+    expect(frameCountForWidth(800)).toBe(10)
+    expect(frameCountForWidth(1200)).toBe(15)
   })
 
   it('never drops below 4, so a short clip still reads as a filmstrip', () => {
@@ -23,17 +26,17 @@ describe('frameCountForWidth', () => {
   })
 
   it('caps out, so zooming a long clip way in cannot ask for hundreds of decodes', () => {
-    expect(frameCountForWidth(100_000)).toBe(40)
+    expect(frameCountForWidth(1_000_000)).toBe(4000)
   })
 
   it('is stable across small width changes -- the whole point of keying on it', () => {
-    // A trim/zoom nudge within the same ~100px bucket must not invalidate
+    // A trim/zoom nudge within the same ~80px bucket must not invalidate
     // the cache entry and force a re-extraction. (Crossing a bucket boundary
     // legitimately does change the count, and should: the strip is being cut
     // into a different number of frames.)
-    expect(frameCountForWidth(610)).toBe(6)
-    expect(frameCountForWidth(640)).toBe(6)
-    expect(frameCountForWidth(649)).toBe(6)
+    expect(frameCountForWidth(484)).toBe(6)
+    expect(frameCountForWidth(500)).toBe(6)
+    expect(frameCountForWidth(519)).toBe(6)
   })
 })
 
@@ -93,5 +96,42 @@ describe('eviction', () => {
 
     expect(readFilmstripCache('k0')).toBeDefined()
     expect(readFilmstripCache('k1')).toBeUndefined()
+  })
+})
+
+describe('captureOrder', () => {
+  it('reads every slot once, coarse to fine', () => {
+    expect(captureOrder(9)).toEqual([0, 8, 4, 2, 6, 1, 3, 5, 7])
+    const order = captureOrder(40)
+    expect([...order].sort((a, b) => a - b)).toEqual(Array.from({ length: 40 }, (_, i) => i))
+    // After four reads the strip already spans its whole length.
+    expect(order.slice(0, 4)).toEqual([0, 32, 16, 8])
+  })
+
+  it('handles the smallest strips', () => {
+    expect(captureOrder(1)).toEqual([0])
+    expect(captureOrder(4)).toEqual([0, 2, 1, 3])
+  })
+})
+
+describe('frameForSlot', () => {
+  it('shows its own frame, else the nearest read one, else the thumbnail', () => {
+    const frames = ['a', null, null, 'd', null]
+    expect(frameForSlot(frames, 0)).toBe('a')
+    expect(frameForSlot(frames, 1)).toBe('a')
+    expect(frameForSlot(frames, 2)).toBe('d')
+    expect(frameForSlot(frames, 4)).toBe('d')
+    expect(frameForSlot([null, null], 1, 'thumb')).toBe('thumb')
+    expect(frameForSlot([null, null], 1)).toBeUndefined()
+  })
+})
+
+describe('nextSlotToCapture', () => {
+  it('reads only the slots on screen, coarse to fine', () => {
+    const order = captureOrder(9) // 0, 8, 4, 2, 6, 1, 3, 5, 7
+    expect(nextSlotToCapture(order, new Set(), { from: 5, to: 7 })).toBe(6)
+    expect(nextSlotToCapture(order, new Set([6]), { from: 5, to: 7 })).toBe(5)
+    // The rest wait until they scroll into view.
+    expect(nextSlotToCapture(order, new Set([5, 6, 7]), { from: 5, to: 7 })).toBeNull()
   })
 })

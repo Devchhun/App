@@ -8,6 +8,7 @@ import { PlaybackProvider } from './playback/PlaybackContext'
 import { TranscriptProvider } from './transcript/TranscriptContext'
 import { TranscriptPanel } from './transcript/TranscriptPanel'
 import { ProjectProvider } from './project/ProjectContext'
+import { useProjectSessionKey } from './project/projectSession'
 import { CorrectionDictionaryProvider } from './dictionary/CorrectionDictionaryContext'
 import { Timeline } from './timeline/Timeline'
 import { TimelineViewProvider, useTimelineView } from './timeline/TimelineViewContext'
@@ -50,7 +51,7 @@ import { ThemeProvider } from './nav/ThemeContext'
 import { SparkleIcon } from './nav/icons'
 import { HomeScreen } from './home/HomeScreen'
 import { AUTO_GENERATE_RECAP_VOICE_EVENT } from './aiScript/videoStoryEvents'
-import { EarthGlobe } from './recap/EarthGlobe'
+import { YinYangOrb } from './recap/YinYangOrb'
 import { AiAnimationPanel } from './aiAnimation/AiAnimationPanel'
 import { VideoStoryRecapControls } from './aiScript/VideoStoryRecapControls'
 
@@ -187,9 +188,10 @@ function RightSidebar(): JSX.Element {
         the narration outright (useRecapNarration); otherwise it opens the
         Recap Script panel so the missing piece can be added. */}
     <div className="recap-dock">
-      {/* The Earth sits in a bite taken out of the button's left end. */}
+      {/* The fire-and-ice yin-yang sits in a bite taken out of the
+          button's left end, its energy spilling over the edge. */}
       <div className={recap.blocker || recap.progress ? 'recap-launch' : 'recap-launch recap-launch-ready'}>
-      <EarthGlobe className="recap-globe" size={40} />
+      <YinYangOrb className="recap-globe recap-yinyang" size={60} />
       <button
         className={recap.blocker || recap.progress ? 'header-generate-button recap-button' : 'header-generate-button recap-button recap-button-ready'}
         title={
@@ -424,10 +426,13 @@ function TimelineFooter(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  // A new key per opened project: everything below starts afresh from it
+  // (see project/projectSession.ts).
+  const projectSession = useProjectSessionKey()
   return (
     <LicenseProvider>
       <LicenseGate>
-        <MediaProvider>
+        <MediaProvider key={projectSession}>
       <PlaybackProvider>
         <TranscriptProvider>
           <CorrectionDictionaryProvider>
