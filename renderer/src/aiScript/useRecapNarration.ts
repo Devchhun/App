@@ -32,6 +32,40 @@ function readScript(projectId: string | null): string {
   }
 }
 
+/** Puts `script` in the project's Recap Script (AiScriptPanel) -- after
+ * what is there, unless `replace` -- and tells an open panel. */
+export function storeRecapScript(projectId: string | null, script: string, replace = false): void {
+  if (typeof localStorage === 'undefined' || !script.trim()) return
+  try {
+    const current = replace ? '' : readScript(projectId).trim()
+    localStorage.setItem(`${STORAGE_PREFIX}${projectId ?? 'draft'}`, current ? `${current}\n\n${script}` : script)
+    markRecapScriptFilled(projectId)
+  } catch {
+    // Storage unavailable/full: the script stays on the Timeline as subtitles.
+  }
+  window.dispatchEvent(new Event(SCRIPT_CHANGED_EVENT))
+}
+
+const FILLED_PREFIX = 'cae-ai-script-filled-v1:'
+
+/** Whether the Recap Script was ever filled from AI Manga for this project --
+ * a box the user then cleared stays clear. */
+export function recapScriptWasFilled(projectId: string | null): boolean {
+  try {
+    return localStorage.getItem(`${FILLED_PREFIX}${projectId ?? 'draft'}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function markRecapScriptFilled(projectId: string | null): void {
+  try {
+    localStorage.setItem(`${FILLED_PREFIX}${projectId ?? 'draft'}`, '1')
+  } catch {
+    // Not remembered: at worst the box offers the text once more.
+  }
+}
+
 export type RecapNarrationBlocker = 'no-script' | 'no-narrator' | 'no-engine'
 
 export interface RecapProgress {

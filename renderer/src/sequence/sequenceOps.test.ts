@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  videoFilesInOrder,
+  setClipsMirrored,
+  setClipsPlacement,
+  hasVocalsRemoved,
+  insertClipShiftingAll,
   buildInsertedClips,
   insertClip,
   moveClip,
@@ -1427,6 +1432,21 @@ describe('an image can be dragged longer (it has no source end)', () => {
 })
 
 describe('addMirroredAudioClips', () => {
+  it('takes the place of another instrumental under the clip, so two never play together', () => {
+    const seq = {
+      ...createEmptySequence(),
+      clips: [
+        { id: 'v1', mediaId: 'film', type: 'video' as const, trackId: 'V1', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10, locked: false, muted: true },
+        { id: 'v2', mediaId: 'film', type: 'video' as const, trackId: 'V1', startTime: 10, duration: 10, sourceIn: 10, sourceOut: 20, locked: false },
+        { id: 'old', mediaId: 'whole', type: 'audio' as const, trackId: 'A1', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10, locked: false },
+        { id: 'other', mediaId: 'whole', type: 'audio' as const, trackId: 'A1', startTime: 10, duration: 10, sourceIn: 10, sourceOut: 20, locked: false },
+        { id: 'music', mediaId: 'song', type: 'audio' as const, trackId: 'A2', startTime: 0, duration: 10, sourceIn: 0, sourceOut: 10, locked: false }
+      ]
+    }
+    const next = addMirroredAudioClips(seq, ['v1'], 'at-lines', () => 'new', (mediaId) => mediaId === 'whole')
+    expect(next.clips.map((c) => c.id).sort()).toEqual(['music', 'new', 'other', 'v1', 'v2'])
+  })
+
   it('puts the instrumental under each clip exactly like the clip, and mutes the clip', () => {
     const seq = {
       ...createEmptySequence(),
@@ -1448,5 +1468,134 @@ describe('addMirroredAudioClips', () => {
     expect(next.clips.filter((c) => c.type === 'video').every((c) => c.muted)).toBe(true)
     // Pressed again: nothing doubled.
     expect(addMirroredAudioClips(next, ['v1', 'v2'], 'instrumental', () => `b${++n}`).clips.length).toBe(next.clips.length)
+  })
+})
+
+describe('insertClipShiftingAll', () => {
+  it('puts an episode in between two others and moves everything after it, on every track, by its length', () => {
+    const sequence: ProjectSequence = {
+      tracks: [],
+      markers: [
+        { id: 'k1', time: 5, name: '', color: 'red' } as never,
+        { id: 'k2', time: 12, name: '', color: 'red' } as never
+      ],
+      clips: [
+        videoClip({ id: 'ep5', mediaId: 'e5', startTime: 0, duration: 10 }),
+        videoClip({ id: 'ep7', mediaId: 'e7', startTime: 10, duration: 10 }),
+        // Dub lines under each episode, and music that starts under the first.
+        videoClip({ id: 'dub5', type: 'audio', trackId: 'A1', startTime: 2, duration: 3 }),
+        videoClip({ id: 'dub7', type: 'audio', trackId: 'A1', startTime: 11, duration: 3 }),
+        videoClip({ id: 'music', type: 'audio', trackId: 'A2', startTime: 8, duration: 6 })
+      ],
+      duration: 20
+    }
+    const result = insertClipShiftingAll(sequence, { mediaId: 'e6', type: 'video', sourceDurationSeconds: 7 }, 10, 'V1', makeId)
+    const at = (id: string): number => result.clips.find((c) => c.id === id)!.startTime
+    expect(at('ep5')).toBe(0)
+    expect(at('dub5')).toBe(2)
+    // Starts before the insert point: left where it is.
+    expect(at('music')).toBe(8)
+    expect(at('ep7')).toBe(17)
+    expect(at('dub7')).toBe(18)
+    const added = result.clips.find((c) => c.mediaId === 'e6')!
+    expect(added.startTime).toBe(10)
+    expect(added.duration).toBe(7)
+    expect(added.trackId).toBe('V1')
+    expect(result.markers.map((m) => m.time)).toEqual([5, 19])
+    expect(result.duration).toBe(computeSequenceDuration(result.clips))
+  })
+
+  it('is a plain append when nothing starts at or after the insert point', () => {
+    const sequence = seqOf([videoClip({ id: 'ep1', startTime: 0, duration: 10 })])
+    const result = insertClipShiftingAll(sequence, { mediaId: 'e2', type: 'video', sourceDurationSeconds: 4 }, 10, 'V1', makeId)
+    expect(result.clips.find((c) => c.id === 'ep1')!.startTime).toBe(0)
+    expect(result.clips.find((c) => c.mediaId === 'e2')!.startTime).toBe(10)
+    expect(result.duration).toBe(computeSequenceDuration(result.clips))
+  })
+})
+
+describe('videoFilesInOrder', () => {
+  const clip = (id: string, mediaId: string, startTime: number, type: TimelineClip['type'] = 'video'): TimelineClip => ({ id, mediaId, type, trackId: type === 'audio' ? 'A1' : 'V1', startTime, duration: 10, sourceIn: 0, sourceOut: 10, locked: false })
+
+  it('gives every video file once, in the order it first plays, with all of its clips', () => {
+    const clips = [clip('c3', 'ep2', 20), clip('c1', 'ep1', 0), clip('c2', 'ep1', 10), clip('a1', 'music', 0, 'audio'), clip('c4', 'silent', 30)]
+    expect(videoFilesInOrder(clips, (id) => id !== 'silent')).toEqual([
+      { mediaId: 'ep1', clipIds: ['c1', 'c2'] },
+      { mediaId: 'ep2', clipIds: ['c3'] }
+    ])
+  })
+})
+
+describe('hasVocalsRemoved', () => {
+  const clip = (id: string, mediaId: string, type: TimelineClip['type'], patch: Partial<TimelineClip> = {}): TimelineClip => ({ id, mediaId, type, trackId: type === 'audio' ? 'A1' : 'V1', startTime: 10, duration: 5, sourceIn: 0, sourceOut: 5, locked: false, ...patch })
+  const isInstrumental = (mediaId: string): boolean => mediaId.startsWith('inst')
+
+  it('knows a video already done: muted, its instrumental at its exact place', () => {
+    const video = clip('v', 'ep1', 'video', { muted: true })
+    expect(hasVocalsRemoved(video, [video, clip('a', 'inst1', 'audio')], isInstrumental)).toBe(true)
+    // Not muted, music elsewhere, or other sound under it: not done.
+    expect(hasVocalsRemoved({ ...video, muted: false }, [clip('a', 'inst1', 'audio')], isInstrumental)).toBe(false)
+    expect(hasVocalsRemoved(video, [clip('a', 'inst1', 'audio', { startTime: 20 })], isInstrumental)).toBe(false)
+    expect(hasVocalsRemoved(video, [clip('a', 'voice', 'audio')], isInstrumental)).toBe(false)
+  })
+
+  it('leaves done videos out of "all videos"', () => {
+    const done = clip('v1', 'ep1', 'video', { muted: true })
+    const todo = clip('v2', 'ep2', 'video', { startTime: 20 })
+    const clips = [done, todo, clip('a', 'inst1', 'audio')]
+    expect(videoFilesInOrder(clips, () => true, (c) => hasVocalsRemoved(c, clips, isInstrumental))).toEqual([{ mediaId: 'ep2', clipIds: ['v2'] }])
+  })
+})
+
+describe('setClipsMirrored', () => {
+  const clip = (id: string, type: TimelineClip['type'], patch: Partial<TimelineClip> = {}): TimelineClip => ({ id, mediaId: 'm', type, trackId: type === 'audio' ? 'A1' : 'V1', startTime: 0, duration: 2, sourceIn: 0, sourceOut: 2, locked: false, ...patch })
+
+  it('flips every picture among the clips in one pass, keeping their size; sound and locked clips stay', () => {
+    const seq = { ...createEmptySequence(), clips: [clip('v', 'video', { transform: { x: 0, y: 0, scaleX: 1.5, scaleY: 1.5, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 } }), clip('i', 'image'), clip('a', 'audio'), clip('l', 'video', { locked: true })] }
+    const on = setClipsMirrored(seq, ['v', 'i', 'a', 'l'], true)
+    expect(on.clips.find((c) => c.id === 'v')!.transform!.scaleX).toBe(-1.5)
+    expect(on.clips.find((c) => c.id === 'i')!.transform!.scaleX).toBe(-1)
+    expect(on.clips.find((c) => c.id === 'a')!.transform).toBeUndefined()
+    expect(on.clips.find((c) => c.id === 'l')!.transform).toBeUndefined()
+    const off = setClipsMirrored(on, ['v', 'i'], false)
+    expect(off.clips.find((c) => c.id === 'v')!.transform!.scaleX).toBe(1.5)
+    // Nothing to change: the same sequence back.
+    expect(setClipsMirrored(off, ['v'], false)).toBe(off)
+  })
+
+  it('is quick on a Timeline cut into thousands of clips', () => {
+    const clips = Array.from({ length: 5000 }, (_, i) => clip(`c${i}`, i % 2 ? 'audio' : 'video', { startTime: i, duration: 1 }))
+    const seq = { ...createEmptySequence(), clips }
+    const t0 = performance.now()
+    const out = setClipsMirrored(seq, clips.map((c) => c.id), true)
+    expect(performance.now() - t0).toBeLessThan(200)
+    expect(out.clips.filter((c) => (c.transform?.scaleX ?? 1) < 0)).toHaveLength(2500)
+  })
+})
+
+describe('setClipsPlacement', () => {
+  const T = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
+  const clip = (id: string, type: TimelineClip['type'], patch: Partial<TimelineClip> = {}): TimelineClip => ({ id, mediaId: 'm', type, trackId: type === 'audio' ? 'A1' : 'V1', startTime: 0, duration: 2, sourceIn: 0, sourceOut: 2, locked: false, ...patch })
+
+  it('gives every picture the same place and size, each keeping its own Mirror; sound, locked and keyframed properties stay', () => {
+    const seq = {
+      ...createEmptySequence(),
+      clips: [
+        clip('m', 'video', { transform: { ...T, scaleX: -1 } }),
+        clip('p', 'video'),
+        clip('k', 'video', { keyframes: { x: [{ id: 'a', time: 0, value: 5 }, { id: 'b', time: 1, value: 9 }] } }),
+        clip('a', 'audio'),
+        clip('l', 'video', { locked: true })
+      ]
+    }
+    const out = setClipsPlacement(seq, ['m', 'p', 'k', 'a', 'l'], { x: 40, scaleX: -0.6, scaleY: 0.6 })
+    const t = (id: string) => out.clips.find((c) => c.id === id)!.transform
+    expect(t('m')).toMatchObject({ x: 40, scaleX: -0.6, scaleY: 0.6, y: 0 })
+    expect(t('p')).toMatchObject({ x: 40, scaleX: 0.6, scaleY: 0.6 })
+    expect(t('k')).toMatchObject({ x: 0, scaleX: 0.6 })
+    expect(t('a')).toBeUndefined()
+    expect(t('l')).toBeUndefined()
+    // Nothing to change: the same sequence back.
+    expect(setClipsPlacement(out, ['m', 'p'], { x: 40 })).toBe(out)
   })
 })

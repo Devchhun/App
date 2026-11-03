@@ -1,5 +1,6 @@
 import { kiriVoiceId, kiriVoiceOf } from '@shared/kiriTts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { loadAutoSrtAtOnce } from './autoSrtAtOnce'
 import type { AutoSrtTextSource, DetectSpeakersResult, SpeakerAgeCategory, SpeakerGender, TranscriptSegment, Transcript } from '@shared/transcription'
 import type { MediaItem } from '@shared/media'
 import { createEmptySequence, type ProjectSequence, type TimelineClip } from '@shared/project'
@@ -19,6 +20,7 @@ import {
 import {
   compareEpisodeNames,
   episodeSrtFileName,
+  seriesSrtFileName,
   episodesToTranscribe,
   episodeWorkspaceOf,
   isSeriesWideFailure,
@@ -33,17 +35,20 @@ import { useHistory } from '../history/HistoryContext'
 import { useUiState, type LeftView, type RightTab } from '../nav/UiStateContext'
 import { DUBBING_TRACK_ID, findOrCreateTrack, getMainVideoTrackId, type OccupiedRange } from '../timeline/trackModel'
 import { ECHO_SCORE_THRESHOLD, effectiveInnerVoice, innerVoiceFromText } from '@shared/innerVoice'
-import { batchPartsOf, findGaps, lineSource, mergeGapLines, mergePartSegments, pairSrtsWithVideos, partLocalSegments, placePartTranscript, type BatchPart, type SubtitleGap } from '@shared/dubbingBatch'
+import { TOGETHER_MAX_EXTRA, togetherDelaySeconds, togetherPartId } from '@shared/dubbingTogether'
+import type { CastScanResult } from '@shared/cast'
+import { batchPartsOf, findGaps, lineSource, mergeGapLines, mergePartSegments, pairSrtsWithVideos, partLocalSegments, placePartTranscript, srtSpansTimeline, textsAtSameTimes, type BatchPart, type SubtitleGap } from '@shared/dubbingBatch'
 import { assetFromMediaItem } from '../media/assetFromMediaItem'
 import { findSavedVoice, isSavedVoiceId, loadSavedVoices, loadStoryNarratorVoiceId } from './savedVoices'
 import { VOICE_MODELS, recommendVoiceId, edgeFallbackVoiceId } from './voiceModels'
 import { cleanTextForSpeech, hasSpeakableText } from './ttsTextCleaning'
 import { unreadableScriptFor } from '@shared/ttsLanguage'
-import { autoSpeedFor, planAutoSync, planGenerationUnits, resolveLineVoice, KIRI_FALLBACK_FEMALE, KIRI_FALLBACK_MALE, type GenerationUnit, type PlannedLine } from './dubbingPlan'
+import { assignTwoVoices, withHeardGenders, autoSpeedFor, planAutoSync, planGenerationUnits, resolveLineVoice, KIRI_FALLBACK_FEMALE, KIRI_FALLBACK_MALE, type GenerationUnit, type PlannedLine } from './dubbingPlan'
 import { applyVideoSync, planVideoSync, retimeSegmentsForVideoSync, videoSyncAddedSeconds } from './videoSync'
 import { clipRate } from '@shared/clipTiming'
 import { sanitizeVideoOverlaySettings, type OverlayLine, type VideoOverlaySettings } from '@shared/videoOverlay'
 import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey, type DubbingEngine } from './voxcpmSettings'
+import { loadStoryVoices, type StoryVoices } from './storyVoices'
 import { kiriCopyOf } from './useKiriVoices'
 import type { DubbingGenerationGroup } from '@shared/dubbing'
 import {
@@ -128,7 +133,9 @@ export interface AiDubberContextValue {
    * and it's also the only way to clear out stale per-row assignments left
    * behind by an earlier run (removing the code that wrote them doesn't
    * remove the values it already saved into the project). */
-  setAllSegmentsVoice: (voiceId: string) => void
+  /** `onlyUnpicked`: leave lines that already have a picked voice or are
+   * made (the Recap narrator choice must never undo a story's voices). */
+  setAllSegmentsVoice: (voiceId: string, options?: { onlyUnpicked?: boolean }) => void
   setSegmentAgeGroup: (segmentId: string, ageGroup: DubbingSegmentState['ageGroup']) => void
   setSegmentIsNarrator: (segmentId: string, isNarrator: boolean) => void
   setSegmentControl: (segmentId: string, field: 'pitch' | 'speed' | 'volumeDb', value: number) => void
@@ -138,6 +145,17 @@ export interface AiDubberContextValue {
   setSpeakerVoice: (speakerId: string, voiceId: string) => void
   mergeSpeakers: (sourceSpeakerId: string, targetSpeakerId: string) => void
   splitSpeaker: (speakerId: string, segmentIds: string[]) => string | null
+  /** The Cast window: the voices a scan found become the speakers, each
+   * line with the voice it was heard in (see shared/cast.ts). The voices
+   * lines were given by hand before stay as they are. */
+  applyCast: (result: CastScanResult) => void
+  /** Lines heard in the wrong voice go to the right one (`null`: a new
+   * voice of their own, its id returned); they take that voice's model.
+   * Also how a line marked "not sure" is confirmed: moved to the voice
+   * it is already in. */
+  moveSegmentsToSpeaker: (segmentIds: string[], targetSpeakerId: string | null) => string | null
+  /** Which of a speaker's portraits is shown. */
+  setSpeakerFace: (speakerId: string, faceIndex: number) => void
 
   /** The "Custom Voice" card's own reference recording for VoxCPM2 voice
    * cloning -- see shared/dubbing.ts's DubbingWorkspaceState fields these
@@ -152,6 +170,12 @@ export interface AiDubberContextValue {
   /** `preferred`: the voice to suggest for each gender (the Detect Gender
    * review passes the user's own latest picks) instead of the plain one. */
   detectGenderForSegment: (segment: TranscriptSegment, preferred?: Partial<Record<'male' | 'female', string>>) => Promise<NarrationSpeaker>
+  /** Two voices for the whole story, in one go: every line is told male or
+   * female (voice prints, all lines together -- detectLineGenders) and gets
+   * `maleVoiceId` or `femaleVoiceId`. A line that could not be told keeps
+   * the gender it had, else gets the male voice -- and is counted, to be
+   * checked in Detect Gender. Nothing else changes (pitch, speed, emotion). */
+  setTwoVoices: (voices: StoryVoices) => Promise<{ male: number; female: number; unknown: number; child: number; old: number } | null>
   /** The video a line comes from and its start/end inside that file: after
    * Batch Load the Timeline holds several videos end to end, and a line's
    * Timeline time is not its time in the file. */
@@ -161,7 +185,9 @@ export interface AiDubberContextValue {
    * app/main/media/voxcpmTts.ts), grouped per assigned voice. Per-line
    * results stream via window.api.dubbing.onGenerationProgress, not this
    * function's own return value. */
-  generateDubbing: () => void
+  /** The lines not made yet (failed, new, given another voice); `all`:
+   * every line again. */
+  generateDubbing: (all?: boolean) => void
   /** Emotion + performance analysis (see shared/dubbingPerformance.ts).
    * No ids: every line not set by hand. With ids: exactly those lines,
    * replacing a manual performance too (the per-line Auto Detect). Gemini
@@ -180,6 +206,9 @@ export interface AiDubberContextValue {
   /** A line is a thought (inner voice) and is dubbed with an echo -- set by
    * hand; automatic detection leaves it alone from then on. */
   setSegmentInnerVoice: (segmentId: string, on: boolean) => void
+  /** The voices that say a line together with its own (none: the line is
+   * one voice again) -- see shared/dubbingTogether.ts. */
+  setSegmentTogetherVoices: (segmentId: string, voiceIds: string[]) => void
   /** Whether a line will be dubbed as an inner voice (hand choice, Gemini's
    * mark, subtitle text or detected echo -- see shared/innerVoice.ts). */
   isInnerVoice: (segmentId: string) => boolean
@@ -194,6 +223,11 @@ export interface AiDubberContextValue {
    * Settings has), as a new take; `voiceId` also becomes the line's voice.
    * The Timeline's right-click "Generate with ..." on a subtitle. */
   generateSegmentWith: (segmentId: string, engine: DubbingEngine, voiceId?: string) => void
+  /** The same for several lines at once: `voiceId` becomes the voice of
+   * each of them and only they (with the takes they belong to) are made
+   * again -- every other line keeps its voice and its clip. Changing one
+   * character's voice without regenerating the whole dub. */
+  generateSegmentsWith: (segmentIds: string[], engine: DubbingEngine, voiceId: string) => void
   /** Stops a running Generate Dubbing; finished takes are kept. */
   cancelGeneration: () => void
   /** Closes the error or note shown under Generate Dubbing (its ×). */
@@ -284,7 +318,11 @@ export interface AiDubberContextValue {
   /** Any number of SRTs at once: each goes under its own video on the
    * Timeline (matched by file name / episode number, else in order). */
   addSrtFiles: (files: { fileName: string; srtText: string }[]) => SrtPlacement
+  /** All of Auto SRT's work right now, as one: the first video's clip, the
+   * average percent, and a message (null when nothing runs). */
   batchJob: { clipId: string; percent: number; message: string } | null
+  /** Each video Auto SRT is working on now, by clip (several at once). */
+  batchJobs: Record<string, { percent: number; message: string }>
   batchMessage: string | null
   dismissBatchMessage: () => void
   /** Where Auto SRT takes the words from (remembered): the subtitles drawn
@@ -292,7 +330,10 @@ export interface AiDubberContextValue {
   autoSrtTextSource: AutoSrtTextSource
   setAutoSrtTextSource: (source: AutoSrtTextSource) => void
   /** One SRT per video, in that video's own time, into a chosen folder. */
-  saveBatchSrts: () => Promise<void>
+  /** `joined`: ONE SRT for all the videos, in Timeline time (the episodes
+   * end to end, as a joined export plays them); else one SRT per video in
+   * that video's own time. */
+  saveBatchSrts: (joined?: boolean) => Promise<void>
   /** Auto SRT's Clear: every video of the list off the Timeline, with the
    * subtitles and dub made for them. */
   clearBatchVideos: () => void
@@ -399,8 +440,8 @@ const AUTO_SRT_TEXT_SOURCE_KEY = 'cae-auto-srt-text-source-v1'
 
 export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Element {
   const { items, importPaths, select: selectMedia } = useMedia()
-  const { transcripts, setImportedTranscript, removeTranscript, updateSegmentText: updateTranscriptSegmentText, moveSegment, moveSegments, selectedModelId, language } = useTranscript()
-  const { sequence, insertClip, ensureTrack, prepareDubbingTrack, acceptDubbingClip, setClipStartTimes, replaceClipMedia, deleteClipsById, restoreSequence } = useSequence()
+  const { transcripts, setImportedTranscript, updateImportedTranscript, removeTranscript, updateSegmentText: updateTranscriptSegmentText, moveSegment, moveSegments, selectedModelId, language } = useTranscript()
+  const { sequence, insertClip, insertClipShiftingAll, ensureTrack, prepareDubbingTrack, acceptDubbingClip, setClipStartTimes, replaceClipMedia, deleteClipsById, restoreSequence } = useSequence()
   const { beginTransaction, endTransaction, resetHistory } = useHistory()
   const { seekTo } = usePlaybackControls()
   const { leftView, setLeftView, rightTab, setRightTab } = useUiState()
@@ -456,6 +497,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
    * own, so the placement queue steps over them like it steps over a
    * failed line, but they are not failures. */
   const coveredSegmentIdsRef = useRef<Set<string>>(new Set())
+  /** This run's extra voices of lines said together: the take's id -> its
+   * line and which voice it is (shared/dubbingTogether.ts). */
+  const togetherPartsRef = useRef<Map<string, { lineId: string; part: number }>>(new Map())
+  /** Where each such line's own clip was placed this run. */
+  const togetherBaseRef = useRef<Map<string, number>>(new Map())
+  /** Extra voices made and imported, waiting for their line's own clip. */
+  const togetherWaitingRef = useRef<Map<string, { mediaItem: MediaItem; clipId: string; part: number }[]>>(new Map())
   /** Set by Cancel: progress events still in flight for this run are
    * ignored. Cleared when the next run starts. */
   const generationCanceledRef = useRef(false)
@@ -631,11 +679,16 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       // becomes every line's voice from the start -- marked as a manual
       // pick so gender detection never swaps it out. Only if that voice
       // still exists; a deleted one just leaves lines on auto.
-      // (A restored SRT keeps its own voices instead.)
+      // (A restored SRT keeps its own voices instead.) Not when the story
+      // voices (man / woman / ...) are set for the engine in use: that is a
+      // drama with a cast, voiced by gender -- a new episode's SRT came in
+      // with every one of its 2544 lines on the narrator.
       const narratorVoiceId = loadStoryNarratorVoiceId()
       const narratorExists = narratorVoiceId ? !!findSavedVoice(loadSavedVoices(), narratorVoiceId) || !!kiriVoiceOf(narratorVoiceId) : false
+      const engine = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey())).engine
+      const castVoiced = !!loadStoryVoices(engine)
       const initialSegments: DubbingWorkspaceState['segments'] = {}
-      if (!restored && narratorVoiceId && narratorExists) {
+      if (!restored && narratorVoiceId && narratorExists && !castVoiced) {
         for (const seg of parsedSegments) {
           initialSegments[seg.id] = { ...defaultDubbingSegmentState(seg.id), voiceId: narratorVoiceId, voiceManuallyAssigned: true, status: 'voice-assigned' }
         }
@@ -798,7 +851,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       // removed the row and its bookkeeping, so the audio it had produced
       // stayed on DUB1 as an orphan -- a line the user had just deleted
       // still played back from the Timeline.
-      const generatedClipIds = segmentIds.map((id) => state.segments[id]?.generatedClipId).filter((id): id is string => Boolean(id))
+      const generatedClipIds = segmentIds.flatMap((id) => [state.segments[id]?.generatedClipId, ...(state.segments[id]?.togetherClipIds ?? [])]).filter((id): id is string => Boolean(id))
       if (generatedClipIds.length > 0) deleteClipsById(generatedClipIds)
       replaceSegments(segments.filter((s) => !ids.has(s.id)))
       setState((prev) => {
@@ -831,9 +884,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       // start: generation may have placed it slightly after its subtitle to
       // avoid overlapping the previous line (see tryDrainPlacementQueue),
       // and that offset is worth keeping.
-      const clipId = state.segments[segmentId]?.generatedClipId
-      const clip = clipId ? sequence.clips.find((c) => c.id === clipId) : undefined
-      if (clip) setClipStartTimes([{ clipId: clip.id, startTime: Math.max(0, clip.startTime + delta) }])
+      const clipIds = new Set([state.segments[segmentId]?.generatedClipId, ...(state.segments[segmentId]?.togetherClipIds ?? [])])
+      const moved = sequence.clips.filter((c) => clipIds.has(c.id)).map((c) => ({ clipId: c.id, startTime: Math.max(0, c.startTime + delta) }))
+      if (moved.length > 0) setClipStartTimes(moved)
     },
     [segments, state.videoMediaId, state.segments, moveSegment, sequence.clips, setClipStartTimes]
   )
@@ -844,9 +897,8 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       const delta = moveSegments(state.videoMediaId, segmentIds, draggedSegmentId, newStartTime)
       if (delta === null || delta === 0) return
       const placements = segmentIds.flatMap((segmentId) => {
-        const clipId = state.segments[segmentId]?.generatedClipId
-        const clip = clipId ? sequence.clips.find((candidate) => candidate.id === clipId) : undefined
-        return clip ? [{ clipId: clip.id, startTime: Math.max(0, clip.startTime + delta) }] : []
+        const clipIds = new Set([state.segments[segmentId]?.generatedClipId, ...(state.segments[segmentId]?.togetherClipIds ?? [])])
+        return sequence.clips.filter((candidate) => clipIds.has(candidate.id)).map((clip) => ({ clipId: clip.id, startTime: Math.max(0, clip.startTime + delta) }))
       })
       if (placements.length > 0) setClipStartTimes(placements)
     },
@@ -863,11 +915,22 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     }))
   }, [])
 
+  const setSegmentTogetherVoices = useCallback((segmentId: string, voiceIds: string[]) => {
+    setState((prev) => {
+      const existing = prev.segments[segmentId] ?? defaultDubbingSegmentState(segmentId)
+      const { togetherVoiceIds: _before, ...rest } = existing
+      const kept = [...new Set(voiceIds)].filter((id) => id !== existing.voiceId).slice(0, TOGETHER_MAX_EXTRA)
+      return { ...prev, segments: { ...prev.segments, [segmentId]: kept.length > 0 ? { ...rest, togetherVoiceIds: kept } : rest } }
+    })
+  }, [])
+
   const setAllSegmentsVoice = useCallback(
-    (voiceId: string) => {
+    (voiceId: string, options?: { onlyUnpicked?: boolean }) => {
       setState((prev) => {
         const next = { ...prev.segments }
         for (const seg of segments) {
+          const current = next[seg.id]
+          if (options?.onlyUnpicked && current && (current.voiceManuallyAssigned || current.status === 'generated' || current.status === 'generating')) continue
           next[seg.id] = { ...(next[seg.id] ?? defaultDubbingSegmentState(seg.id)), voiceId, voiceManuallyAssigned: true, status: 'voice-assigned' }
         }
         return { ...prev, segments: next }
@@ -975,7 +1038,12 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         ...target,
         embedding,
         segmentIds,
-        mergedFrom: [...new Set([...(target.mergedFrom ?? []), sourceSpeakerId, ...(source.mergedFrom ?? [])])]
+        mergedFrom: [...new Set([...(target.mergedFrom ?? []), sourceSpeakerId, ...(source.mergedFrom ?? [])])],
+        // The Cast window's own: both voices' portraits, doubts and time.
+        ...(target.faces || source.faces ? { faces: [...(target.faces ?? []), ...(source.faces ?? [])].slice(0, 8) } : {}),
+        ...(target.unsureIds || source.unsureIds ? { unsureIds: [...new Set([...(target.unsureIds ?? []), ...(source.unsureIds ?? [])])] } : {}),
+        ...(target.sampleIds || source.sampleIds ? { sampleIds: target.sampleIds?.length ? target.sampleIds : source.sampleIds } : {}),
+        ...(target.speechSeconds !== undefined || source.speechSeconds !== undefined ? { speechSeconds: (target.speechSeconds ?? 0) + (source.speechSeconds ?? 0) } : {})
       }
       const nextSegments = { ...previous.segments }
       for (const segmentId of source.segmentIds) {
@@ -1024,6 +1092,159 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     return newId
   }, [state.speakers, segments, replaceSegments])
 
+  const applyCast = useCallback(
+    (result: CastScanResult) => {
+      const speakerOf = new Map<string, string>()
+      result.groups.forEach((group, index) => {
+        for (const lineId of group.lineIds) speakerOf.set(lineId, `cast-${index + 1}`)
+      })
+      replaceSegments(
+        segments.map((segment) => {
+          const speakerId = speakerOf.get(segment.id)
+          return speakerId === segment.speakerId ? segment : { ...segment, speakerId, speakerConfidence: undefined }
+        })
+      )
+      setState((previous) => {
+        const nextSegments = { ...previous.segments }
+        const speakers: Record<string, DubbingSpeakerProfile> = {}
+        // A scan after an earlier one: a voice that is mostly the lines of
+        // one named before keeps that name.
+        const namedBefore = new Map<string, DubbingSpeakerProfile>()
+        for (const speaker of Object.values(previous.speakers)) {
+          if (/^(Voice|Speaker) \d+$/.test(speaker.name)) continue
+          for (const lineId of speaker.segmentIds) namedBefore.set(lineId, speaker)
+        }
+        const namesTaken = new Set<string>()
+        result.groups.forEach((group, index) => {
+          const id = `cast-${index + 1}`
+          const fromBefore = new Map<string, number>()
+          for (const lineId of group.lineIds) {
+            const before = namedBefore.get(lineId)
+            if (before) fromBefore.set(before.name, (fromBefore.get(before.name) ?? 0) + 1)
+          }
+          const mostBefore = [...fromBefore].sort((a, b) => b[1] - a[1])[0]
+          const keptName = mostBefore && mostBefore[1] >= group.lineIds.length * 0.5 && !namesTaken.has(mostBefore[0]) ? mostBefore[0] : undefined
+          if (keptName) namesTaken.add(keptName)
+          // The voice model its lines were already given by hand, when
+          // nearly all of them agree: shown as this voice's own.
+          const votes = new Map<string, number>()
+          for (const lineId of group.lineIds) {
+            const line = previous.segments[lineId]
+            if (line?.voiceManuallyAssigned && line.voiceId) votes.set(line.voiceId, (votes.get(line.voiceId) ?? 0) + 1)
+          }
+          const top = [...votes].sort((a, b) => b[1] - a[1])[0]
+          const agreed = top && top[1] >= group.lineIds.length * 0.8 ? top[0] : undefined
+          speakers[id] = {
+            id,
+            name: keptName ?? `Voice ${index + 1}`,
+            gender: group.gender,
+            genderConfidence: group.genderConfidence,
+            ageCategory: 'unknown',
+            ageConfidence: 0,
+            identityConfidence: 1 - group.unsureIds.length / Math.max(1, group.lineIds.length),
+            embedding: group.embedding,
+            segmentIds: group.lineIds,
+            faces: group.faces,
+            faceIndex: 0,
+            sampleIds: group.sampleIds,
+            unsureIds: group.unsureIds,
+            speechSeconds: group.seconds,
+            ...(agreed ? { voiceId: agreed, voiceManuallyAssigned: true } : {})
+          }
+          for (const lineId of group.lineIds) {
+            const existing = nextSegments[lineId] ?? defaultDubbingSegmentState(lineId)
+            // A line with no gender of its own takes its voice's: the
+            // voice a line falls back to follows from it.
+            nextSegments[lineId] = { ...existing, speakerId: id, detectedGender: existing.detectedGender !== 'unknown' ? existing.detectedGender : group.gender }
+          }
+        })
+        // Lines nothing was heard on belong to no voice.
+        for (const segment of segments) {
+          const existing = nextSegments[segment.id]
+          if (!speakerOf.has(segment.id) && existing?.speakerId) nextSegments[segment.id] = { ...existing, speakerId: undefined }
+        }
+        return { ...previous, segments: nextSegments, speakers }
+      })
+    },
+    [segments, replaceSegments]
+  )
+
+  const moveSegmentsToSpeaker = useCallback(
+    (segmentIds: string[], targetSpeakerId: string | null): string | null => {
+      const moving = new Set(segmentIds)
+      if (moving.size === 0) return null
+      if (targetSpeakerId !== null && !state.speakers[targetSpeakerId]) return null
+      const targetId = targetSpeakerId ?? `cast-${Date.now().toString(36)}`
+      replaceSegments(segments.map((segment) => (moving.has(segment.id) && segment.speakerId !== targetId ? { ...segment, speakerId: targetId, speakerConfidence: undefined } : segment)))
+      setState((previous) => {
+        const speakers: Record<string, DubbingSpeakerProfile> = {}
+        let from: DubbingSpeakerProfile | undefined
+        for (const [id, speaker] of Object.entries(previous.speakers)) {
+          if (id === targetId) continue
+          if (!speaker.segmentIds.some((lineId) => moving.has(lineId))) {
+            speakers[id] = speaker
+            continue
+          }
+          from ??= speaker
+          const left = speaker.segmentIds.filter((lineId) => !moving.has(lineId))
+          // A voice with no line left is gone.
+          if (left.length === 0) continue
+          speakers[id] = {
+            ...speaker,
+            segmentIds: left,
+            ...(speaker.sampleIds ? { sampleIds: speaker.sampleIds.filter((lineId) => !moving.has(lineId)) } : {}),
+            ...(speaker.unsureIds ? { unsureIds: speaker.unsureIds.filter((lineId) => !moving.has(lineId)) } : {})
+          }
+        }
+        const existingTarget = previous.speakers[targetId]
+        // In script order, whichever voices the lines came from.
+        const order = new Map(segments.map((segment, index) => [segment.id, index]))
+        const target: DubbingSpeakerProfile = existingTarget
+          ? {
+              ...existingTarget,
+              segmentIds: [...new Set([...existingTarget.segmentIds, ...segmentIds])].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)),
+              // Put here by hand: no longer in doubt.
+              ...(existingTarget.unsureIds ? { unsureIds: existingTarget.unsureIds.filter((lineId) => !moving.has(lineId)) } : {})
+            }
+          : {
+              id: targetId,
+              name: `Voice ${Object.keys(previous.speakers).length + 1}`,
+              gender: from?.gender ?? 'unknown',
+              genderConfidence: 0,
+              ageCategory: 'unknown',
+              ageConfidence: 0,
+              identityConfidence: 1,
+              embedding: [],
+              segmentIds: [...moving].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)),
+              faces: [],
+              faceIndex: 0,
+              sampleIds: [...moving],
+              unsureIds: []
+            }
+        speakers[targetId] = target
+        const nextSegments = { ...previous.segments }
+        for (const lineId of moving) {
+          const existing = nextSegments[lineId] ?? defaultDubbingSegmentState(lineId)
+          // The line speaks in its new voice's model, when that has one.
+          const voice = target.voiceId && existing.voiceId !== target.voiceId ? { voiceId: target.voiceId, voiceManuallyAssigned: true, status: 'voice-assigned' as const } : {}
+          nextSegments[lineId] = { ...existing, speakerId: targetId, ...voice }
+        }
+        return { ...previous, segments: nextSegments, speakers }
+      })
+      return targetId
+    },
+    [state.speakers, segments, replaceSegments]
+  )
+
+  const setSpeakerFace = useCallback((speakerId: string, faceIndex: number) => {
+    setState((previous) => {
+      const speaker = previous.speakers[speakerId]
+      if (!speaker?.faces?.length) return previous
+      const count = speaker.faces.length
+      return { ...previous, speakers: { ...previous.speakers, [speakerId]: { ...speaker, faceIndex: ((faceIndex % count) + count) % count } } }
+    })
+  }, [])
+
   const setCustomVoiceReferenceAudio = useCallback((path: string) => {
     setState((prev) => ({ ...prev, customVoiceReferenceAudioPath: path }))
   }, [])
@@ -1047,6 +1268,55 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     return mediaId ? { mediaId, start: segment.startTime, end: segment.endTime } : null
   }, [])
 
+  /** Every line's gender, worked out once for all the lines together
+   * (voice prints grouped by voice -- castScanService.ts's
+   * detectLineGenders): the review asks for one line at a time, but a
+   * line is told best alongside the other lines in the same voice. Kept
+   * until the lines change. */
+  const lineGendersRef = useRef<{ key: string; answer: Promise<Record<string, { gender: SpeakerGender; confidence: number }> | null> } | null>(null)
+  const lineGenders = useCallback((): Promise<Record<string, { gender: SpeakerGender; confidence: number }> | null> => {
+    const lines = segmentsRef.current.flatMap((seg) => {
+      const source = sourceOfLine(seg)
+      const path = source ? itemsRef.current.find((m) => m.id === source.mediaId)?.originalPath : undefined
+      return source && path ? [{ id: seg.id, path, start: source.start, end: source.end }] : []
+    })
+    const key = `${lines.length}:${lines[0]?.id}:${lines[lines.length - 1]?.id}:${[...new Set(lines.map((l) => l.path))].join('|')}`
+    if (lineGendersRef.current?.key !== key) {
+      const answer = lines.length
+        ? window.api.dubbing
+            .detectGenders({ jobId: `dub-genders-${Date.now().toString(36)}`, lines })
+            .then((r) => (r.ok ? r.genders : null))
+            .catch(() => null)
+        : Promise.resolve(null)
+      lineGendersRef.current = { key, answer }
+      // A failed run is asked again next time, not kept.
+      void answer.then((got) => {
+        if (!got && lineGendersRef.current?.key === key) lineGendersRef.current = null
+      })
+    }
+    return lineGendersRef.current!.answer
+  }, [sourceOfLine])
+
+  const setTwoVoices = useCallback(
+    async (voices: StoryVoices): Promise<{ male: number; female: number; unknown: number; child: number; old: number } | null> => {
+      const told = await lineGenders()
+      const lines = segmentsRef.current
+      if (lines.length === 0) return null
+      // Worked out once, outside the state update: React may run an update
+      // twice in development, and the counts then came out doubled.
+      const { segments: assigned, counts } = assignTwoVoices(
+        lines.map((seg) => seg.id),
+        stateRef.current.segments,
+        told,
+        voices,
+        defaultDubbingSegmentState
+      )
+      setState((prev) => ({ ...prev, segments: { ...prev.segments, ...assigned } }))
+      return counts
+    },
+    [lineGenders]
+  )
+
   const detectGenderForSegment = useCallback(
     async (segment: TranscriptSegment, preferred?: Partial<Record<'male' | 'female', string>>): Promise<NarrationSpeaker> => {
       // The line's own video and time in it (episode 2's lines are in
@@ -1055,7 +1325,10 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       const sourcePath = source ? itemsRef.current.find((m) => m.id === source.mediaId)?.originalPath : undefined
       if (!source || !sourcePath) return 'unknown'
       try {
-        const result = await window.api.narration.detectSpeaker(`dub-gender-${segment.id}`, sourcePath, source.start, source.end)
+        // By voice print (all lines together); the line's pitch alone only
+        // where that gave no answer.
+        const told = (await lineGenders())?.[segment.id]
+        const result = told && told.gender !== 'unknown' ? { speaker: told.gender, confidence: told.confidence } : await window.api.narration.detectSpeaker(`dub-gender-${segment.id}`, sourcePath, source.start, source.end)
         setState((prev) => {
           const existing = prev.segments[segment.id] ?? defaultDubbingSegmentState(segment.id)
           const speaker = result.speaker as NarrationSpeaker
@@ -1099,7 +1372,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         return 'unknown'
       }
     },
-    [sourceOfLine]
+    [sourceOfLine, lineGenders]
   )
 
   // Places every subtitle whose generated audio is ready, strictly in the
@@ -1122,11 +1395,34 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
   // whatever comes after it a little later (self-healing: a later line with
   // a natural gap before it resolves back to its own original timestamp via
   // the Math.max below, never carrying drift further than it has to). */
+  /** Puts a line's extra voices on the Timeline: each a clip of its own,
+   * a moment after the line's own clip (acceptDubbingClip finds it a DUB
+   * track with room, so they sit one above the other). They wait until
+   * the line's own clip is placed -- or is known to have failed, and then
+   * stand at the subtitle's own time. */
+  const placeTogetherClips = useCallback(
+    (lineId: string) => {
+      const waiting = togetherWaitingRef.current.get(lineId)
+      if (!waiting || waiting.length === 0) return
+      const base = togetherBaseRef.current.get(lineId) ?? (failedSegmentIdsRef.current.has(lineId) ? segmentsRef.current.find((s) => s.id === lineId)?.startTime : undefined)
+      if (base === undefined) return
+      togetherWaitingRef.current.delete(lineId)
+      for (const take of waiting) acceptDubbingClip(DUBBING_TRACK_ID, base + togetherDelaySeconds(take.part), assetFromMediaItem(take.mediaItem), take.clipId)
+      const clipIds = waiting.map((take) => take.clipId)
+      setState((prev) => {
+        const line = prev.segments[lineId] ?? defaultDubbingSegmentState(lineId)
+        return { ...prev, segments: { ...prev.segments, [lineId]: { ...line, togetherClipIds: [...(line.togetherClipIds ?? []), ...clipIds] } } }
+      })
+    },
+    [acceptDubbingClip]
+  )
+
   const tryDrainPlacementQueue = useCallback(() => {
     const cursor = placementCursorRef.current
     while (cursor.nextIndex < segmentsRef.current.length) {
       const seg = segmentsRef.current[cursor.nextIndex]
       if (failedSegmentIdsRef.current.has(seg.id) || coveredSegmentIdsRef.current.has(seg.id)) {
+        placeTogetherClips(seg.id)
         cursor.nextIndex++
         continue
       }
@@ -1146,10 +1442,12 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         for (const id of members) next[id] = { ...(next[id] ?? defaultDubbingSegmentState(id)), status: 'generated', generatedClipId: ready.clipId, joinedInto: seg.id }
         return { ...prev, segments: next }
       })
+      togetherBaseRef.current.set(seg.id, adjustedStart)
+      placeTogetherClips(seg.id)
       cursor.runningEndTime = adjustedStart + (ready.mediaItem.metadata?.durationSeconds ?? 0)
       cursor.nextIndex++
     }
-  }, [acceptDubbingClip, deleteClipsById])
+  }, [acceptDubbingClip, deleteClipsById, placeTogetherClips])
 
   // Real VoxCPM2 generation -- groups every subtitle by its assigned voice
   // (an unassigned segment falls back to its detected-gender recommendation,
@@ -1169,6 +1467,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     placementCursorRef.current = { nextIndex: 0, runningEndTime: 0 }
     readyForPlacementRef.current.clear()
     failedSegmentIdsRef.current.clear()
+    togetherPartsRef.current.clear()
+    togetherBaseRef.current.clear()
+    togetherWaitingRef.current.clear()
 
     const storedSettings = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
     // One line made with another engine than Settings' (the Timeline's
@@ -1249,10 +1550,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     // resolveLineVoice. Edge TTS speaks a cloned voice in its own Khmer
     // voice of the same gender: the engine the user picked is the engine
     // that runs.
+    // A line with no voice of its own speaks in the story's two voices
+    // (Voice Model: "Two voices for the whole story"), by its gender.
+    const storyVoices = loadStoryVoices(settings.engine)
     const plannedLines: PlannedLine[] = speakableSegments.map((seg) => {
       const segState = segStates[seg.id] ?? defaultDubbingSegmentState(seg.id)
       const speakerId = segState.speakerId ?? seg.speakerId
-      const { voiceId } = resolveLineVoice(segState, speakerId ? state.speakers[speakerId] : undefined, settings.engine, (id) => kiriCopyOf(id))
+      const { voiceId } = resolveLineVoice(segState, speakerId ? state.speakers[speakerId] : undefined, settings.engine, (id) => kiriCopyOf(id), storyVoices)
       return {
         id: seg.id,
         // Cleaned for the TTS engine only -- the subtitle's own displayed
@@ -1266,26 +1570,50 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         volumeDb: segState.volumeDb,
         performance: performanceOf(seg.id),
         takeNonce: segState.takeNonce ?? 0,
-        innerVoice: effectiveInnerVoice(segState, seg)
+        innerVoice: effectiveInnerVoice(segState, seg),
+        // The other voices of a line said together, each as the engine
+        // can speak it (the same rule as the line's own voice).
+        together: [
+          ...new Set((segState.togetherVoiceIds ?? []).map((id) => resolveLineVoice({ voiceId: id, detectedGender: segState.detectedGender }, undefined, settings.engine, (v) => kiriCopyOf(v)).voiceId))
+        ]
+          .filter((id) => id !== voiceId)
+          .slice(0, TOGETHER_MAX_EXTRA)
       }
     })
-    // Neighbouring lines in the same voice are read as ONE take, so the
-    // voice phrases them naturally instead of restarting on every fragment.
-    const units = planGenerationUnits(plannedLines)
+    // Each line is its own take, on its own subtitle -- unless the user
+    // asked for neighbouring lines to be read as ONE take (smoother
+    // phrasing, but only the take's first line is then on its subtitle).
+    const units = planGenerationUnits(plannedLines, settings.joinLines)
     joinedMembersRef.current = new Map(units.filter((unit) => unit.memberIds.length > 0).map((unit) => [unit.leaderId, unit.memberIds]))
     coveredSegmentIdsRef.current = new Set(units.flatMap((unit) => unit.memberIds))
     const lastLineOfUnit = (unit: GenerationUnit): string => unit.memberIds[unit.memberIds.length - 1] ?? unit.leaderId
 
-    const unitsByVoice = new Map<string, GenerationUnit[]>()
-    for (const unit of units) unitsByVoice.set(unit.voiceId, [...(unitsByVoice.get(unit.voiceId) ?? []), unit])
+    // A take per voice: the unit's own, and one more for every voice that
+    // says it together with it (`part` from 1): a clip of its own, placed
+    // beside the unit's (see placeTogetherClips).
+    const unitsByVoice = new Map<string, { unit: GenerationUnit; part: number }[]>()
+    const addTake = (voiceId: string, unit: GenerationUnit, part: number): void => {
+      unitsByVoice.set(voiceId, [...(unitsByVoice.get(voiceId) ?? []), { unit, part }])
+    }
+    for (const unit of units) {
+      addTake(unit.voiceId, unit, 0)
+      unit.together?.forEach((voiceId, i) => {
+        addTake(voiceId, unit, i + 1)
+        togetherPartsRef.current.set(togetherPartId(unit.leaderId, i + 1), { lineId: unit.leaderId, part: i + 1 })
+      })
+    }
+    // The extra voices' clips from an earlier run of these lines go: this
+    // run makes them again (or the line is one voice now).
+    const oldTogetherClipIds = speakableSegments.flatMap((seg) => segStates[seg.id]?.togetherClipIds ?? [])
+    if (oldTogetherClipIds.length > 0) deleteClipsById(oldTogetherClipIds)
 
     const fallbackVoice = VOICE_MODELS.find((v) => v.id === 'male-adult')
     const fallbackControlPrompt = fallbackVoice?.controlPrompt
     const groups: DubbingGenerationGroup[] = []
     for (const [voiceId, voiceUnits] of unitsByVoice) {
       const voice = VOICE_MODELS.find((v) => v.id === voiceId)
-      const groupSegments = voiceUnits.map((unit) => ({
-        segmentId: unit.leaderId,
+      const groupSegments = voiceUnits.map(({ unit, part }) => ({
+        segmentId: part ? togetherPartId(unit.leaderId, part) : unit.leaderId,
         text: unit.text,
         startTime: unit.startTime,
         endTime: unit.endTime,
@@ -1298,7 +1626,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         // turns it into this line's own control, seed, scoring profile and
         // loudness (app/main/ipc/dubbing.ts).
         performance: unit.performance,
-        lineKey: unit.leaderId,
+        lineKey: part ? togetherPartId(unit.leaderId, part) : unit.leaderId,
         takeNonce: unit.takeNonce,
         innerVoice: unit.innerVoice
       }))
@@ -1344,7 +1672,8 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     setState((prev) => {
       const next = { ...prev.segments }
       for (const seg of speakableSegments) {
-        next[seg.id] = { ...(next[seg.id] ?? defaultDubbingSegmentState(seg.id)), status: 'generating', joinedInto: leaderOf.get(seg.id) }
+        const { togetherClipIds: _old, ...line } = next[seg.id] ?? defaultDubbingSegmentState(seg.id)
+        next[seg.id] = { ...line, status: 'generating', joinedInto: leaderOf.get(seg.id) }
       }
       // Keep the performances the local analysis just filled in, so the UI
       // shows (and a later run reuses) exactly what was generated.
@@ -1356,10 +1685,21 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       return { ...prev, segments: next, generationProgress: { completed: 0, total: units.length }, generationError: undefined, generationNote }
     })
 
-    void window.api.dubbing.generateBatch({ engine: settings.engine, installDir: settings.installDir, device: settings.device, pitchMatch: settings.pitchMatch, tone: settings.tone, steadyPace: settings.steadyPace, kiriActing: settings.kiriActing, groups })
+    void window.api.dubbing.generateBatch({ engine: settings.engine, installDir: settings.installDir, device: settings.device, pitchMatch: settings.pitchMatch, tone: settings.tone, steadyPace: settings.steadyPace, kiriActing: settings.kiriActing, echoStyle: settings.echoStyle, groups })
   }, [segments, state.speakers, state.customVoiceReferenceAudioPath, state.customVoiceReferenceText])
 
-  const generateDubbing = useCallback(() => runGeneration(undefined, state.segments), [runGeneration, state.segments])
+  // Only what is not made yet: a run stopped part-way, lines that failed,
+  // or lines given another voice -- making all 3000 lines of a series again
+  // (KiriTTS has no cache) for a few hundred took hours and credit. `all`
+  // makes every line again.
+  const generateDubbing = useCallback(
+    (all = false) => {
+      const remaining = segments.filter((seg) => state.segments[seg.id]?.status !== 'generated').map((seg) => seg.id)
+      if (all || remaining.length === 0 || remaining.length === segments.length) runGeneration(undefined, state.segments)
+      else runGeneration(remaining, state.segments)
+    },
+    [runGeneration, state.segments, segments]
+  )
 
   const regenerateSegment = useCallback(
     (segmentId: string) => {
@@ -1396,6 +1736,27 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         return { ...prev, segments: next }
       })
       runGeneration([segmentId], bumped, engine)
+    },
+    [runGeneration, state.segments]
+  )
+
+  const generateSegmentsWith = useCallback(
+    (segmentIds: string[], engine: DubbingEngine, voiceId: string) => {
+      if (segmentIds.length === 0) return
+      const chosen = new Set(segmentIds)
+      const ids = expandToTakes(segmentIds, state.segments)
+      const voice = { voiceId, voiceManuallyAssigned: true }
+      const bumped = { ...state.segments }
+      for (const id of ids) {
+        const existing = bumped[id] ?? defaultDubbingSegmentState(id)
+        bumped[id] = { ...existing, takeNonce: (existing.takeNonce ?? 0) + 1, ...(chosen.has(id) ? voice : {}) }
+      }
+      setState((prev) => {
+        const next = { ...prev.segments }
+        for (const id of ids) next[id] = { ...(next[id] ?? defaultDubbingSegmentState(id)), takeNonce: bumped[id].takeNonce, ...(chosen.has(id) ? voice : {}) }
+        return { ...prev, segments: next }
+      })
+      runGeneration(segmentIds, bumped, engine)
     },
     [runGeneration, state.segments]
   )
@@ -1614,6 +1975,18 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       if (event.batchId) return
       // Canceled: whatever the engine was finishing is not wanted any more.
       if (generationCanceledRef.current) return
+      // One more voice of a line said together: a clip beside that line's
+      // own. It is not a take of the count, and its failure is not the
+      // line's -- the line is then said by the voices that were made.
+      if (togetherPartsRef.current.has(event.segmentId)) {
+        if (event.status === 'failed' || !event.outputPath) {
+          if (event.error) setState((prev) => (prev.generationError ? prev : { ...prev, generationError: event.error }))
+          return
+        }
+        pendingAcceptsRef.current.set(event.outputPath, { segmentId: event.segmentId, startTime: 0, clipId: crypto.randomUUID() })
+        void importPaths([event.outputPath])
+        return
+      }
       setState((prev) => ({
         ...prev,
         generationProgress: prev.generationProgress
@@ -1677,6 +2050,14 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       const match = items.find((item) => item.originalPath === path)
       if (!match || (match.stage !== 'ready' && match.stage !== 'error')) continue
       pendingAcceptsRef.current.delete(path)
+      const together = togetherPartsRef.current.get(pending.segmentId)
+      if (together) {
+        if (match.stage === 'ready') {
+          togetherWaitingRef.current.set(together.lineId, [...(togetherWaitingRef.current.get(together.lineId) ?? []), { mediaItem: match, clipId: pending.clipId, part: together.part }])
+          placeTogetherClips(together.lineId)
+        }
+        continue
+      }
       if (match.stage === 'error') {
         const failedIds = [pending.segmentId, ...(joinedMembersRef.current.get(pending.segmentId) ?? [])]
         setState((prev) => {
@@ -1691,7 +2072,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       readyForPlacementRef.current.set(pending.segmentId, { mediaItem: match, clipId: pending.clipId, previousClipId: pending.previousClipId })
     }
     tryDrainPlacementQueue()
-  }, [items, tryDrainPlacementQueue])
+  }, [items, tryDrainPlacementQueue, placeTogetherClips])
 
   const restore = useCallback((saved: DubbingWorkspaceState) => {
     // Projects saved before messages stopped being saved still carry the
@@ -1737,10 +2118,21 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
 
   const autoSyncDubClips = useCallback((): number => {
     // On its subtitle's start, but never over the line before it.
-    const updates = planAutoSync(generatedClipPairs().map(({ segment, clip }) => ({ clipId: clip.id, subtitleStart: segment.startTime, clipStart: clip.startTime, clipSeconds: clip.duration })))
-    if (updates.length > 0) setClipStartTimes(updates)
+    const pairs = generatedClipPairs()
+    const updates = planAutoSync(pairs.map(({ segment, clip }) => ({ clipId: clip.id, subtitleStart: segment.startTime, clipStart: clip.startTime, clipSeconds: clip.duration })))
+    // A line said by several voices together: the other voices' clips keep
+    // their place beside the line's own.
+    const pairOf = new Map(pairs.map((pair) => [pair.clip.id, pair]))
+    const beside = updates.flatMap((update) => {
+      const pair = pairOf.get(update.clipId)
+      const others = new Set(pair ? (state.segments[pair.segment.id]?.togetherClipIds ?? []) : [])
+      if (!pair || others.size === 0) return []
+      const delta = update.startTime - pair.clip.startTime
+      return sequence.clips.filter((c) => others.has(c.id)).map((c) => ({ clipId: c.id, startTime: Math.max(0, Math.round((c.startTime + delta) * 1000) / 1000) }))
+    })
+    if (updates.length > 0) setClipStartTimes([...updates, ...beside])
     return updates.length
-  }, [generatedClipPairs, setClipStartTimes])
+  }, [generatedClipPairs, setClipStartTimes, state.segments, sequence.clips])
 
   const [autoSpeedRunning, setAutoSpeedRunning] = useState(false)
 
@@ -2072,12 +2464,75 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
   // ---- Batch Auto SRT (shared/dubbingBatch.ts) ---------------------------
 
   const batchParts = useMemo(() => batchPartsOf(sequence), [sequence])
-  const [batchJob, setBatchJob] = useState<{ clipId: string; percent: number; message: string } | null>(null)
+
+  // The open video was on the Timeline and no video is there any more (it
+  // was deleted), with no subtitles to keep: back to the start, where a
+  // video can be added again. The panel went on saying "The video is on the
+  // Timeline" over an empty Timeline, with no way to add one. At once when
+  // the video was seen on the Timeline and then went; after a moment when
+  // it was never seen (see below). Never while a series is open: its
+  // episodes swap the Timeline in and out.
+  const videoSeenOnTimelineRef = useRef<string | null>(null)
+  useEffect(() => {
+    const open = state.videoMediaId
+    if (!open) {
+      videoSeenOnTimelineRef.current = null
+      return
+    }
+    if (batchParts.length > 0) {
+      videoSeenOnTimelineRef.current = open
+      return
+    }
+    if (segments.length > 0 || (state.episodes?.length ?? 0) > 0) return
+    if (videoSeenOnTimelineRef.current === open) {
+      videoSeenOnTimelineRef.current = null
+      clearWorkspace()
+      return
+    }
+    // Never seen: a project saved in that state and opened again (the
+    // video deleted in an earlier session) comes up the same way. Given a
+    // moment first, in case the video's clip is only just landing.
+    const timer = setTimeout(clearWorkspace, 1200)
+    return () => clearTimeout(timer)
+  }, [state.videoMediaId, state.episodes, batchParts, segments.length, clearWorkspace])
+
+  const [batchJobs, setBatchJobs] = useState<Record<string, { percent: number; message: string }>>({})
+  const batchJob = useMemo(() => {
+    const ids = Object.keys(batchJobs)
+    if (ids.length === 0) return null
+    const percent = ids.reduce((sum, id) => sum + batchJobs[id].percent, 0) / ids.length
+    return { clipId: ids[0], percent, message: ids.length === 1 ? batchJobs[ids[0]].message : `Transcribing ${ids.length} videos at once…` }
+  }, [batchJobs])
   const [batchErrors, setBatchErrors] = useState<Record<string, string>>({})
   const [batchMessage, setBatchMessage] = useState<string | null>(null)
   const [batchUnclear, setBatchUnclear] = useState<Record<string, number>>({})
-  const batchJobIdRef = useRef<string | null>(null)
+  /** Running Auto SRT jobs: job id -> the clip it is for. */
+  const batchJobIdsRef = useRef(new Map<string, string>())
   const batchRunningRef = useRef(false)
+
+  // Every line's gender, heard by itself as soon as the SRT is there -- no
+  // button: the voice prints of the whole story (lineGenders), a few
+  // seconds after the lines stop changing and never while Auto SRT is still
+  // writing them. Only lines with no gender yet get one; no voice changes.
+  const batchActive = batchJob !== null
+  useEffect(() => {
+    if (batchActive || segments.length === 0) return
+    if (!segments.some((seg) => (stateRef.current.segments[seg.id]?.detectedGender ?? 'unknown') === 'unknown')) return
+    let live = true
+    const timer = setTimeout(() => {
+      void lineGenders().then((told) => {
+        if (!live || !told) return
+        setState((prev) => {
+          const heard = withHeardGenders(segmentsRef.current.map((seg) => seg.id), prev.segments, told, defaultDubbingSegmentState)
+          return heard ? { ...prev, genderDetectionStatus: 'detected', segments: { ...prev.segments, ...heard } } : prev
+        })
+      })
+    }, 4000)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [segments, batchActive, lineGenders])
   const batchCanceledRef = useRef(false)
   /** Videos picked by Batch Load, placed end to end as they finish importing
    * -- in name order, each waiting for the one before it. */
@@ -2088,8 +2543,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
   useEffect(
     () =>
       window.api.transcription.onDetectSpeakersProgress((progress) => {
-        if (progress.jobId !== batchJobIdRef.current) return
-        setBatchJob((job) => (job ? { ...job, percent: progress.percent, message: progress.message } : job))
+        const clipId = batchJobIdsRef.current.get(progress.jobId)
+        if (!clipId) return
+        setBatchJobs((jobs) => (jobs[clipId] ? { ...jobs, [clipId]: { percent: progress.percent, message: progress.message } } : jobs))
       }),
     []
   )
@@ -2121,9 +2577,19 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     const live = sequenceRef.current
     const mainId = getMainVideoTrackId(live.tracks) ?? live.tracks.find((t) => t.kind === 'video')?.id
     if (!mainId) return
-    // After whatever is on the main track already.
-    let cursor = job.cursor ?? live.clips.filter((c) => c.trackId === mainId).reduce((end, c) => Math.max(end, c.startTime + c.duration), 0)
+    // After whatever is on the main track already -- or, for an episode that
+    // belongs before one already there (Episode 6 added to a series that
+    // has 5 and 7), in its place: everything from there on moves later.
+    const mainClips = live.clips.filter((c) => c.trackId === mainId).sort((x, y) => x.startTime - y.startTime)
+    let cursor = job.cursor ?? mainClips.reduce((end, c) => Math.max(end, c.startTime + c.duration), 0)
+    const fileNameOf = (path: string): string => path.split(/[\\/]/).pop() ?? path
+    const laterEpisode = (name: string): { startTime: number } | undefined =>
+      mainClips.find((c) => {
+        const there = items.find((m) => m.id === c.mediaId)
+        return !!there && there.kind === 'video' && compareEpisodeNames(there.fileName, name) > 0
+      })
     let firstPlaced: string | undefined
+    let again = false
     for (const path of job.paths) {
       if (job.done.has(path)) continue
       const media = items.find((m) => m.originalPath === path)
@@ -2133,12 +2599,33 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         continue
       }
       if (!media.readyToUse) break
+      const before = laterEpisode(fileNameOf(path))
+      if (before) {
+        // One at a time: the next one is placed against the Timeline as
+        // this insert leaves it.
+        if (firstPlaced) {
+          again = true
+          break
+        }
+        const length = media.metadata?.durationSeconds ?? 0
+        insertClipShiftingAll(assetFromMediaItem(media), before.startTime, mainId)
+        // The later episodes' subtitles go with their pictures.
+        const holder = stateRef.current.videoMediaId
+        const lines = holder ? (transcriptsRef.current[holder]?.segments ?? []).filter((seg) => seg.startTime >= before.startTime - 0.0005) : []
+        if (holder && lines.length > 0 && length > 0) moveSegments(holder, lines.map((seg) => seg.id), lines[0].id, lines[0].startTime + length)
+        job.done.add(path)
+        job.cursor = null
+        firstPlaced = media.id
+        again = true
+        break
+      }
       insertClip(assetFromMediaItem(media), cursor, mainId)
       cursor += media.metadata?.durationSeconds ?? 0
       job.done.add(path)
       firstPlaced ??= media.id
     }
-    job.cursor = cursor
+    if (again) setBatchTick((t) => t + 1)
+    if (!again) job.cursor = cursor
     if (firstPlaced) {
       prepareDubbingTrack()
       const opened = firstPlaced
@@ -2166,23 +2653,26 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       const placed = placePartTranscript(part, label, result.transcript.segments, result.speakers)
       const holder = stateRef.current.videoMediaId ?? part.mediaId
       const current = transcriptsRef.current[holder]?.segments ?? []
-      const merged = mergePartSegments(current, part, placed.segments)
-      const transcript: Transcript = {
+      const withThisPart = (lines: TranscriptSegment[]): Transcript => ({
         mediaId: holder,
-        segments: merged,
+        segments: mergePartSegments(lines, part, placed.segments),
         requestedLanguage: result.transcript.requestedLanguage,
         detectedLanguage: result.transcript.detectedLanguage,
         generatedAt: new Date().toISOString(),
         audioSourcePath: '',
         source: fromSrt ? 'srt' : (result.transcript.source ?? 'speaker-detection')
-      }
-      setImportedTranscript(holder, transcript)
+      })
+      // Merged into the transcript as it is when this lands, not as this
+      // render saw it: with several videos at once, one finishing just after
+      // another must not write back a list without the other's lines.
+      updateImportedTranscript(holder, (latest) => withThisPart(latest?.segments ?? current))
       // The next video in this run reads it before a render.
-      transcriptsRef.current = { ...transcriptsRef.current, [holder]: transcript }
+      transcriptsRef.current = { ...transcriptsRef.current, [holder]: withThisPart(current) }
+      // Only this clip's old lines lose their dubbing state.
+      const replaced = new Set(current.filter((seg) => seg.startTime >= part.startTime && seg.startTime < part.endTime).map((seg) => seg.id))
       setState((prev) => {
-        const keep = new Set(merged.map((seg) => seg.id))
         const nextSegments: DubbingWorkspaceState['segments'] = {}
-        for (const [id, line] of Object.entries(prev.segments)) if (keep.has(id)) nextSegments[id] = line
+        for (const [id, line] of Object.entries(prev.segments)) if (!replaced.has(id)) nextSegments[id] = line
         for (const seg of placed.segments) nextSegments[seg.id] = { ...defaultDubbingSegmentState(seg.id), speakerId: seg.speakerId }
         const speakers: DubbingWorkspaceState['speakers'] = {}
         for (const [id, speaker] of Object.entries(prev.speakers)) if (!id.startsWith(`${part.clipId}:`)) speakers[id] = speaker
@@ -2192,7 +2682,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       selectMedia(holder)
       return placed.segments.length
     },
-    [setImportedTranscript, selectMedia]
+    [updateImportedTranscript, selectMedia]
   )
 
   const transcribeBatch = useCallback(
@@ -2216,63 +2706,87 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         // clips, and every clip used to send the whole file to Gemini again
         // (thirty clips, thirty transcriptions of the same film). The first
         // clip's result is placed under each of the others.
-        const resultByMedia = new Map<string, DetectSpeakersResult>()
-        for (const clipId of todo) {
-          if (batchCanceledRef.current) break
-          // Re-read every time: the Timeline may have moved meanwhile.
-          const parts = batchPartsOf(sequenceRef.current)
-          const index = parts.findIndex((part) => part.clipId === clipId)
-          const part = parts[index]
-          const media = part ? itemsRef.current.find((m) => m.id === part.mediaId) : undefined
-          if (!part || !media?.originalPath) continue
-          const jobId = `ai-dubber-batch-${clipId}-${Date.now()}`
-          batchJobIdRef.current = jobId
-          setBatchJob({ clipId, percent: 0, message: `Video ${index + 1} of ${parts.length}: preparing Gemini Auto SRT…` })
-          setBatchErrors((prev) => {
-            const { [clipId]: _gone, ...rest } = prev
-            return rest
-          })
-          try {
-            const result =
-              resultByMedia.get(part.mediaId) ??
-              (await window.api.transcription.detectSpeakers({
-                jobId,
-                mediaId: part.mediaId,
-                originalPath: media.originalPath,
-                modelId: transcribeSettingsRef.current.selectedModelId,
-                language: transcribeSettingsRef.current.language,
-                voxCpmInstallDir: storedVoxCpmInstallDir(),
-                textSource: autoSrtTextSourceRef.current
-              }))
-            resultByMedia.set(part.mediaId, result)
-            // Where the clip is NOW (it can be moved while Gemini works).
-            const now = batchPartsOf(sequenceRef.current).find((p) => p.clipId === clipId) ?? part
-            // Speakers are named by the episode number in the file name
-            // ("… EP10.mp4" -> EP10), else by position on the Timeline.
-            const episodeNo = /(?:ep|episode|ភាគ)\s*\.?\s*(\d+)/i.exec(media.fileName)?.[1]
-            // Numbered by video, not by clip: every piece of one film is "Video 1".
-            const videoNo = [...new Set(parts.map((p) => p.mediaId))].indexOf(part.mediaId) + 1
-            applyPartTranscript(now, episodeNo ? `EP${episodeNo}` : `Video ${videoNo}`, result)
-            setBatchUnclear((prev) => ({ ...prev, [clipId]: result.unclearSeconds ?? 0 }))
-            finished++
-            lastError = undefined
-          } catch (caught) {
-            if (batchCanceledRef.current) break
-            const raw = caught instanceof Error ? caught.message : String(caught)
-            const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '')
-            setBatchErrors((prev) => ({ ...prev, [clipId]: message }))
-            failed++
-            if (isSeriesWideFailure(lastError, message)) {
-              stoppedBecause = message
-              break
+        const resultByMedia = new Map<string, Promise<DetectSpeakersResult>>()
+        // Several videos at a time (the panel's "At once"; Gemini and the
+        // picture reader run per video in the main process, each its own
+        // job). Whichever finishes first
+        // is placed under ITS clip (where that clip is when it finishes),
+        // so the order they finish in never matters.
+        let next = 0
+        let stop = false
+        const worker = async (): Promise<void> => {
+          while (!stop && !batchCanceledRef.current && next < todo.length) {
+            const clipId = todo[next++]
+            // Re-read every time: the Timeline may have moved meanwhile.
+            const parts = batchPartsOf(sequenceRef.current)
+            const index = parts.findIndex((part) => part.clipId === clipId)
+            const part = parts[index]
+            const media = part ? itemsRef.current.find((m) => m.id === part.mediaId) : undefined
+            if (!part || !media?.originalPath) continue
+            const jobId = `ai-dubber-batch-${clipId}-${Date.now()}`
+            batchJobIdsRef.current.set(jobId, clipId)
+            setBatchJobs((jobs) => ({ ...jobs, [clipId]: { percent: 0, message: `Video ${index + 1} of ${parts.length}: preparing Auto SRT…` } }))
+            setBatchErrors((prev) => {
+              const { [clipId]: _gone, ...rest } = prev
+              return rest
+            })
+            // One run per video FILE (see above): a clip of a file already
+            // being read waits for that run.
+            let pending = resultByMedia.get(part.mediaId)
+            try {
+              if (!pending) {
+                pending = window.api.transcription.detectSpeakers({
+                  jobId,
+                  mediaId: part.mediaId,
+                  originalPath: media.originalPath,
+                  modelId: transcribeSettingsRef.current.selectedModelId,
+                  language: transcribeSettingsRef.current.language,
+                  voxCpmInstallDir: storedVoxCpmInstallDir(),
+                  textSource: autoSrtTextSourceRef.current
+                })
+                resultByMedia.set(part.mediaId, pending)
+              }
+              const result = await pending
+              if (batchCanceledRef.current) break
+              // Where the clip is NOW (it can be moved while Gemini works).
+              const now = batchPartsOf(sequenceRef.current).find((p) => p.clipId === clipId) ?? part
+              // Speakers are named by the episode number in the file name
+              // ("… EP10.mp4" -> EP10), else by position on the Timeline.
+              const episodeNo = /(?:ep|episode|ភាគ)\s*\.?\s*(\d+)/i.exec(media.fileName)?.[1]
+              // Numbered by video, not by clip: every piece of one film is "Video 1".
+              const videoNo = [...new Set(parts.map((p) => p.mediaId))].indexOf(part.mediaId) + 1
+              applyPartTranscript(now, episodeNo ? `EP${episodeNo}` : `Video ${videoNo}`, result)
+              setBatchUnclear((prev) => ({ ...prev, [clipId]: result.unclearSeconds ?? 0 }))
+              finished++
+              lastError = undefined
+            } catch (caught) {
+              // A failed run is tried again by the next clip of the same file.
+              if (resultByMedia.get(part.mediaId) === pending) resultByMedia.delete(part.mediaId)
+              if (batchCanceledRef.current) break
+              const raw = caught instanceof Error ? caught.message : String(caught)
+              const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '')
+              setBatchErrors((prev) => ({ ...prev, [clipId]: message }))
+              failed++
+              if (isSeriesWideFailure(lastError, message)) {
+                stoppedBecause = message
+                stop = true
+                break
+              }
+              lastError = message
+            } finally {
+              batchJobIdsRef.current.delete(jobId)
+              setBatchJobs((jobs) => {
+                const { [clipId]: _done, ...rest } = jobs
+                return rest
+              })
             }
-            lastError = message
           }
         }
+        await Promise.all(Array.from({ length: Math.min(loadAutoSrtAtOnce(), todo.length) }, worker))
       } finally {
-        batchJobIdRef.current = null
+        batchJobIdsRef.current.clear()
         batchRunningRef.current = false
-        setBatchJob(null)
+        setBatchJobs({})
         let text = `Auto SRT ${batchCanceledRef.current ? 'stopped' : 'finished'}: ${finished} video${finished === 1 ? '' : 's'} transcribed${failed > 0 ? `, ${failed} failed` : ''}.`
         if (stoppedBecause) text += ` Stopped early -- every video was failing the same way: ${stoppedBecause}`
         // Say where lines may be missing, instead of leaving it to be found
@@ -2314,8 +2828,8 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       batchCanceledRef.current = false
       setBatchMessage(null)
       const jobId = `ai-dubber-gaps-${clipId}-${Date.now()}`
-      batchJobIdRef.current = jobId
-      setBatchJob({ clipId, percent: 0, message: `Sending ${gaps.length} stretch${gaps.length === 1 ? '' : 'es'} with no lines back to Gemini…` })
+      batchJobIdsRef.current.set(jobId, clipId)
+      setBatchJobs({ [clipId]: { percent: 0, message: `Sending ${gaps.length} stretch${gaps.length === 1 ? '' : 'es'} with no lines back to Gemini…` } })
       try {
         const result = await window.api.transcription.detectSpeakers({
           jobId,
@@ -2364,9 +2878,9 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
         const raw = caught instanceof Error ? caught.message : String(caught)
         if (!batchCanceledRef.current) setBatchMessage(`Fill gaps failed: ${raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '')}`)
       } finally {
-        batchJobIdRef.current = null
+        batchJobIdsRef.current.clear()
         batchRunningRef.current = false
-        setBatchJob(null)
+        setBatchJobs({})
       }
     },
     [setImportedTranscript]
@@ -2374,17 +2888,29 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
 
   const cancelBatch = useCallback(() => {
     batchCanceledRef.current = true
-    const jobId = batchJobIdRef.current
-    if (jobId) void window.api.transcription.cancelDetectSpeakers(jobId)
+    for (const jobId of batchJobIdsRef.current.keys()) void window.api.transcription.cancelDetectSpeakers(jobId)
   }, [])
 
-  const saveBatchSrts = useCallback(async () => {
+  const saveBatchSrts = useCallback(async (joined = false) => {
     const holder = stateRef.current.videoMediaId
     const all = holder ? (transcriptsRef.current[holder]?.segments ?? []) : []
-    const files = batchPartsOf(sequenceRef.current)
-      .map((part) => ({ part, lines: partLocalSegments(all, part) }))
-      .filter(({ lines }) => lines.length > 0)
-      .map(({ part, lines }) => ({ fileName: episodeSrtFileName(itemsRef.current.find((m) => m.id === part.mediaId)?.fileName ?? part.clipId), srtText: transcriptSegmentsToSrt(lines) }))
+    const parts = batchPartsOf(sequenceRef.current)
+    const nameOf = (mediaId: string, fallback: string): string => itemsRef.current.find((m) => m.id === mediaId)?.fileName ?? fallback
+    let files: { fileName: string; srtText: string }[]
+    if (joined) {
+      // Every line, at its Timeline time: one numbering from the first
+      // episode's first line to the last episode's last. Not only the lines
+      // over a video clip -- an episode whose clip was taken off the
+      // Timeline (its gap still there) lost all its lines from the file.
+      const under = [...all].sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime)
+      const videos = [...new Map(parts.map((part) => [part.mediaId, nameOf(part.mediaId, part.clipId)])).values()]
+      files = under.length > 0 ? [{ fileName: seriesSrtFileName(videos), srtText: transcriptSegmentsToSrt(under) }] : []
+    } else {
+      files = parts
+        .map((part) => ({ part, lines: partLocalSegments(all, part) }))
+        .filter(({ lines }) => lines.length > 0)
+        .map(({ part, lines }) => ({ fileName: episodeSrtFileName(nameOf(part.mediaId, part.clipId)), srtText: transcriptSegmentsToSrt(lines) }))
+    }
     if (files.length === 0) {
       setBatchMessage('No video has subtitles yet -- run Auto SRT first.')
       return
@@ -2407,11 +2933,11 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       batchParts.map((part) => {
         const lines = linesUnder(part)
         const status: 'waiting' | 'transcribing' | 'done' | 'failed' =
-          batchJob?.clipId === part.clipId ? 'transcribing' : batchErrors[part.clipId] ? 'failed' : lines > 0 ? 'done' : 'waiting'
+          batchJobs[part.clipId] ? 'transcribing' : batchErrors[part.clipId] ? 'failed' : lines > 0 ? 'done' : 'waiting'
         const gaps = lines > 0 ? findGaps(part, segments) : []
         return { ...part, fileName: fileNameById.get(part.mediaId) ?? part.mediaId, lines, status, error: batchErrors[part.clipId], gaps, unclearSeconds: batchUnclear[part.clipId] }
       }),
-    [batchParts, linesUnder, batchJob, batchErrors, fileNameById, segments, batchUnclear]
+    [batchParts, linesUnder, batchJobs, batchErrors, fileNameById, segments, batchUnclear]
   )
 
   /** Add Video: the file dialog, then -- as the files land in the media
@@ -2442,6 +2968,26 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
     (files: { fileName: string; srtText: string }[]): SrtPlacement => {
       const parts = batchPartsOf(sequenceRef.current)
       const names = parts.map((part, i) => itemsRef.current.find((m) => m.id === part.mediaId)?.fileName ?? `Video ${i + 1}`)
+      // One SRT in Timeline time (a joined one): the whole Timeline's. Its
+      // lines at the same times as the lines already there become their
+      // translation, the original text kept; with no such lines it is
+      // loaded across the whole Timeline as it is.
+      if (files.length === 1) {
+        const { segments: cues } = parseSrtToSegments(splitDubbingSrt(files[0].srtText).srtText)
+        if (srtSpansTimeline(cues.map((cue) => cue.endTime), parts.map((part) => part.endTime - part.startTime))) {
+          const holder = stateRef.current.videoMediaId
+          const existing = holder ? transcriptsRef.current[holder] : undefined
+          const texts = existing ? textsAtSameTimes(existing.segments, cues) : null
+          if (holder && existing && texts) {
+            const transcript: Transcript = { ...existing, segments: existing.segments.map((seg) => (texts[seg.id] !== undefined ? { ...seg, editedText: texts[seg.id] } : seg)) }
+            setImportedTranscript(holder, transcript)
+            transcriptsRef.current = { ...transcriptsRef.current, [holder]: transcript }
+            return { placed: [{ srt: files[0].fileName, video: 'the lines already there, as their translation (original text kept)', lines: Object.keys(texts).length }], unmatched: [] }
+          }
+          const prepared = prepareWorkspace({ videoMediaId: parts[0].mediaId, srtText: files[0].srtText, srtFileName: files[0].fileName })
+          return { placed: [{ srt: files[0].fileName, video: 'the whole Timeline', lines: prepared.segmentCount }], unmatched: [] }
+        }
+      }
       const pairs = pairSrtsWithVideos(names, files.map((f) => f.fileName))
       const placed: SrtPlacement['placed'] = []
       const unmatched: string[] = []
@@ -2452,7 +2998,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       })
       return { placed, unmatched }
     },
-    [applySrtToPart]
+    [applySrtToPart, prepareWorkspace, setImportedTranscript]
   )
 
   const pendingImportRef = useRef<{ paths: string[]; series: boolean; opened: boolean } | null>(null)
@@ -2632,9 +3178,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       setSpeakerVoice,
       mergeSpeakers,
       splitSpeaker,
+      applyCast,
+      moveSegmentsToSpeaker,
+      setSpeakerFace,
       setCustomVoiceReferenceAudio,
       setCustomVoiceReferenceText,
       detectGenderForSegment,
+      setTwoVoices,
       sourceOfLine,
       generateDubbing,
       detectEmotions,
@@ -2644,11 +3194,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       setSegmentPerformance,
       resetSegmentPerformance,
       setSegmentInnerVoice,
+      setSegmentTogetherVoices,
       isInnerVoice,
       detectInnerVoices,
       innerVoiceRunning,
       regenerateSegment,
       generateSegmentWith,
+      generateSegmentsWith,
       cancelGeneration,
       dismissGenerationMessage,
       restore,
@@ -2681,6 +3233,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       addSrtFiles,
       cancelBatch,
       batchJob,
+      batchJobs,
       batchMessage,
       dismissBatchMessage,
       saveBatchSrts,
@@ -2718,9 +3271,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       setSpeakerVoice,
       mergeSpeakers,
       splitSpeaker,
+      applyCast,
+      moveSegmentsToSpeaker,
+      setSpeakerFace,
       setCustomVoiceReferenceAudio,
       setCustomVoiceReferenceText,
       detectGenderForSegment,
+      setTwoVoices,
       sourceOfLine,
       generateDubbing,
       detectEmotions,
@@ -2730,11 +3287,13 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       setSegmentPerformance,
       resetSegmentPerformance,
       setSegmentInnerVoice,
+      setSegmentTogetherVoices,
       isInnerVoice,
       detectInnerVoices,
       innerVoiceRunning,
       regenerateSegment,
       generateSegmentWith,
+      generateSegmentsWith,
       cancelGeneration,
       dismissGenerationMessage,
       restore,
@@ -2767,6 +3326,7 @@ export function AiDubberProvider({ children }: { children: ReactNode }): JSX.Ele
       addSrtFiles,
       cancelBatch,
       batchJob,
+      batchJobs,
       batchMessage,
       dismissBatchMessage,
       saveBatchSrts,

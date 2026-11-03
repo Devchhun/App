@@ -1,4 +1,5 @@
 import { existsSync } from 'fs'
+import { createGemini } from './geminiClient'
 import { basename, join } from 'path'
 import { readFile, rename, unlink, writeFile } from 'fs/promises'
 import { GoogleGenAI, FileState } from '@google/genai'
@@ -31,7 +32,32 @@ import {
   timesLookCompressed,
   type GeminiLine
 } from '@shared/geminiTranscript'
+import {
+  MAX_TRANSCRIPT_TOKENS,
+  MIN_SPLIT_SECONDS,
+  TruncatedTranscriptionError,
+  buildGeminiSrtPrompt,
+  isRunawayRow,
+  salvageCoversPart,
+  salvagePartialTranscript,
+  salvageRunawayTranscript,
+  splitSpan,
+  transcriptTokenBudget,
+  unreadableTranscriptMessage
+} from '@shared/geminiTranscriptRescue'
 // Pure Auto SRT steps, shared with the Android app (shared/geminiTranscript.ts).
+export {
+  MIN_SPLIT_SECONDS,
+  TruncatedTranscriptionError,
+  buildGeminiSrtPrompt,
+  isRunawayRow,
+  salvageCoversPart,
+  salvagePartialTranscript,
+  salvageRunawayTranscript,
+  splitSpan,
+  transcriptTokenBudget,
+  unreadableTranscriptMessage
+} from '@shared/geminiTranscriptRescue'
 export {
   buildGeminiTimedTranscriptPrompt,
   cleanGeminiSrt,
@@ -58,117 +84,6 @@ const MODEL = process.env.GEMINI_SPEAKER_MODEL?.trim() || 'gemini-2.5-flash'
  * Literal speech-to-text needs no reasoning, so the budget goes to zero --
  * Pro revisions refuse 0, so they get the documented minimum instead. */
 const THINKING_BUDGET = /pro/i.test(MODEL) ? 128 : 0
-const MAX_TRANSCRIPT_TOKENS = 32768
-
-/** The output budget for one span, sized to its length. Real speech costs
- * well under 30 tokens a second even in Khmer (a row of timestamps plus a
- * short line every second or two), so 100 per second is several times what
- * honest dialogue needs. What it does NOT allow is a runaway: on music or a
- * noisy outro the model can write the same line again and again, and with a
- * flat 32k budget that loop ran for minutes before failing -- every time a
- * span was retried or split. Sized like this, a loop stops in seconds. */
-export function transcriptTokenBudget(durationSeconds: number): number {
-  return Math.min(MAX_TRANSCRIPT_TOKENS, Math.max(2048, Math.ceil(durationSeconds * 100)))
-}
-
-const normalizeCue = (text: string): string => text.replace(/[\s.,!?！？。，、…"'“”]+/g, '').toLowerCase()
-
-/** A single subtitle line that never ends: the same short chunk eight or
- * more times in a row ("ha ha ha ha…", a syllable held over music), or a
- * "line" far longer than anyone speaks in one breath. Row-level repetition
- * is caught separately; this is the loop that happens INSIDE one row, which
- * leaves too few rows for that check to see anything. */
-const RUNAWAY_ROW = /(.{1,20}?)\1{7,}/u
-const MAX_HONEST_ROW_CHARS = 300
-export function isRunawayRow(text: string): boolean {
-  return text.length > MAX_HONEST_ROW_CHARS || RUNAWAY_ROW.test(text)
-}
-
-/** The rows of a cut-off transcript that can be trusted: complete (the last
- * row stopped mid-write), not a runaway, not timed past the audio, not a
- * repeat of a row just before it. Flagged low-confidence, since lines next
- * to a loop are the least reliable, so the editor marks them for review. */
-/** Parses a transcript that was cut off by the output budget. The final raw
- * line is where the cut happened -- a half-written row or a bare fragment --
- * so it is left out; every line before it was written in full. (Dropping the
- * last PARSED row instead would throw away a good line whenever the cut
- * landed on a fragment that does not parse as a row at all.) */
-function completeRows(text: string): GeminiLine[] {
-  const rawLines = text.trimEnd().split(/\r?\n/)
-  return parseGeminiTimedTranscript(rawLines.slice(0, -1).join('\n'))
-}
-
-function trustworthyRows(text: string, durationSeconds: number): GeminiLine[] {
-  const complete = completeRows(text)
-  const kept: GeminiLine[] = []
-  for (const line of complete) {
-    if (line.startTime > durationSeconds + 1 || isRunawayRow(line.verbatimText)) continue
-    const key = normalizeCue(line.verbatimText)
-    if (!key || kept.slice(-4).some((previous) => normalizeCue(previous.verbatimText) === key)) continue
-    const endTime = Math.min(line.endTime, durationSeconds)
-    if (endTime <= line.startTime) continue
-    kept.push({ ...line, endTime, transcriptionConfidence: Math.min(line.transcriptionConfidence, 0.5) })
-  }
-  return kept
-}
-
-/** A transcript that ran out of budget is either genuinely long (split the
- * audio and try again) or a repetition loop (splitting only loops again).
- * For a loop, keep the honest lines before it. Returns null when the output
- * does not look like a loop, so the caller falls back to splitting. */
-export function salvageRunawayTranscript(text: string, durationSeconds: number): GeminiLine[] | null {
-  // The runaway check includes the cut-off line: that is usually the loop.
-  const rowRunaway = parseGeminiTimedTranscript(text).some((line) => isRunawayRow(line.verbatimText))
-  const complete = completeRows(text)
-  if (!rowRunaway) {
-    if (complete.length < 6) return null
-    const tailDistinct = new Set(complete.slice(-10).map((line) => normalizeCue(line.verbatimText))).size
-    const pastEnd = complete.filter((line) => line.startTime > durationSeconds + 1).length
-    if (tailDistinct > 3 && pastEnd < 3) return null
-  }
-  return trustworthyRows(text, durationSeconds)
-}
-
-/** A salvage that stops this far short of the part's end lost real speech. */
-const SALVAGE_SLACK_SECONDS = 20
-
-/** Whether the lines kept before a repetition loop still reach (near) the
- * end of the part. Measured on a real episode: a minute of dense dialogue
- * (27 reference lines) looped after its first few rows, and keeping only
- * those rows lost the rest of the minute -- such a part is halved and each
- * half asked again instead. Parts of SALVAGE_SLACK_SECONDS or less always
- * count as covered, so the halving stops there. */
-export function salvageCoversPart(lines: { endTime: number }[], durationSeconds: number): boolean {
-  const reached = lines.reduce((max, line) => Math.max(max, line.endTime), 0)
-  return reached >= durationSeconds - SALVAGE_SLACK_SECONDS
-}
-
-/** Last resort for a span too short to split that still overflowed: keep
- * whatever complete lines are trustworthy -- possibly none, for a few
- * seconds of music -- rather than failing the whole video over it. */
-export function salvagePartialTranscript(text: string, durationSeconds: number): GeminiLine[] {
-  return trustworthyRows(text, durationSeconds)
-}
-/** A span shorter than this is not split again: at that point the output is
- * not what is overflowing, and halving forever would just burn quota. */
-export const MIN_SPLIT_SECONDS = 12
-
-/** Thrown when the model ran out of output budget mid-transcript, so the
- * caller can split the audio instead of failing the whole job. Carries what
- * the model did write, for the last-resort salvage. */
-export class TruncatedTranscriptionError extends Error {
-  constructor(readonly partialText = '', message = 'Gemini transcription was truncated for this audio part.') {
-    super(message)
-    this.name = 'TruncatedTranscriptionError'
-  }
-}
-
-/** Halves a span, or returns null when it is already short enough that
- * splitting cannot help. */
-export function splitSpan(startTime: number, endTime: number, minSeconds = MIN_SPLIT_SECONDS): [number, number] | null {
-  if (endTime - startTime <= minSeconds) return null
-  return [startTime, (startTime + endTime) / 2]
-}
 interface ActiveJob { mediaId: string; controller: AbortController; ffmpegJobIds: Set<string> }
 interface GeminiSpeaker { speakerNumber: number; gender: SpeakerGender; genderConfidence: number; ageCategory: SpeakerAgeCategory; ageConfidence: number; identityConfidence: number }
 const activeJobs = new Map<string, ActiveJob>()
@@ -212,22 +127,6 @@ Your only task is verbatim audio transcription plus speaker diarization for the 
 - Output only the requested JSON structure.`
 }
 
-export function buildGeminiSrtPrompt(language: string, chunkDurationSeconds: number): string {
-  return `Transcribe the uploaded ${chunkDurationSeconds.toFixed(3)}-second audio as standard SubRip SRT.
-
-STRICT OUTPUT RULES:
-- Return raw SRT only. Do not use Markdown fences and do not return JSON.
-- Each cue must be: sequential number, HH:MM:SS,mmm --> HH:MM:SS,mmm, then the exact spoken text.
-- Timestamps are relative to this uploaded audio file starting at 00:00:00,000.
-- Include every audible spoken line exactly once in chronological order.
-- Preserve the original spoken language and exact wording. Recognition hint: ${language === 'auto' ? 'auto-detect' : language}; if the hint differs from the audio, follow the audio and never translate it.
-- Never translate, summarize, paraphrase, explain, improve, censor, or invent speech.
-- Never add story recap, narration, scene/action description, greeting, title, speaker name, gender, age, sound label, or metadata unless those exact words are audibly spoken.
-- Silent sections produce no cue. Split different speakers into separate cues.
-- Do not transcribe singing (theme songs, sung lyrics over music) -- only spoken dialogue, narration and inner voice.
-- If the speech is Chinese, write it in Simplified Chinese characters.
-- If there is no speech, return exactly NO_SPEECH.`
-}
 
 
 function assertActive(jobId: string): ActiveJob {
@@ -276,16 +175,6 @@ function parseGeminiResult(text: string): { detectedLanguage: string; speakers: 
     .map((line) => ({ ...line, verbatimText: String(line.verbatimText).trim(), speakerNumber: Math.max(1, Math.round(Number(line.speakerNumber) || 1)) }))
     .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime)
   return { detectedLanguage: String(parsed.detectedLanguage ?? ''), speakers: parsed.speakers as GeminiSpeaker[], lines }
-}
-
-/** When nothing usable came back, say what DID come back: an empty answer
- * blocked by a safety/recitation filter and a transcript in an unexpected
- * layout need different fixes, and "no timestamped dialogue" alone hides
- * which one it was. */
-export function unreadableTranscriptMessage(text: string, finishReason: string): string {
-  const reason = finishReason && !/^(STOP|FINISH_REASON_UNSPECIFIED)$/i.test(finishReason) ? ` Gemini stopped with ${finishReason}.` : ''
-  const excerpt = text.trim().replace(/\s+/g, ' ').slice(0, 120)
-  return `Gemini did not return timestamped dialogue for this audio part.${reason}${excerpt ? ` It returned: "${excerpt}${text.trim().length > 120 ? '…' : ''}"` : ' It returned an empty answer.'}`
 }
 
 /** Loud enough to hold speech: a part this quiet really can be "no speech". */
@@ -699,8 +588,14 @@ export async function detectSpeakersAndGenerateSrt(request: DetectSpeakersReques
     // homophones (姚惜雪 heard as 有吸血) and invents lines in the music.
     // The speakers are still matched by their voices below.
     const textSource = request.textSource ?? 'voice'
+    // "Auto" reads the picture whatever language is set: the setting says
+    // what is SPOKEN (or wanted), not what is drawn -- with Khmer chosen it
+    // used to skip the picture and listen, and a drama with clear English
+    // or Chinese subtitles came back as Gemini's long heard lines. Text the
+    // reader cannot read (Khmer letters) fails looksLikeSubtitles and is
+    // listened to, as before.
     const screenLines =
-      textSource === 'voice' || (textSource === 'auto' && request.language === 'km')
+      textSource === 'voice'
         ? null
         : await screenSubtitleLines(request, textSource, cacheDir, duration, controller.signal, (message, fraction) => report('transcribing', 4 + Math.round(fraction * 64), message))
     assertActive(request.jobId)
@@ -716,7 +611,7 @@ export async function detectSpeakersAndGenerateSrt(request: DetectSpeakersReques
     } else {
       const apiKey = await getGeminiApiKey()
       if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-      const ai = new GoogleGenAI({ apiKey })
+      const ai = createGemini(apiKey)
       // Gemini hears the speech without the music under it; the voice
       // matching below still reads the original mix.
       report('extracting-audio', 4, 'Separating speech from music…')

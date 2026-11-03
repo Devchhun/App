@@ -1,12 +1,12 @@
 import { existsSync } from 'fs'
-import { mkdir, mkdtemp, rename, rm } from 'fs/promises'
+import { mkdtemp, rename, rm } from 'fs/promises'
 import { tmpdir, totalmem } from 'os'
 import { basename, dirname, join } from 'path'
 import { spawn } from 'child_process'
 import { app } from 'electron'
 import { cancelJob, runFfmpeg } from './jobRunner'
 import { ffmpegPath } from './ffmpeg'
-import { cacheKeyForFile, ensureCacheDir, getMediaCacheRoot } from './cache'
+import { cacheKeyForFile, ensureCacheDir } from './cache'
 import { probeAudioChannels, probeMedia } from './probe'
 import type { VoxCpmDevice } from '@shared/dubbing'
 import { planSeparationChunks } from '@shared/vocalRemoval'
@@ -20,9 +20,16 @@ import { backgroundThreadCount } from './hwAccel'
  * anything panned wide -- and on a dual-mono source (identical L/R, which
  * most video is) L-R is zero everywhere and the "instrumental" comes out
  * as pure silence. That last case is why this must never run unguarded:
- * see hasUsableStereoWidth. */
+ * see hasUsableStereoWidth.
+ *
+ * Both output channels carry the SAME signal (L-R). They used to be
+ * L-R and R-L -- each the other upside down -- which sounds fine on
+ * headphones and is dead silent on anything that plays the two channels as
+ * one: a phone's single speaker, most Bluetooth speakers (measured: -26 dB
+ * in stereo, -91 dB summed). The music bed of an exported video vanished
+ * on those phones. */
 export function buildVocalRemovalFilter(): string {
-  return 'pan=stereo|c0=c0-c1|c1=c1-c0'
+  return 'pan=stereo|c0=c0-c1|c1=c0-c1'
 }
 
 /** Whether center-channel cancellation can work at all on this file: it
@@ -111,11 +118,14 @@ function runPython(
   })
 }
 
-export async function ensureDemucsInstalled(installDir: string): Promise<boolean> {
+/** `onInstalling`: the separator is not in this runtime yet and is being
+ * downloaded -- minutes of silence the caller should name on screen. */
+export async function ensureDemucsInstalled(installDir: string, onInstalling?: () => void): Promise<boolean> {
   const py = separatorPython(installDir)
   if (!existsSync(py)) return false
   const probe = await runPython(py, ['-c', 'import demucs'], process.env, 60_000)
   if (probe.code === 0) return true
+  onInstalling?.()
   const install = await runPython(py, ['-m', 'pip', 'install', '--quiet', 'demucs'], process.env, 10 * 60_000)
   return install.code === 0
 }
@@ -212,6 +222,39 @@ function chunkJoinGraph(chunks: ReturnType<typeof planSeparationChunks>): { grap
   return { graph: [...trims, ...fades].join(';'), finalLabel: chunks.length > 1 ? 'mix' : 'p0' }
 }
 
+/** A file's sound decoded exactly as the separation decoded it -- the same
+ * pieces, each cut to PCM first, then trimmed and joined the same way -- so it
+ * lines up with the separated track sample by sample. Anything less does not:
+ * where a file's sound times close up (a join in a real episode, a piece that
+ * came out 305.06 s for 304), reading it straight through, or trimming the
+ * pieces by their times, came 1.06 s off from the next piece on. Returns the
+ * ffmpeg options for that sound, padded with silence to `durationSeconds`, and
+ * the folder of pieces for the caller to delete. */
+export async function decodeAsSeparated(
+  jobId: string,
+  sourcePath: string,
+  durationSeconds: number,
+  options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}
+): Promise<{ args: string[]; workDir: string }> {
+  const chunks = planSeparationChunks(durationSeconds, separationChunkSeconds())
+  const workDir = await mkdtemp(join(tmpdir(), 'vocal-lines-'))
+  const inputs: string[] = []
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      if (options.signal?.aborted) throw new VocalRemovalCanceledError()
+      options.onProgress?.(i / chunks.length)
+      const piece = join(workDir, `part_${i}.wav`)
+      await runFfmpeg(`${jobId}-piece-${i}`, ['-y', '-ss', chunks[i].start.toFixed(3), '-t', chunks[i].length.toFixed(3), '-i', sourcePath, '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le', piece])
+      inputs.push('-i', piece)
+    }
+  } catch (err) {
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined)
+    throw err
+  }
+  const { graph, finalLabel } = chunkJoinGraph(chunks)
+  return { args: [...inputs, '-filter_complex', `${graph};[${finalLabel}]apad[sound]`, '-map', '[sound]', '-t', durationSeconds.toFixed(3)], workDir }
+}
+
 /** A piece's length for this computer: a 5-minute piece peaked at 4.2 GB,
  * too much beside the app on 8 GB; 2 minutes keeps it near 2 GB. */
 function separationChunkSeconds(): number {
@@ -253,11 +296,16 @@ export async function removeVocalsWithDemucs(jobId: string, sourcePath: string, 
     }
   }
 
-  if (!(await ensureDemucsInstalled(options.installDir))) {
+  // Each step before the first real percent says what it is: the pill used
+  // to sit on "Starting 0%" through all of them, a download of the
+  // separator (minutes) included, with nothing to tell a wait from a hang.
+  progress(0, 'Checking the separator')
+  if (!(await ensureDemucsInstalled(options.installDir, () => progress(0, 'Installing the separator (first time, needs internet)')))) {
     throw new Error('The `demucs` separator could not be installed into the VoxCPM2 runtime (this needs an internet connection the first time).')
   }
   checkCanceled()
 
+  progress(0, 'Reading the file')
   const { durationSeconds } = await probeMedia(sourcePath)
   const chunks = planSeparationChunks(durationSeconds, separationChunkSeconds())
   if (chunks.length === 0) throw new Error('This file has no sound to separate.')
@@ -398,15 +446,37 @@ export async function separateSpeechForTranscription(
 /** Last-resort fallback (no VoxCPM2 runtime to run the separator from):
  * the karaoke trick, now only ever used on a source it can actually work
  * on -- the caller checks hasUsableStereoWidth first. */
-export async function removeVocals(jobId: string, sourcePath: string): Promise<string> {
-  const dir = join(getMediaCacheRoot(), 'generated')
-  await mkdir(dir, { recursive: true })
-  const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-instrumental.m4a`
-  const outputPath = join(dir, safeName)
+export async function removeVocals(jobId: string, sourcePath: string, onProgress?: (percent: number) => void): Promise<string> {
+  // Kept beside the file's other cached media, like the separator's: done
+  // again (Remove Vocal pressed twice, or "all videos" run again) it is the
+  // same file, so the Timeline gets it once -- a new file every time put a
+  // second copy of the music under every video.
+  const cacheDir = await ensureCacheDir(await cacheKeyForFile(sourcePath))
+  const outputPath = join(cacheDir, BASIC_INSTRUMENTAL_FILE)
+  if (existsSync(outputPath)) {
+    onProgress?.(100)
+    return outputPath
+  }
+  const tmpPath = join(cacheDir, `no-vocals-basic.${Date.now().toString(36)}.tmp.m4a`)
 
-  await runFfmpeg(jobId, ['-y', '-i', sourcePath, '-vn', '-af', buildVocalRemovalFilter(), '-c:a', 'aac', '-b:a', '192k', outputPath])
+  // Its percent is ffmpeg's own (a long film takes a while here too).
+  const { durationSeconds } = onProgress ? await probeMedia(sourcePath).catch(() => ({ durationSeconds: 0 })) : { durationSeconds: 0 }
+  try {
+    await runFfmpeg(jobId, ['-y', '-i', sourcePath, '-vn', '-af', buildVocalRemovalFilter(), '-c:a', 'aac', '-b:a', '192k', '-progress', 'pipe:1', '-nostats', tmpPath], {
+      onProgress,
+      totalDurationSeconds: durationSeconds
+    })
+    await rename(tmpPath, outputPath)
+  } catch (error) {
+    await rm(tmpPath, { force: true }).catch(() => undefined)
+    throw error
+  }
   return outputPath
 }
+
+/** The basic method's result in a file's cache folder ("v2": the filter
+ * that keeps both speakers playing). */
+const BASIC_INSTRUMENTAL_FILE = 'no-vocals-basic-v2.m4a'
 
 /** Just the voice of a short recording (a clone's reference): the Demucs
  * vocals stem, music and effects left out. The GPU first, then the CPU (a

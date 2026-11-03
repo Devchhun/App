@@ -1,8 +1,10 @@
 import { useRef, useState } from 'react'
 import type { TimelineClip, ClipTransform } from '@shared/project'
-import { interpolateKeyframes, isAnimated, type KeyframeableProperty } from '@shared/keyframes'
+import { isAnimated, type KeyframeableProperty } from '@shared/keyframes'
 import { positionScale } from '@shared/clipPosition'
+import { clipScreenRect } from './clipScreenRect'
 import { useSequence } from '../sequence/SequenceContext'
+import type { ClipPlacement } from '../sequence/sequenceOps'
 import { useHistory } from '../history/HistoryContext'
 
 const IDENTITY: ClipTransform = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
@@ -13,10 +15,13 @@ const SNAP_DEG = 3
 const MIN_SCALE = 0.05
 
 type Corner = 'nw' | 'ne' | 'se' | 'sw'
-type Drag =
+/** `all`: the rest of the track follows when the drag ends (Alt held at
+ * the start: this clip only). */
+type Drag = { all?: boolean } & (
   | { kind: 'move'; startX: number; startY: number; x0: number; y0: number }
   | { kind: 'scale'; d0: number; sx0: number; sy0: number }
   | { kind: 'rotate'; a0: number; r0: number }
+)
 
 interface Props {
   clip: TimelineClip
@@ -33,39 +38,38 @@ interface Props {
  * size it, the round handle under it to turn it (snapping at right
  * angles). One drag is one Undo step; a property that has keyframes gets
  * its keyframe at the playhead set instead of its plain value (which the
- * keyframes would override). */
+ * keyframes would override). Every other picture on the clip's track takes
+ * the same place/size/turn when the drag ends (a video cut into a clip per
+ * subtitle moves as one), each keeping its own Mirror; Alt-drag changes
+ * this clip only. */
 export function ClipTransformGizmo({ clip, stageSize, mediaSize, fit, currentTime }: Props): JSX.Element | null {
-  const { updateClipProperties, addOrUpdateKeyframe } = useSequence()
+  const { sequence, updateClipProperties, addOrUpdateKeyframe, placeClips } = useSequence()
   const { beginTransaction, endTransaction } = useHistory()
   const boxRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
   const frameRef = useRef(0)
   const pendingRef = useRef<Partial<ClipTransform> | null>(null)
+  /** What this drag has set so far, for the rest of the track at its end. */
+  const placedRef = useRef<ClipPlacement>({})
   const [snap, setSnap] = useState<{ x: boolean; y: boolean }>({ x: false, y: false })
 
-  const mw = mediaSize?.width
-  const mh = mediaSize?.height
-  if (!mw || !mh || clip.locked) return null
+  // Drawn where the picture is NOW -- its motion (float, around...)
+  // included: a logo running round the screen used to have its frame left
+  // at its resting place, out of reach of the logo itself. A drag still
+  // moves the resting place; the motion carries on from it.
+  const rect = clipScreenRect(clip, stageSize, mediaSize, fit, currentTime)
+  if (!rect || clip.locked) return null
 
   const t = clip.transform ?? IDENTITY
   const kf = clip.keyframes
   const timeInClip = currentTime - clip.startTime
-  const value = (prop: 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation'): number => interpolateKeyframes(kf?.[prop], timeInClip, t[prop])
-  const x = value('x')
-  const y = value('y')
-  const scaleX = value('scaleX')
-  const scaleY = value('scaleY')
-  const rotation = value('rotation')
+  const { x, y, scaleX, scaleY, rotation, cx, cy, w, h, shownRotation } = rect
   const unit = positionScale(stageSize)
-  const fitScale = fit === 'cover' ? Math.max(stageSize.width / mw, stageSize.height / mh) : Math.min(stageSize.width / mw, stageSize.height / mh)
-  const cx = stageSize.width / 2 + x * unit
-  const cy = stageSize.height / 2 + y * unit
-  const w = Math.abs(mw * fitScale * scaleX)
-  const h = Math.abs(mh * fitScale * scaleY)
 
   /** Writes the change: keyframed properties get a keyframe at the playhead,
    * the rest go into the plain transform. Batched to one write a frame. */
   const apply = (patch: Partial<ClipTransform>): void => {
+    placedRef.current = { ...placedRef.current, ...patch }
     pendingRef.current = { ...pendingRef.current, ...patch }
     if (frameRef.current) return
     frameRef.current = requestAnimationFrame(() => {
@@ -97,7 +101,8 @@ export function ClipTransformGizmo({ clip, stageSize, mediaSize, fit, currentTim
     } catch {
       // A pointer the browser no longer tracks: the drag still follows it.
     }
-    dragRef.current = drag
+    dragRef.current = { ...drag, all: !e.altKey }
+    placedRef.current = {}
     beginTransaction()
   }
 
@@ -117,7 +122,10 @@ export function ClipTransformGizmo({ clip, stageSize, mediaSize, fit, currentTim
     } else if (drag.kind === 'scale') {
       const d = Math.hypot(px - cx, py - cy)
       const ratio = drag.d0 > 0 ? d / drag.d0 : 1
-      apply({ scaleX: Math.max(MIN_SCALE, drag.sx0 * ratio), scaleY: Math.max(MIN_SCALE, drag.sy0 * ratio) })
+      // The size changes, a Mirror (negative scale) stays: clamping the
+      // signed value squashed a mirrored picture to MIN_SCALE at once.
+      const resize = (s0: number): number => (s0 < 0 ? -1 : 1) * Math.max(MIN_SCALE, Math.abs(s0) * ratio)
+      apply({ scaleX: resize(drag.sx0), scaleY: resize(drag.sy0) })
     } else {
       const a = (Math.atan2(py - cy, px - cx) * 180) / Math.PI
       let r = drag.r0 + (a - drag.a0)
@@ -129,16 +137,25 @@ export function ClipTransformGizmo({ clip, stageSize, mediaSize, fit, currentTim
   }
 
   const onUp = (e: React.PointerEvent): void => {
-    if (!dragRef.current) return
+    const drag = dragRef.current
+    if (!drag) return
     dragRef.current = null
+    const placed = placedRef.current
     try {
       ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
     } catch {
       // already released
     }
     setSnap({ x: false, y: false })
-    // The last batched write lands before the Undo step closes.
-    requestAnimationFrame(() => requestAnimationFrame(() => endTransaction()))
+    // The last batched write (queued earlier) lands first; then the rest of
+    // the track follows in one change, all before the Undo step closes.
+    requestAnimationFrame(() => {
+      if (drag.all && Object.keys(placed).length > 0) {
+        const others = sequence.clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id && !c.locked && (c.type === 'video' || c.type === 'image')).map((c) => c.id)
+        if (others.length > 0) placeClips(others, placed)
+      }
+      requestAnimationFrame(() => requestAnimationFrame(() => endTransaction()))
+    })
   }
 
   // On the frame only: a handle's pointer events bubble up to it.
@@ -165,8 +182,8 @@ export function ClipTransformGizmo({ clip, stageSize, mediaSize, fit, currentTim
       <div
         ref={boxRef}
         className="clip-gizmo"
-        style={{ left: cx, top: cy, width: w, height: h, transform: `translate(-50%, -50%) rotate(${rotation}deg)` }}
-        title="Drag to move · corners to resize · the round handle to rotate"
+        style={{ left: cx, top: cy, width: w, height: h, transform: `translate(-50%, -50%) rotate(${shownRotation}deg)` }}
+        title="Drag to move · corners to resize · the round handle to rotate -- every clip on this track follows (hold Alt for this clip only)"
         onPointerDown={startMove}
         {...handlers}
       >

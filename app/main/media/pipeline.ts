@@ -1,3 +1,4 @@
+import { DAMAGED_VIDEO_MESSAGE, isDamagedVideoOnce } from './damageCheck'
 import { randomUUID } from 'crypto'
 import { basename, extname } from 'path'
 import { validateMediaFile } from './validate'
@@ -31,6 +32,13 @@ export async function processMediaFile(
   const validation = await validateMediaFile(filePath)
   if (!validation.ok) {
     throw new Error(validation.error)
+  }
+  // A video whose download was cut off: most of it is not picture data at
+  // all. Left in, no preview copy can be made of it and the player stalls
+  // where the garbage starts (the Timeline "hangs" at that clip) -- so it
+  // is refused here, on import and when a project holding it is opened.
+  if (await isDamagedVideoOnce(filePath)) {
+    throw new Error(DAMAGED_VIDEO_MESSAGE)
   }
 
   const cacheKey = await cacheKeyForFile(filePath)

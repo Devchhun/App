@@ -90,7 +90,7 @@ function NoSubtitlesYet(): JSX.Element {
   const aiDubber = useAiDubber()
   const [error, setError] = useState<string | null>(null)
   const videoMediaId = aiDubber.state.videoMediaId ?? ''
-  // Auto SRT here = every video on the Timeline, one at a time (the same
+  // Auto SRT here = every video on the Timeline, several at a time (the same
   // run as the Auto SRT panel), each video's lines under it.
   const job = aiDubber.batchJob
   const running = !!job
@@ -722,7 +722,7 @@ function SpeakerCharacterList(): JSX.Element {
 
 const ROWS_PER_BLOCK = 40
 /** A row's height before it has been measured (one line of text). */
-const ROW_ESTIMATE_PX = 52
+const ROW_ESTIMATE_PX = 44
 
 /** A stretch of the subtitle list that holds its rows only while it is
  * near the visible part (within ~two screens), and otherwise an empty box

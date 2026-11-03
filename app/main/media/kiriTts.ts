@@ -1,10 +1,13 @@
-import { readFile, writeFile, mkdtemp, rm } from 'fs/promises'
+import { createHash } from 'crypto'
+import { app } from 'electron'
+import { existsSync } from 'fs'
+import { mkdir, readFile, rename, writeFile, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
-import { basename, join } from 'path'
+import { basename, dirname, join } from 'path'
 import { runFfmpeg } from './jobRunner'
 import { isolateVoice } from './vocalRemoval'
 import { getKiriApiKey } from '../ai/kiriApiKeyStore'
-import { explainKiriError, isRetryableKiriStatus, parseKiriVoices, KIRI_API_BASE, KIRI_CLONE_MAX_SECONDS, KIRI_INPUT_MAX, KIRI_MODEL, type KiriCloneOptions, type KiriVoice } from '@shared/kiriTts'
+import { explainKiriError, isRetryableKiriStatus, parseKiriVoices, KIRI_API_BASE, KIRI_SAMPLE_TEXT, KIRI_CLONE_MAX_SECONDS, KIRI_INPUT_MAX, KIRI_MODEL, type KiriCloneOptions, type KiriVoice } from '@shared/kiriTts'
 
 /** KiriTTS over HTTPS (see shared/kiriTts.ts). Rate limits and server
  * hiccups are retried after a pause; a bad key, a plan without API access
@@ -20,6 +23,10 @@ export class KiriTtsError extends Error {
 }
 
 const RETRY_PAUSES_MS = [2000, 6000, 15000]
+/** One request (answer and audio together) is given up on after this long
+ * and asked again: a busy server sometimes never answers at all, which held
+ * a line -- and its share of the run -- for minutes. */
+const REQUEST_TIMEOUT_MS = 90_000
 
 /** The server, overridable for tests (a local stand-in). */
 function apiBase(): string {
@@ -48,9 +55,26 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Not an HTTP status: the service could not be reached at all (no
+ * internet, the connection dropped). It lets a run tell a dead connection,
+ * which fails every line the same way, from one line's own trouble. */
+export const KIRI_UNREACHABLE = -1
+const UNREACHABLE_MESSAGE = 'Could not reach KiriTTS -- check the internet connection, then generate again.'
+
 async function kiriFetch(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${apiBase()}${path}`, { ...init, signal })
+    let res: Response
+    try {
+      res = await fetch(`${apiBase()}${path}`, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+    } catch {
+      // fetch throws (a bare "fetch failed") when the connection itself
+      // fails; a short drop is over by the next try.
+      if (signal?.aborted) throw new KiriTtsError('Canceled')
+      if (attempt >= RETRY_PAUSES_MS.length) throw new KiriTtsError(UNREACHABLE_MESSAGE, KIRI_UNREACHABLE)
+      await sleep(RETRY_PAUSES_MS[attempt], signal)
+      if (signal?.aborted) throw new KiriTtsError('Canceled')
+      continue
+    }
     if (res.ok) return res
     const body = await res.text().catch(() => '')
     if (attempt < RETRY_PAUSES_MS.length && isRetryableKiriStatus(res.status, body) && !signal?.aborted) {
@@ -66,6 +90,40 @@ export async function kiriListVoices(): Promise<KiriVoice[]> {
   const key = await requireKey()
   const res = await kiriFetch('/voices', { headers: { Authorization: `Bearer ${key}` } })
   return parseKiriVoices(await res.json())
+}
+
+/** Where a voice's sample is kept: with the app's own data, not the system's
+ * temp folder (which empties itself), for every project and every run. */
+function sampleFileOf(voice: string): string {
+  const name = createHash('sha1').update(voice).digest('hex').slice(0, 24)
+  return join(app.getPath('userData'), 'kiri-samples', `${name}.wav`)
+}
+
+const samplesBeingMade = new Map<string, Promise<string>>()
+
+/** A voice's sample as a file the app can play: made once through KiriTTS
+ * (a little credit, the first time only), kept from then on. KiriTTS does not
+ * give the recording a clone was made from: its site refuses them (403). */
+export function kiriVoiceSampleFile(voice: string): Promise<string> {
+  const running = samplesBeingMade.get(voice)
+  if (running) return running
+  const job = (async () => {
+    const path = sampleFileOf(voice)
+    // A PC reset while writing leaves a file of zeros: that one is made again.
+    const head = existsSync(path) ? (await readFile(path)).subarray(0, 4).toString('latin1') : ''
+    if (head === 'RIFF') return path
+    await mkdir(dirname(path), { recursive: true })
+    const tmp = `${path}.tmp`
+    try {
+      await kiriSpeakLine(voice, KIRI_SAMPLE_TEXT, tmp)
+      await rename(tmp, path)
+    } finally {
+      await rm(tmp, { force: true }).catch(() => undefined)
+    }
+    return path
+  })().finally(() => samplesBeingMade.delete(voice))
+  samplesBeingMade.set(voice, job)
+  return job
 }
 
 /** One line of speech into `outPath` (WAV). `speed` (KiriTTS's own,
@@ -90,7 +148,12 @@ export async function kiriSpeakLine(voice: string, text: string, outPath: string
     },
     options.signal
   )
-  const audio = Buffer.from(await res.arrayBuffer())
+  // The connection can still drop while the audio is on its way back.
+  const audio = Buffer.from(
+    await res.arrayBuffer().catch(() => {
+      throw new KiriTtsError(options.signal?.aborted ? 'Canceled' : UNREACHABLE_MESSAGE, KIRI_UNREACHABLE)
+    })
+  )
   if (audio.length < 100) throw new KiriTtsError('KiriTTS returned no audio for this line.')
   await writeFile(outPath, audio)
 }
@@ -124,6 +187,8 @@ export async function kiriCloneVoice(name: string, sourcePath: string, options: 
     const res = await kiriFetch('/audio/voice-clones', { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form })
     const body = (await res.json().catch(() => ({}))) as { id?: string; name?: string }
     const id = body.id || body.name || clean
+    // A voice cloned again under the same name sounds different now.
+    await rm(sampleFileOf(id), { force: true }).catch(() => undefined)
     return { id, name: body.name || id, cloned: true, gender: 'unknown' }
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => undefined)

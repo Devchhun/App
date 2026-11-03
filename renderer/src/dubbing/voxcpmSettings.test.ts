@@ -3,8 +3,13 @@ import { DEFAULT_VOXCPM_SETTINGS, parseStoredVoxCpmSettings, serializeVoxCpmSett
 
 describe('parseStoredVoxCpmSettings / serializeVoxCpmSettings', () => {
   it('round-trips a valid stored value exactly', () => {
-    const settings = { engine: 'edge-tts' as const, installDir: 'D:\\Tools\\VoxCPM2', device: 'cuda' as const, pitchMatch: false, tone: 'natural' as const, steadyPace: false, kiriActing: true }
+    const settings = { engine: 'edge-tts' as const, installDir: 'D:\\Tools\\VoxCPM2', device: 'cuda' as const, pitchMatch: false, tone: 'natural' as const, steadyPace: false, joinLines: true, kiriActing: true, echoStyle: 'dream' as const }
     expect(parseStoredVoxCpmSettings(serializeVoxCpmSettings(settings))).toEqual(settings)
+  })
+
+  it('echoes inner voices in the default style for a value stored before the setting existed, or an unknown one', () => {
+    expect(parseStoredVoxCpmSettings(JSON.stringify({ engine: 'kiritts' })).echoStyle).toBe('hall')
+    expect(parseStoredVoxCpmSettings(JSON.stringify({ echoStyle: 'cathedral' })).echoStyle).toBe('hall')
   })
 
   it('keeps pitch match on for a value stored before the setting existed', () => {

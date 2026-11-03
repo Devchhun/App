@@ -455,11 +455,11 @@ export function HomeScreen(): JSX.Element {
                       </div>
                     ) : (
                       <div className="home-card-trash-actions" onClick={(e) => e.stopPropagation()}>
-                        <button className="home-tool-button" onClick={() => void restore(p)}>
+                        <button className="home-tool-button home-card-trash-restore" title="Restore this project" onClick={() => void restore(p)}>
                           Restore
                         </button>
-                        <button className="home-tool-button home-tool-button-danger" onClick={() => void deleteForever(p)}>
-                          Delete forever
+                        <button className="home-tool-button home-tool-button-danger home-card-trash-delete" title="Delete forever (cannot be undone)" onClick={() => void deleteForever(p)}>
+                          Delete
                         </button>
                       </div>
                     )}

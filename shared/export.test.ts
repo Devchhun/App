@@ -439,3 +439,24 @@ describe('buildExportFilterGraph for a piece of a longer export', () => {
     expect(args).toContain('[aout]')
   })
 })
+
+describe('buildExportFilterGraph with Mirror', () => {
+  const t = (scaleX: number, scaleY = 1) => ({ x: 0, y: 0, scaleX, scaleY, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 })
+  const graphOf = (transform: ReturnType<typeof t>): string => {
+    const rc = { clip: clip({ id: 'v', trackId: 'V1', startTime: 0, duration: 2, transform }), sourcePath: 'film.mp4', trackOrder: 0 }
+    const { args } = buildExportFilterGraph([rc], [], 2, { width: 854, height: 480 }, 30, { ...DEFAULT_EXPORT_OPTIONS, includeAudio: false }, 'out.mp4')
+    return args[args.indexOf('-filter_complex') + 1]
+  }
+
+  it('flips a mirrored clip (a negative scale) with hflip, its size from the scale\'s magnitude', () => {
+    const mirrored = graphOf(t(-1))
+    expect(mirrored).toContain('hflip')
+    // ffmpeg reads iw*-1 as "keep the aspect ratio": no flip at all.
+    expect(mirrored).not.toMatch(/iw\*-/)
+    const bigger = graphOf(t(-1.5, 1.5))
+    expect(bigger).toContain('scale=iw*1.5:ih*1.5')
+    expect(bigger).toContain('hflip')
+    expect(graphOf(t(1, -1))).toContain('vflip')
+    expect(graphOf(t(1))).not.toMatch(/[hv]flip/)
+  })
+})

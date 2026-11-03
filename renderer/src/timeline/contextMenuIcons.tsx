@@ -32,6 +32,7 @@ const ICONS: Array<[string, string]> = [
   ['Link Selected', 'M8 12a3 3 0 0 1 0-4l2-2a3 3 0 0 1 4 4l-1 1M12 8a3 3 0 0 1 0 4l-2 2a3 3 0 0 1-4-4l1-1'],
   ['Unlink', 'M8 12a3 3 0 0 1 0-4l1-1M12 8a3 3 0 0 1 0 4l-1 1M4 4l12 12'],
   ['Relink Original Audio', 'M3 10c3-4 6-4 9 0s6 4 5 0M14 3l3 3-3 3'],
+  ['Save Audio as WAV', 'M10 3v9M6 8l4 4 4-4M4 15h12'],
   ['Extract to Audio', 'M4 13V7l5 1v5zM12 8a3 3 0 0 1 0 4M14 6a6 6 0 0 1 0 8'],
   ['Remove Background', 'M4 4h12v12H4zM7 13l3-4 2 2.5 1.5-1.5L16 13M4 4l12 12'],
   ['Removing Background', 'M4 4h12v12H4zM7 13l3-4 2 2.5 1.5-1.5L16 13'],

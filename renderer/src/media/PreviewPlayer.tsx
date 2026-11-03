@@ -12,6 +12,7 @@ import { getFitModeStorageKey, parseStoredFitMode, type PreviewFitMode, getPrevi
 import { ColorScope } from './ColorScope'
 import { VideoOverlayLayer } from './VideoOverlayLayer'
 import { ClipTransformGizmo } from './ClipTransformGizmo'
+import { clipScreenRect, isOnClip } from './clipScreenRect'
 import { setElementLevel } from './audioBoost'
 import { useAiDubber } from '../dubbing/AiDubberContext'
 import { StillFrameExportDialog } from './StillFrameExportDialog'
@@ -23,6 +24,8 @@ import { resolveActiveVideoClip, isTrackAudioMuted } from '../timeline/trackMode
 import { useNarration } from '../narration/NarrationContext'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { computeClipVisualStyle, resolveClipVolume, clipHasAnimatedProperties } from './clipVisuals'
+import { BackgroundBlurLayer } from './BackgroundBlurLayer'
+import { adjustCssFilter, backgroundBlurSigma } from '@shared/clipAdjust'
 import type { TimelineClip } from '@shared/project'
 import {
   PlayIcon,
@@ -50,6 +53,9 @@ const FRAME_STEP_SECONDS = 1 / 30
  * project playhead expects before we force-correct it -- loose enough that
  * natural video decode timing doesn't fight this correction every frame. */
 const DRIFT_CORRECTION_THRESHOLD_SECONDS = 0.3
+/** How close the element must already be to a new clip's start for the
+ * clip change to need no seek (a cut that carries on in the same file). */
+const CLIP_JOIN_TOLERANCE_SECONDS = 0.15
 /** During a live scrub drag, real <video> seeks (an actual decoder
  * operation -- find the nearest keyframe, decode forward -- not a cheap
  * state update) are throttled to at most once per this interval, instead of
@@ -105,7 +111,7 @@ export function PreviewPlayer(): JSX.Element {
   const { importPaths } = useMedia()
   const confirm = useConfirm()
   const { scenesByMedia, selectedSceneId } = useScenes()
-  const { sequence, selectedTimelineClipIds } = useSequence()
+  const { sequence, selectedTimelineClipIds, selectClips } = useSequence()
   const { brandPreset } = useBrandPreset()
   const narration = useNarration()
   const { videoOverlay, setVideoOverlay, overlayLines } = useAiDubber()
@@ -196,6 +202,13 @@ export function PreviewPlayer(): JSX.Element {
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
 
   const requestVideoPlay = useCallback((el: HTMLVideoElement): void => {
+    // play() on a video that has ENDED starts it again from 0. A clip can
+    // run a few milliseconds past its file's real end (the clip is
+    // 369.324 s, the file 369.322 s): restarting there sent the element back
+    // to 0, the next frame seeked it back to the end, and the playhead stood
+    // still at the join forever. The playback clock carries the playhead
+    // over that tail instead; any seek away from the end clears `ended`.
+    if (el.ended) return
     void el.play().catch((error: unknown) => {
       if (!playIntentRef.current) return
       // load()/src replacement commonly aborts the first play request. The
@@ -238,6 +251,42 @@ export function PreviewPlayer(): JSX.Element {
   // however many video-kind tracks exist, the highest-order one wins (same
   // "topmost track renders/plays on top" rule Preview compositing uses).
   const activeV1Clip = useMemo(() => resolveActiveVideoClip(activeClips, sequence.tracks, currentTime), [activeClips, sequence.tracks, currentTime])
+  // Background > Blur fills the bars Fit leaves, as Export does: the
+  // Player's Fill (a preview-only stretch) left no bars, so the blur never
+  // showed and its buttons seemed to do nothing.
+  const shownFit: PreviewFitMode = activeV1Clip?.backgroundBlur ? 'contain' : fitMode
+  /** Pictures' pixel sizes measured from the loaded image/video, for media
+   * whose size was never recorded (a PNG logo brought in as a still
+   * video): without one the move/size frame never showed for it, and its
+   * motion was worked out on a guessed size, not the one Export uses. */
+  const [measuredSizes, setMeasuredSizes] = useState<Record<string, { width: number; height: number }>>({})
+  const noteMediaSize = useCallback((mediaId: string, width: number, height: number): void => {
+    if (!width || !height) return
+    setMeasuredSizes((prev) => (prev[mediaId]?.width === width && prev[mediaId]?.height === height ? prev : { ...prev, [mediaId]: { width, height } }))
+  }, [])
+  const sizeOfMedia = (mediaId: string | undefined): { width?: number; height?: number } | undefined => {
+    if (!mediaId) return undefined
+    const meta = mediaById[mediaId]?.metadata
+    return meta?.width && meta.height ? meta : (measuredSizes[mediaId] ?? meta)
+  }
+  /** A click on the Player selects the picture under it (the top one: a
+   * logo over the video), as in CapCut -- then its move/size frame shows.
+   * Where each picture is comes from clipScreenRect, motion included. The
+   * frame itself, and graphics, handle their own clicks first. */
+  const pickPictureAt = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0 || previewMode !== 'project' || !stageSize) return
+    const box = e.currentTarget.getBoundingClientRect()
+    const px = e.clientX - box.left
+    const py = e.clientY - box.top
+    const pictures = findActiveClips(sequence, currentTime)
+      .filter((c) => (c.type === 'video' || c.type === 'image') && c.enabled !== false && !trackById[c.trackId]?.hidden)
+      .sort((a, b) => (trackById[b.trackId]?.order ?? 0) - (trackById[a.trackId]?.order ?? 0))
+    const hit = pictures.find((c) => {
+      const rect = clipScreenRect(c, stageSize, sizeOfMedia(c.mediaId), c.id === activeV1Clip?.id ? shownFit : 'contain', currentTime)
+      return rect && isOnClip(rect, px, py)
+    })
+    if (hit && !(selectedTimelineClipIds.length === 1 && selectedTimelineClipIds[0] === hit.id)) selectClips([hit.id])
+  }
   /** The one selected picture (video or image) on screen now: it gets the
    * move / size / rotate frame (ClipTransformGizmo), as in CapCut. */
   const gizmoClip = useMemo(() => {
@@ -318,7 +367,13 @@ export function PreviewPlayer(): JSX.Element {
         el.src = src
         el.load()
       }
-      const needsSeek = clipChanged || srcChanged || Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS
+      // A new clip that carries straight on from where the element already
+      // is (Video Sync cuts one film into a clip per subtitle, each at its
+      // own speed -- 1300 cuts in a series) is not seeked: a seek at every
+      // cut restarted the decoder from a keyframe and the picture hitched
+      // every few seconds. Only the speed changes there.
+      const carriesOn = clipChanged && !srcChanged && playing && Math.abs(el.currentTime - localTime) <= CLIP_JOIN_TOLERANCE_SECONDS
+      const needsSeek = (clipChanged && !carriesOn) || srcChanged || Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS
       // Only the fine-grained "still the same clip, just correcting drift"
       // case is throttleable during a live scrub -- a genuine clip/source
       // change always seeks immediately regardless, since that's a much
@@ -461,8 +516,10 @@ export function PreviewPlayer(): JSX.Element {
       const el = videoRef.current
       const clips = findActiveClips(sequence, previous).filter((c) => !trackById[c.trackId]?.hidden)
       const v1 = resolveActiveVideoClip(clips, sequence.tracks, previous)
-      // Only trust the element when it holds this very clip.
-      const videoOnScreen = !!el && v1?.type === 'video' && lastSyncedClipRef.current.id === v1.id
+      // Only trust the element when it holds this very clip -- and has not
+      // run out: past the file's last frame (a clip a hair longer than its
+      // file) the wall clock carries the playhead to the next clip.
+      const videoOnScreen = !!el && !el.ended && v1?.type === 'video' && lastSyncedClipRef.current.id === v1.id
       const ready = videoOnScreen && isVideoReady(el)
       if (videoOnScreen && el.currentTime !== lastVideoTime) {
         lastVideoTime = el.currentTime
@@ -560,7 +617,7 @@ export function PreviewPlayer(): JSX.Element {
   // frequency) is completely unchanged from before this feature existed.
   const activeClipAnimated = clipHasAnimatedProperties(activeV1Clip)
   const activeClipVisualStyle = useMemo(
-    (): React.CSSProperties => computeClipVisualStyle(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0), stageSize, activeV1Clip ? mediaById[activeV1Clip.mediaId]?.metadata : undefined),
+    (): React.CSSProperties => computeClipVisualStyle(activeV1Clip, currentTime - (activeV1Clip?.startTime ?? 0), stageSize, sizeOfMedia(activeV1Clip?.mediaId)),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `currentTime` is deliberately only a dependency while `activeClipAnimated` is true; see the comment above.
     [activeV1Clip, activeClipAnimated ? currentTime : null, stageSize]
   )
@@ -593,11 +650,19 @@ export function PreviewPlayer(): JSX.Element {
 
   const changeVolume = (value: number): void => setVolume(value)
 
+  // The stage's container goes fullscreen, not the stage: the stage is
+  // sized in pixels from its container (ResizeObserver above), so it
+  // re-fits the whole screen at the project's own shape -- subtitles, logo,
+  // blur and all. The stage itself, stretched by the browser, kept the
+  // small Player's pixel sizes inside and came out wrong.
   const toggleFullscreen = (): void => {
-    const el = stageRef.current
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined)
+      return
+    }
+    const el = stageWrapEl ?? stageRef.current
     if (!el) return
-    if (document.fullscreenElement) void document.exitFullscreen()
-    else void el.requestFullscreen()
+    void el.requestFullscreen().catch(() => undefined)
   }
 
   // Player menu (the ≡ in the header): Preview mode / fit, still-frame
@@ -811,12 +876,17 @@ export function PreviewPlayer(): JSX.Element {
               className="preview-stage"
               ref={stageRef}
               style={stageSize ? { width: stageSize.width, height: stageSize.height } : { width: '100%', height: '100%' }}
+              onPointerDown={pickPictureAt}
             >
               <div className="preview-stage-clip">
+                {/* Background > Blur: the clip's own frames, enlarged and
+                    blurred, behind it -- the video's black ground then
+                    gives way so it shows in the bars. */}
+                {activeV1Clip?.backgroundBlur ? <BackgroundBlurLayer videoRef={videoRef} clip={activeV1Clip} stageSize={stageSize} opacity={activeClipVisualStyle.opacity} /> : null}
                 <video
                   ref={videoRef}
                   crossOrigin="anonymous"
-                  style={{ objectFit: fitMode, ...activeClipVisualStyle }}
+                  style={{ objectFit: shownFit, ...activeClipVisualStyle, ...(activeV1Clip?.backgroundBlur ? { background: 'transparent', position: 'relative' } : {}) }}
                   onPlay={(e) => {
                     if (playIntentRef.current) setIsPlaying(true)
                     else e.currentTarget.pause()
@@ -829,6 +899,9 @@ export function PreviewPlayer(): JSX.Element {
                   onCanPlay={(e) => {
                     if (playIntentRef.current && e.currentTarget.paused) requestVideoPlay(e.currentTarget)
                   }}
+                  onLoadedMetadata={(e) => {
+                    if (activeV1Clip) noteMediaSize(activeV1Clip.mediaId, e.currentTarget.videoWidth, e.currentTarget.videoHeight)
+                  }}
                   onError={() => {
                     playIntentRef.current = false
                     setIsPlaying(false)
@@ -837,7 +910,13 @@ export function PreviewPlayer(): JSX.Element {
                 {!activeV1Clip && <div className="preview-stage-gap" />}
                 {secondaryClips.map((clip) => (
                   <SecondaryTrackMedia
-                    key={clip.id}
+                    // One element per track and file, not per clip: the
+                    // next clip of the same file (Video Sync's cuts, each
+                    // with its own speed) keeps playing in it -- a new
+                    // element per clip loaded the file again and the sound
+                    // dropped out at every cut. Its own effect seeks only
+                    // when the clip jumps elsewhere in the file.
+                    key={`${clip.trackId}:${clip.type}:${clip.mediaId}`}
                     clip={clip}
                     media={mediaById[clip.mediaId]}
                     currentTime={currentTime}
@@ -848,6 +927,8 @@ export function PreviewPlayer(): JSX.Element {
                     zIndex={trackOrderById[clip.trackId] ?? 0}
                     quality={previewQuality}
                     stageSize={stageSize}
+                    mediaSize={sizeOfMedia(clip.mediaId)}
+                    onMediaSize={noteMediaSize}
                   />
                 ))}
                 <GraphicsOverlay scenes={scenes} brand={brandPreset} currentTime={currentTime} selectedSceneId={selectedSceneId} stageSize={stageSize} />
@@ -869,8 +950,8 @@ export function PreviewPlayer(): JSX.Element {
                 <ClipTransformGizmo
                   clip={gizmoClip}
                   stageSize={stageSize}
-                  mediaSize={mediaById[gizmoClip.mediaId]?.metadata}
-                  fit={gizmoClip.id === activeV1Clip?.id ? fitMode : 'contain'}
+                  mediaSize={sizeOfMedia(gizmoClip.mediaId)}
+                  fit={gizmoClip.id === activeV1Clip?.id ? shownFit : 'contain'}
                   currentTime={currentTime}
                 />
               )}
@@ -950,6 +1031,9 @@ export function PreviewPlayer(): JSX.Element {
 interface SecondaryTrackMediaProps {
   clip: TimelineClip
   media: MediaItem | undefined
+  /** The picture's pixel size -- recorded, or measured once loaded. */
+  mediaSize?: { width?: number; height?: number }
+  onMediaSize?: (mediaId: string, width: number, height: number) => void
   /** The shared project clock -- this element chases it every render rather
    * than owning any playback state itself. */
   currentTime: number
@@ -982,7 +1066,7 @@ interface SecondaryTrackMediaProps {
  * on every render (not frame-perfect like the rvfc master, but genuinely
  * synchronized, checked continuously during playback) rather than owning a
  * second independent clock that could drift. */
-function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex, quality, stageSize }: SecondaryTrackMediaProps): JSX.Element | null {
+function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume, narrationMuted, trackMuted, zIndex, quality, stageSize, mediaSize, onMediaSize }: SecondaryTrackMediaProps): JSX.Element | null {
   const elRef = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   // A still image is drawn from its own file: its media plays from a video
   // made of it, which an <img> cannot show (and which has no transparency).
@@ -996,7 +1080,9 @@ function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume
     el.playbackRate = clipRate(clip)
     if (Math.abs(el.currentTime - localTime) > DRIFT_CORRECTION_THRESHOLD_SECONDS) el.currentTime = localTime
     if (isPlaying) {
-      if (el.paused) void el.play().catch(() => {})
+      // Not once it has ended: play() would start it again from 0 (a clip a
+      // hair longer than its file) -- a flash of its first frame and sound.
+      if (el.paused && !el.ended) void el.play().catch(() => {})
     } else if (!el.paused) {
       el.pause()
     }
@@ -1024,16 +1110,39 @@ function SecondaryTrackMedia({ clip, media, currentTime, isPlaying, globalVolume
 
   if (!src || clip.enabled === false) return null
 
-  const visualStyle: React.CSSProperties = { zIndex, ...computeClipVisualStyle(clip, currentTime - clip.startTime, stageSize, media?.metadata) }
+  const visualStyle: React.CSSProperties = { zIndex, ...computeClipVisualStyle(clip, currentTime - clip.startTime, stageSize, mediaSize ?? media?.metadata) }
 
   if (clip.type === 'image') {
     // eslint-disable-next-line jsx-a11y/alt-text -- decorative Timeline overlay, not user-facing content needing description.
-    return <img src={src} className="preview-secondary-visual" style={visualStyle} />
+    const picture = <img src={src} className="preview-secondary-visual" style={visualStyle} onLoad={(e) => onMediaSize?.(clip.mediaId, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} />
+    if (!clip.backgroundBlur || !stageSize) return picture
+    // Background > Blur for a picture: itself, enlarged to fill the stage and
+    // blurred, behind it -- as BackgroundBlurLayer does for the main video,
+    // and as Export draws it (the same blur size and colours).
+    const adjust = adjustCssFilter(clip.adjust)
+    const flipX = (clip.transform?.scaleX ?? 1) < 0 ? -1 : 1
+    const flipY = (clip.transform?.scaleY ?? 1) < 0 ? -1 : 1
+    return (
+      <>
+        {/* eslint-disable-next-line jsx-a11y/alt-text -- decorative blurred fill */}
+        <img src={src} className="preview-background-blur" aria-hidden style={{ zIndex, opacity: visualStyle.opacity, objectFit: 'cover', transform: `scale(${1.12 * flipX}, ${1.12 * flipY})`, filter: `${adjust ? `${adjust} ` : ''}blur(${backgroundBlurSigma(clip.backgroundBlur, stageSize.height).toFixed(1)}px)` }} />
+        {picture}
+      </>
+    )
   }
   if (clip.type === 'audio') {
     return <audio ref={elRef} src={src} crossOrigin="anonymous" />
   }
-  return <video ref={elRef} src={src} crossOrigin="anonymous" className="preview-secondary-visual" style={{ ...visualStyle, objectFit: 'contain' }} />
+  return (
+    <video
+      ref={elRef}
+      src={src}
+      crossOrigin="anonymous"
+      className="preview-secondary-visual"
+      style={{ ...visualStyle, objectFit: 'contain' }}
+      onLoadedMetadata={(e) => onMediaSize?.(clip.mediaId, e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
+    />
+  )
 }
 
 /** Source Preview: a small, self-contained player for one Media asset's raw

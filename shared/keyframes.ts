@@ -77,3 +77,39 @@ export function interpolateKeyframes(keyframes: ClipKeyframe[] | undefined, time
 export function isAnimated(keyframes: ClipKeyframe[] | undefined): boolean {
   return !!keyframes && keyframes.length >= 2
 }
+
+const exprNum = (n: number): string => String(Math.round(n * 1e6) / 1e6)
+
+/** The same value as interpolateKeyframes, as an ffmpeg expression of
+ * `time` (an expression too) -- for Export, which moves a picture frame
+ * by frame through overlay's x/y. Flat before the first keyframe and after
+ * the last, each segment eased by its later keyframe, as in the Player. */
+export function keyframesExpr(keyframes: ClipKeyframe[] | undefined, time: string, fallback: number): string {
+  if (!keyframes || keyframes.length === 0) return exprNum(fallback)
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time)
+  if (sorted.length === 1) return exprNum(sorted[0].value)
+  const T = `(${time})`
+  const eased = (u: string, easing: KeyframeEasing | undefined): string => {
+    switch (easing) {
+      case 'ease-in':
+        return `(${u})*(${u})`
+      case 'ease-out':
+        return `(1-(1-${u})*(1-${u}))`
+      case 'ease-in-out':
+        return `if(lt(${u},0.5),2*${u}*${u},1-pow(-2*${u}+2,2)/2)`
+      default:
+        return u
+    }
+  }
+  // Innermost: after the last keyframe; each segment wraps it, newest first.
+  let expr = exprNum(sorted[sorted.length - 1].value)
+  for (let i = sorted.length - 2; i >= 0; i--) {
+    const a = sorted[i]
+    const b = sorted[i + 1]
+    const span = b.time - a.time
+    const u = span <= 0 ? '1' : `clip((${T}-${exprNum(a.time)})/${exprNum(span)},0,1)`
+    const segment = `${exprNum(a.value)}+${exprNum(b.value - a.value)}*${eased(u, b.easing)}`
+    expr = `if(lt(${T},${exprNum(b.time)}),${segment},${expr})`
+  }
+  return `if(lt(${T},${exprNum(sorted[0].time)}),${exprNum(sorted[0].value)},${expr})`
+}

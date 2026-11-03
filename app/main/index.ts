@@ -12,14 +12,17 @@ import { registerNarrationIpc } from './ipc/narration'
 import { registerDubbingIpc } from './ipc/dubbing'
 import { registerVideoStoryNarrationIpc } from './ipc/videoStoryNarration'
 import { registerAiAnimationIpc } from './ipc/aiAnimation'
+import { registerMangaIpc } from './ipc/manga'
 import { registerVocalRemovalIpc } from './ipc/vocalRemoval'
+import { registerReframeIpc } from './ipc/reframe'
 import { registerKiriIpc } from './ipc/kiri'
 import { registerTranslationIpc } from './ipc/translation'
 import { registerExportIpc } from './ipc/export'
 import { registerWindowIpc, HOME_WINDOW_WIDTH, HOME_WINDOW_HEIGHT } from './ipc/window'
 import { getSharedWorker } from './ai/workerProcess'
 import { initAutoUpdater, registerUpdaterIpc } from './updater'
-import { registerCrashIpc } from './ipc/crash'
+import { appendCrashLog, registerCrashIpc } from './ipc/crash'
+import { reloadWhenBlank } from './windowWatch'
 import { registerLicenseIpc } from './license/licenseStore'
 import { TRANSCRIPTION_IPC } from '@shared/transcription'
 import { WINDOW_IPC } from '@shared/window'
@@ -64,6 +67,8 @@ function createMainWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  reloadWhenBlank(mainWindow, (entry) => void appendCrashLog(entry))
 
   // Chromium persists per-origin zoom in the profile across launches, so a
   // zoom applied once (e.g. Ctrl+wheel, or an earlier build's UI-scale
@@ -155,7 +160,9 @@ app.whenReady().then(() => {
   registerDubbingIpc()
   registerVideoStoryNarrationIpc()
   registerAiAnimationIpc()
+  registerMangaIpc()
   registerVocalRemovalIpc()
+  registerReframeIpc()
   registerKiriIpc()
   registerTranslationIpc()
   registerExportIpc()

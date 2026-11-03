@@ -4,7 +4,8 @@ import { basename } from 'path'
 import { probeMedia } from '../media/probe'
 import { SUPPORTED_MEDIA_EXTENSIONS } from '@shared/media'
 import { clearKiriApiKey, hasKiriApiKey, setKiriApiKey } from '../ai/kiriApiKeyStore'
-import { kiriCloneVoice, kiriListVoices } from '../media/kiriTts'
+import { kiriCloneVoice, kiriListVoices, kiriVoiceSampleFile } from '../media/kiriTts'
+import { registerMediaToken } from '../media/protocol'
 
 export function registerKiriIpc(): void {
   ipcMain.handle(KIRI_IPC.hasKey, () => hasKiriApiKey())
@@ -19,6 +20,13 @@ export function registerKiriIpc(): void {
   })
   // Clone: a recording (or a video -- its sound is used), picked here when
   // the caller has none, then uploaded.
+  ipcMain.handle(KIRI_IPC.voiceSample, async (_event, voice: string): Promise<{ ok: true; url: string } | { ok: false; error: string }> => {
+    try {
+      return { ok: true, url: registerMediaToken(await kiriVoiceSampleFile(String(voice ?? ''))) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
   ipcMain.handle(KIRI_IPC.pickCloneSource, async (event): Promise<KiriCloneSource> => {
     try {
       const win = BrowserWindow.fromWebContents(event.sender)

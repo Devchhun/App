@@ -22,21 +22,28 @@ export interface GeminiLine {
   voice?: SpeakerGender
   /** VOICE marked with *: an inner voice (thought), see shared/innerVoice.ts. */
   innerVoice?: boolean
+  /** The line already in the target language, when the prompt asked for it
+   * in the same answer (one request instead of two). */
+  translation?: string
 }
 export function cleanGeminiSrt(text: string): string {
   const cleaned = text.trim().replace(/^```(?:srt|subrip|text)?\s*/i, '').replace(/\s*```$/i, '').trim()
   if (!cleaned || /^NO_SPEECH\.?$/i.test(cleaned)) return ''
   return cleaned
 }
-export function buildGeminiTimedTranscriptPrompt(language: string, chunkDurationSeconds: number): string {
-  return `Transcribe every spoken utterance in this ${chunkDurationSeconds.toFixed(3)}-second audio file.
+/** `translateTo`: each row also carries the line in that language, in a fifth
+ * column -- the transcript and its translation in one request. */
+export function buildGeminiTimedTranscriptPrompt(language: string, chunkDurationSeconds: number, translateTo?: string): string {
+  const both = !!translateTo
+  return `Transcribe every spoken utterance in this ${chunkDurationSeconds.toFixed(3)}-second audio file${both ? `, and translate each one into ${translateTo}` : ''}.
 
 Return ONLY plain text rows in this exact format:
-START_SECONDS<TAB>END_SECONDS<TAB>VOICE<TAB>EXACT_SPOKEN_TEXT
+START_SECONDS<TAB>END_SECONDS<TAB>VOICE<TAB>EXACT_SPOKEN_TEXT${both ? '<TAB>TRANSLATION' : ''}
 
 Example:
-1.360\t2.920\tM\t你好
-3.200\t4.800\tF\t你去哪里
+${both ? `1.360\t2.920\tM\t你好\t${translateTo === 'Khmer' ? 'សួស្តី' : 'Hello'}
+3.200\t4.800\tF\t你去哪里\t${translateTo === 'Khmer' ? 'អ្នកទៅណា?' : 'Where are you going?'}` : `1.360\t2.920\tM\t你好
+3.200\t4.800\tF\t你去哪里`}
 
 RULES:
 - START_SECONDS and END_SECONDS are decimal seconds relative to this audio file, whose first sample is 0.000.
@@ -48,7 +55,9 @@ RULES:
 - Never translate, summarize, paraphrase, add recap/narration, describe actions/scenes, add speaker names, or invent speech.
 - Do not output JSON, SRT numbering, Markdown fences, headings, notes, or explanations.
 - Do not transcribe singing (theme songs, sung lyrics over music) -- only spoken dialogue, narration and inner voice.
-- If the speech is Chinese, write it in Simplified Chinese characters.
+- If the speech is Chinese, write it in Simplified Chinese characters.${both ? `
+- TRANSLATION is that same line in natural, spoken ${translateTo}, as a dubbing script would say it: the meaning and tone of EXACT_SPOKEN_TEXT. It never replaces EXACT_SPOKEN_TEXT, which stays in the language spoken.${translateTo === 'Khmer' ? '\n- In TRANSLATION, names are written in Khmer script, sounded out (Ethan = អ៊ីថាន), the same way in every row.' : ''}
+- One row is one sentence (or a short phrase) of one speaker: when a speaker says several sentences, each gets its own row with its own times. Never put two sentences in one row.` : ''}
 - Silent sections produce no row. If there is no speech, output exactly NO_SPEECH.`
 }
 
@@ -81,7 +90,9 @@ function voiceOf(token: string): SpeakerGender {
   return t === 'm' || t === 'male' ? 'male' : t === 'f' || t === 'female' ? 'female' : 'unknown'
 }
 
-export function parseGeminiTimedTranscript(text: string): GeminiLine[] {
+/** `withTranslation`: rows carry a translation as their last column (see
+ * buildGeminiTimedTranscriptPrompt's `translateTo`). */
+export function parseGeminiTimedTranscript(text: string, withTranslation = false): GeminiLine[] {
   const cleaned = text.trim().replace(/^```(?:text|tsv)?\s*/i, '').replace(/\s*```$/i, '').trim()
   if (!cleaned || /^NO_SPEECH\.?$/i.test(cleaned)) return []
   const lines: GeminiLine[] = []
@@ -102,12 +113,21 @@ export function parseGeminiTimedTranscript(text: string): GeminiLine[] {
     const cell = match[3].trim()
     const before = VOICE_COLUMN.exec(cell)
     const after = before ? null : VOICE_COLUMN_LAST.exec(cell)
-    const verbatimText = (before ? before[3] : after ? after[1] : cell).trim()
+    let verbatimText = (before ? before[3] : after ? after[1] : cell).trim()
+    // The translation: the last column ("你好<TAB>សួស្តី", or "| សួស្តី").
+    let translation: string | undefined
+    if (withTranslation) {
+      const parts = verbatimText.split(/\t+|\s+\|\s+/).map((part) => part.trim()).filter(Boolean)
+      if (parts.length >= 2) {
+        translation = parts[parts.length - 1]
+        verbatimText = parts.slice(0, -1).join(' ')
+      }
+    }
     const voice = before ? voiceOf(before[1]) : after ? voiceOf(after[2]) : undefined
     // "M*": the character's inner voice (a thought, usually echoed).
     const innerVoice = before ? !!before[2] : after ? !!after[3] : false
     if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime || !verbatimText) continue
-    lines.push({ startTime, endTime, verbatimText, speakerNumber: 1, language: 'auto', transcriptionConfidence: 1, identityConfidence: 0, ...(voice ? { voice } : {}), ...(innerVoice ? { innerVoice } : {}) })
+    lines.push({ startTime, endTime, verbatimText, speakerNumber: 1, language: 'auto', transcriptionConfidence: 1, identityConfidence: 0, ...(voice ? { voice } : {}), ...(innerVoice ? { innerVoice } : {}), ...(translation ? { translation } : {}) })
   }
   if (lines.length > 0) return lines.sort((left, right) => left.startTime - right.startTime)
 
@@ -277,4 +297,15 @@ export async function mapWithConcurrency<T>(count: number, limit: number, worker
   }
   await Promise.all(Array.from({ length: Math.min(limit, count) }, lane))
   return results
+}
+/** A queue of one: each `job` starts when the one before it has finished, a
+ * failed one included. For what a phone can do only once at a time (one
+ * encoder, one scan) among work that otherwise runs side by side. */
+export function oneAtATime(): <T>(job: () => Promise<T>) => Promise<T> {
+  let last: Promise<unknown> = Promise.resolve()
+  return <T,>(job: () => Promise<T>): Promise<T> => {
+    const turn = last.then(job, job)
+    last = turn.catch(() => undefined)
+    return turn
+  }
 }

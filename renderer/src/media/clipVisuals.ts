@@ -7,13 +7,15 @@ import type { TimelineClip } from '@shared/project'
 import { interpolateKeyframes, isAnimated } from '@shared/keyframes'
 import { clipMotionAt } from '@shared/clipMotion'
 import { positionScale } from '@shared/clipPosition'
+import { adjustCssFilter } from '@shared/clipAdjust'
+import { hasPictureFade, pictureFadeAt } from '@shared/pictureFade'
 
 /** True if ANY property on this clip has enough keyframes to actually vary
  * over time -- lets a caller decide whether its style/volume computation
  * needs to re-run every frame (keyframed) or can stay memoized on clip
  * identity alone (today's exact behavior for a plain, unkeyframed clip). */
 export function clipHasAnimatedProperties(clip: TimelineClip | undefined): boolean {
-  if (clip?.motion) return true
+  if (clip?.motion || hasPictureFade(clip)) return true
   if (!clip?.keyframes) return false
   return Object.values(clip.keyframes).some((keyframes) => isAnimated(keyframes))
 }
@@ -39,8 +41,13 @@ export function computeClipVisualStyle(
   const t = clip.transform
   const style: React.CSSProperties = {}
 
-  const opacity = interpolateKeyframes(kf?.opacity, timeWithinClip, clip.opacity ?? 1)
-  if (clip.opacity !== undefined || isAnimated(kf?.opacity)) style.opacity = opacity
+  const fade = hasPictureFade(clip) ? pictureFadeAt(clip, timeWithinClip) : 1
+  const opacity = interpolateKeyframes(kf?.opacity, timeWithinClip, clip.opacity ?? 1) * fade
+  if (clip.opacity !== undefined || isAnimated(kf?.opacity) || fade < 1) style.opacity = opacity
+  // Adjustment (brightness, contrast, saturation, hue): Export runs the
+  // same formulas (shared/clipAdjust.ts).
+  const filter = adjustCssFilter(clip.adjust)
+  if (filter) style.filter = filter
 
   let picture: { width: number; height: number } | undefined
   if (frame && mediaSize?.width && mediaSize.height) {

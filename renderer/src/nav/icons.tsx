@@ -158,6 +158,18 @@ export function MirrorIcon({ size = 15 }: IconProps): JSX.Element {
   )
 }
 
+/** Auto Reframe: a tall frame inside a wide picture, a face in it. */
+export function ReframeIcon({ size = 15 }: IconProps): JSX.Element {
+  return (
+    <svg width={size} height={size} {...base}>
+      <rect x="2" y="4.5" width="16" height="11" rx="1.5" opacity="0.45" />
+      <rect x="6.5" y="2.5" width="7" height="15" rx="1.2" />
+      <circle cx="10" cy="8.5" r="1.6" />
+      <path d="M7.8 13.2c.6-1.3 1.3-1.9 2.2-1.9s1.6.6 2.2 1.9" />
+    </svg>
+  )
+}
+
 export function RotateIcon({ size = 15 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} {...base}>

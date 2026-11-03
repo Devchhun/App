@@ -7,11 +7,27 @@ import { useSavedVoices, savedVoiceToModel } from './useSavedVoices'
 import { savedVoiceId } from './savedVoices'
 import { useKiriVoices, kiriVoiceToModel } from './useKiriVoices'
 import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey } from './voxcpmSettings'
+import { TOGETHER_MAX_EXTRA } from '@shared/dubbingTogether'
+import { saveReviewPlace } from './detectGenderResume'
+import { useVoicePreview } from './useVoicePreview'
 
 /** Which voices the review lists: the user's cloned voices only (KiriTTS
  * clones, or VoxCPM2's saved / custom voices), or every voice. Kept between
  * openings. */
 type VoiceTab = 'cloned' | 'all'
+/** Detect Gender's own picks, per story (its video), for this run of the
+ * app only: what colours the voices already cast. Never saved. */
+const pickedByStory = new Map<string, Record<string, string>>()
+/** ...and kept through a reload of the window (sessionStorage lasts as
+ * long as the app is open, which is how long the colours are meant to). */
+const PICKED_KEY = 'cae-detect-gender-picked-v1'
+try {
+  const saved = JSON.parse(sessionStorage.getItem(PICKED_KEY) ?? '{}') as Record<string, Record<string, string>>
+  for (const [story, picks] of Object.entries(saved)) pickedByStory.set(story, picks)
+} catch {
+  // No colours carried over: the review opens plain.
+}
+
 const VOICE_TAB_KEY = 'cae-detect-gender-voice-tab'
 
 function loadVoiceTab(): VoiceTab {
@@ -53,8 +69,27 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
    * click, read as "my click jumped to another voice". */
   const lastPickRef = useRef<Partial<Record<'male' | 'female', string>>>({})
   /** A pick just made: shown ticked for a moment before the next line. */
+  /** Line -> the voice chosen for it in this story since the app was
+   * started (kept while the review is closed and opened again; another
+   * story starts plain). */
+  const storyKey = aiDubber.state.videoMediaId ?? ''
+  const [pickedHere, setPickedState] = useState<Record<string, string>>(() => pickedByStory.get(storyKey) ?? {})
+  const setPickedHere = (update: (prev: Record<string, string>) => Record<string, string>): void =>
+    setPickedState((prev) => {
+      const next = update(prev)
+      pickedByStory.set(storyKey, next)
+      try {
+        sessionStorage.setItem(PICKED_KEY, JSON.stringify(Object.fromEntries(pickedByStory)))
+      } catch {
+        // Kept in memory only.
+      }
+      return next
+    })
   const [justPicked, setJustPicked] = useState<{ line: number; voiceId: string; name: string } | null>(null)
   const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** "Speak together" switched on for the line shown, before it has a
+   * second voice (a line that has one shows it on by itself). */
+  const [togetherOpen, setTogetherOpen] = useState(false)
   useEffect(() => () => {
     if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current)
   }, [])
@@ -66,6 +101,16 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
   // its clones) instead of the VoxCPM2 catalog.
   const [engine] = useState(() => parseStoredVoxCpmSettings(localStorage.getItem(getVoxCpmSettingsStorageKey())).engine)
   const kiri = useKiriVoices(engine === 'kiritts')
+  // A voice's round icon plays its kept sound: a saved voice's recording, or a
+  // KiriTTS voice's sample, made the first time and kept for every project.
+  // A catalog voice has neither: it says this line, free, on this computer or
+  // through Edge.
+  const voicePreview = useVoicePreview({
+    customVoiceReferenceAudioPath: aiDubber.state.customVoiceReferenceAudioPath,
+    customVoiceReferenceText: aiDubber.state.customVoiceReferenceText
+  })
+  const hearing = voicePreview.preview
+  const stopHearing = voicePreview.stop
   const [voiceTab, setVoiceTabState] = useState<VoiceTab>(loadVoiceTab)
   const setVoiceTab = (tab: VoiceTab): void => {
     setVoiceTabState(tab)
@@ -78,6 +123,13 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
 
   const segments = aiDubber.segments
   const segment = segments[index]
+  // The line shown is the place the review is left at: kept as it moves,
+  // so closing the review -- or the window reloading under it -- opens it
+  // here again (detectGenderResume.ts).
+  const selectedSubtitleId = aiDubber.selectedSubtitleId
+  useEffect(() => {
+    if (segment) saveReviewPlace(storyKey, segment.id, selectedSubtitleId)
+  }, [storyKey, segment?.id, selectedSubtitleId])
   // The line's own video and its time in that file -- after Batch Load the
   // Timeline holds several videos, and a line's Timeline time is not a time
   // in the first one.
@@ -98,7 +150,10 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
     if (video.readyState >= 1) start()
     else video.addEventListener('loadedmetadata', start, { once: true })
   }
-  const replay = playLine
+  const replay = (): void => {
+    stopHearing()
+    playLine()
+  }
 
   // Plays the line as soon as it is shown -- opening Detect Gender and
   // every Back/Skip/choice -- so each line is heard (and seen) without a
@@ -107,6 +162,8 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
   // detectedSegmentIdsRef guard so re-rendering this component never
   // re-requests the same segment.
   useEffect(() => {
+    // A test of the last line must not talk over this one.
+    stopHearing()
     if (segment) playLine()
     if (!segment) return
     const existing = aiDubber.getSegmentState(segment.id)
@@ -143,6 +200,7 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
       onClose()
       return
     }
+    setTogetherOpen(false)
     setIndex(Math.max(0, next))
   }
 
@@ -154,6 +212,7 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
   const chooseVoice = (voice: { id: string; name: string; gender: string }): void => {
     if (advanceTimerRef.current) return
     aiDubber.setSegmentVoice(segment.id, voice.id)
+    setPickedHere((prev) => ({ ...prev, [segment.id]: voice.id }))
     const gender = voice.gender === 'male' || voice.gender === 'female' ? voice.gender : segmentState.detectedGender
     if (gender === 'male' || gender === 'female') lastPickRef.current = { ...lastPickRef.current, [gender]: voice.id }
     setJustPicked({ line: index + 1, voiceId: voice.id, name: voice.name })
@@ -163,6 +222,39 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
       goToIndex(next)
     }, 260)
   }
+
+  // A thought, not a line said aloud: Generate gives it the echo.
+  const echoOn = aiDubber.isInnerVoice(segment.id)
+  // Several people saying the line at once: its own voice (1) and the
+  // others picked here, generated one over the other. While this is on, a
+  // click adds or takes away a voice and the review stays on the line.
+  const togetherVoices = segmentState.togetherVoiceIds ?? []
+  const together = togetherOpen || togetherVoices.length > 0
+  const ownVoice = segmentState.voiceManuallyAssigned ? segmentState.voiceId : undefined
+  const toggleTogether = (): void => {
+    if (together) aiDubber.setSegmentTogetherVoices(segment.id, [])
+    setTogetherOpen(!together)
+  }
+  const toggleTogetherVoice = (voice: { id: string; name: string; gender: string }): void => {
+    if (!ownVoice) {
+      aiDubber.setSegmentVoice(segment.id, voice.id)
+      aiDubber.setSegmentTogetherVoices(segment.id, togetherVoices.filter((id) => id !== voice.id))
+      setPickedHere((prev) => ({ ...prev, [segment.id]: voice.id }))
+    } else if (voice.id === ownVoice) {
+      // Taking the first voice away: the next one becomes the line's own.
+      if (togetherVoices.length === 0) return
+      aiDubber.setSegmentVoice(segment.id, togetherVoices[0])
+      aiDubber.setSegmentTogetherVoices(segment.id, togetherVoices.slice(1))
+      setPickedHere((prev) => ({ ...prev, [segment.id]: togetherVoices[0] }))
+    } else if (togetherVoices.includes(voice.id)) {
+      aiDubber.setSegmentTogetherVoices(segment.id, togetherVoices.filter((id) => id !== voice.id))
+    } else if (togetherVoices.length < TOGETHER_MAX_EXTRA) {
+      aiDubber.setSegmentTogetherVoices(segment.id, [...togetherVoices, voice.id])
+    }
+  }
+  /** 1 for the line's own voice, 2.. for the others, 0 for a voice not in it. */
+  const togetherCount = (ownVoice ? 1 : 0) + togetherVoices.length
+  const togetherPlace = (voiceId: string): number => (voiceId === ownVoice ? 1 : togetherVoices.includes(voiceId) ? togetherVoices.indexOf(voiceId) + 2 : 0)
 
   // Catalog voices plus the user's own recorded ones -- this review is where
   // a character's voice actually gets decided, so a voice recorded FOR that
@@ -184,6 +276,15 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
   // The line's voice when it is not among the ones shown (an "All" pick
   // seen from "Cloned"), so the current choice is never invisible.
   const currentHidden = segmentState.voiceId && !pickableVoices.some((v) => v.id === segmentState.voiceId) ? allVoices.find((v) => v.id === segmentState.voiceId)?.name : undefined
+  // The voices chosen for this story in Detect Gender since the app was
+  // started, each in a colour of its own (by its place in the full list,
+  // so a voice keeps its colour whatever is picked next) with how many
+  // lines it was given -- which characters are cast so far, at a glance.
+  // A story not worked on yet shows every voice plain, as before.
+  const usedLines = new Map<string, number>()
+  for (const voiceId of Object.values(pickedHere)) usedLines.set(voiceId, (usedLines.get(voiceId) ?? 0) + 1)
+  const voiceHue = (voiceId: string): number => Math.round((Math.max(0, allVoices.findIndex((v) => v.id === voiceId)) * 137.508 + 18) % 360)
+
   const kiriNote =
     engine !== 'kiritts'
       ? null
@@ -248,6 +349,49 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
               <strong>{formatSeconds(segment.startTime)}s → {formatSeconds(segment.endTime)}s</strong>
             </div>
 
+            <div className="detect-gender-line-options">
+              <button
+                className={`detect-gender-option-button${echoOn ? ' detect-gender-option-button-on' : ''}`}
+                aria-pressed={echoOn}
+                title="A voice in the character's mind (a thought): Generate adds an echo to this line."
+                onClick={() => aiDubber.setSegmentInnerVoice(segment.id, !echoOn)}
+              >
+                <span aria-hidden="true">{echoOn ? '☑' : '☐'}</span> Echo <small>inner voice</small>
+              </button>
+              <button
+                className={`detect-gender-option-button${together ? ' detect-gender-option-button-on' : ''}`}
+                aria-pressed={together}
+                title="Several people say this line at once: pick 2 to 5 voices. Generate makes each one and lays them over each other, a moment apart."
+                onClick={toggleTogether}
+              >
+                <span aria-hidden="true">{together ? '☑' : '☐'}</span> Speak together <small>{together ? `${togetherCount} of ${TOGETHER_MAX_EXTRA + 1} voices` : 'many voices'}</small>
+              </button>
+            </div>
+            {together && (
+              <div className="detect-gender-together-bar">
+                {/* The voices picked so far, in order -- the list below may be
+                    scrolled away from them. A chip's x takes its voice away. */}
+                <div className="detect-gender-together-chips">
+                  {togetherCount === 0 && <span className="detect-gender-together-hint">Click the voices that say this line</span>}
+                  {[...(ownVoice ? [ownVoice] : []), ...togetherVoices].map((voiceId, i) => {
+                    const voice = allVoices.find((v) => v.id === voiceId)
+                    return (
+                      <button key={voiceId} className="detect-gender-together-chip" title="Take this voice away" disabled={!voice || togetherCount === 1} onClick={() => voice && toggleTogetherVoice(voice)}>
+                        <b>{i + 1}</b>
+                        <span>{voice?.name ?? voiceId}</span>
+                        {togetherCount > 1 && <i aria-hidden="true">×</i>}
+                      </button>
+                    )
+                  })}
+                </div>
+                {/* The voices are kept as they are clicked; this confirms
+                    them and moves on, like a click does on a plain line. */}
+                <button className="detect-gender-approve-button" disabled={togetherCount < 2} title={togetherCount < 2 ? 'Pick at least 2 voices' : undefined} onClick={() => goToIndex(index + 1)}>
+                  ✓ Approve
+                </button>
+              </div>
+            )}
+
             <div className="detect-gender-voice-heading">
               <div>
                 <strong>Choose a voice</strong>
@@ -270,6 +414,14 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
                 {engine === 'kiritts' ? 'No cloned voices yet -- clone one in Voice Model > KiriTTS (🎙 Clone voice).' : 'No saved voices yet -- record or add one in Voice Model > Custom.'}
               </div>
             )}
+            {hearing && hearing.status !== 'playing' && (
+              <div className={`ai-dubber-voice-test-status${hearing.status === 'error' ? ' ai-dubber-voice-test-error' : ''}`}>
+                {hearing.status === 'generating' ? `Getting ${allVoices.find((v) => v.id === hearing.voiceId)?.name ?? 'this voice'}…` : hearing.error}
+                <button aria-label="Close" onClick={stopHearing}>
+                  ×
+                </button>
+              </div>
+            )}
             <div className="detect-gender-voice-grid">
               {pickableVoices.map((voice) => {
                 // The one voice assigned so far: ticked when the user chose
@@ -277,20 +429,46 @@ export function DetectGenderReviewModal({ initialIndex, onClose }: Props): JSX.E
                 // the two must never look alike. Exactly one button.
                 const selected = segmentState.voiceId === voice.id
                 const picked = selected && !!segmentState.voiceManuallyAssigned
+                const used = usedLines.get(voice.id) ?? 0
+                const place = together ? togetherPlace(voice.id) : 0
+                const hearingThis = hearing?.voiceId === voice.id && hearing.status !== 'error' ? hearing.status : null
                 return (
+                  <div key={voice.id} className="detect-gender-voice-item">
                   <button
-                    key={voice.id}
-                    className={`detect-gender-voice-button${picked ? ' detect-gender-voice-button-selected' : selected ? ' detect-gender-voice-button-suggested' : ''}`}
-                    onClick={() => chooseVoice(voice)}
+                    className={`detect-gender-voice-button${picked ? ' detect-gender-voice-button-selected' : selected ? ' detect-gender-voice-button-suggested' : ''}${used > 0 ? ' detect-gender-voice-button-used' : ''}${place > 1 ? ' detect-gender-voice-button-together' : ''}`}
+                    style={used > 0 ? ({ '--used-hue': voiceHue(voice.id) } as React.CSSProperties) : undefined}
+                    title={used > 0 ? `${voice.name}: chosen for ${used} line${used === 1 ? '' : 's'}` : undefined}
+                    onClick={() => (together ? toggleTogetherVoice(voice) : chooseVoice(voice))}
                   >
-                    <span className={`detect-gender-voice-avatar detect-gender-voice-avatar-${voice.gender}`}>{voice.avatarLetter}</span>
+                    {/* Room for the round listen button, which sits over it:
+                        a button cannot go inside this one. */}
+                    <span className="detect-gender-voice-avatar-space" aria-hidden="true" />
                     <span className="detect-gender-voice-copy">
                       <strong>{voice.name}</strong>
                       <small>{voice.description}</small>
                     </span>
-                    {picked && <span className="detect-gender-suggested-badge">✓</span>}
+                    {used > 0 && <span className="detect-gender-used-count">{used}</span>}
+                    {place > 0 && <span className="detect-gender-together-place">{place}</span>}
+                    {picked && !together && <span className="detect-gender-suggested-badge">✓</span>}
                     {selected && !picked && <span className="detect-gender-suggestion-tag">Suggested</span>}
                   </button>
+                  <button
+                    className={`detect-gender-voice-avatar detect-gender-voice-avatar-${voice.gender} detect-gender-voice-listen${hearingThis ? ' detect-gender-voice-listen-on' : ''}`}
+                    style={used > 0 ? ({ '--used-hue': voiceHue(voice.id) } as React.CSSProperties) : undefined}
+                    title={hearingThis ? 'Stop' : `Listen to ${voice.name}`}
+                    aria-label={hearingThis ? 'Stop' : `Listen to ${voice.name}`}
+                    onClick={() => {
+                      if (hearingThis) {
+                        stopHearing()
+                        return
+                      }
+                      videoRef.current?.pause()
+                      if (!voicePreview.playKept(voice)) voicePreview.play(voice, segment.editedText ?? segment.text, engine)
+                    }}
+                  >
+                    {hearingThis === 'generating' ? '…' : hearingThis === 'playing' ? '■' : '▶'}
+                  </button>
+                  </div>
                 )
               })}
             </div>

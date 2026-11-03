@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { migrateProjectFile } from './projectMigration'
+import { migrateProjectFile, repairSquashedPictures } from './projectMigration'
 import { createNewProjectFile } from './project'
-import type { Scene, ProjectFile, MediaSource } from './project'
+import type { Scene, ProjectFile, MediaSource, TimelineClip } from './project'
 
 function baseScene(overrides: Partial<Scene> = {}): Scene {
   return {
@@ -490,5 +490,22 @@ describe('migrateProjectFile', () => {
       const twice = migrateProjectFile(once)
       expect(twice).toEqual(once)
     })
+  })
+})
+
+describe('repairSquashedPictures', () => {
+  const T = { x: 0, y: 0, scaleX: -1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
+  const clip = (id: string, startTime: number, transform: typeof T, type: TimelineClip['type'] = 'video'): TimelineClip => ({ id, mediaId: 'm', type, trackId: 'V1', startTime, duration: 1, sourceIn: 0, sourceOut: 1, locked: false, transform })
+
+  it('gives a picture squashed to a 0.05 sliver its size back, and its Mirror from the track', () => {
+    const clips = [clip('a', 0, { ...T, scaleX: 0.05, scaleY: 1.089 }), clip('b', 1, T), clip('c', 2, T)]
+    const out = repairSquashedPictures(clips)
+    expect(out[0].transform).toMatchObject({ scaleX: -1.089, scaleY: 1.089 })
+    expect(out[1]).toBe(clips[1])
+  })
+
+  it('leaves a small picture (a logo at 5%) and a healthy track as they are', () => {
+    const clips = [clip('a', 0, { ...T, scaleX: 0.05, scaleY: 0.05 }), clip('b', 1, T)]
+    expect(repairSquashedPictures(clips)).toBe(clips)
   })
 })

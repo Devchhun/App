@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAiDubber } from './AiDubberContext'
 import { DetectGenderReviewModal } from './DetectGenderReviewModal'
+import { loadReviewPlace, reviewStartIndex } from './detectGenderResume'
 import { AutoSrtPanel } from './AutoSrtPanel'
 import { DEFAULT_VOICE_TEST_TEXT, useVoicePreview } from './useVoicePreview'
 import { CustomVoiceReference } from './CustomVoiceReference'
@@ -8,9 +9,12 @@ import { useSavedVoices, savedVoiceToModel } from './useSavedVoices'
 import { BUILTIN_NARRATORS, isSavedVoiceId, savedVoiceId, loadStoryNarratorVoiceId, storeStoryNarratorVoiceId, subscribeStoryNarrator } from './savedVoices'
 import { VOICE_MODELS, type VoiceModel } from './voiceModels'
 import { parseStoredVoxCpmSettings, serializeVoxCpmSettings, getVoxCpmSettingsStorageKey, type DubbingEngine } from './voxcpmSettings'
+import { storyVoicesKey, type StoryVoices } from './storyVoices'
 import { useKiriVoices, kiriVoiceToModel } from './useKiriVoices'
 import { KiriCloneDialog } from './KiriCloneDialog'
+import { INNER_VOICE_ECHOES, type InnerVoiceEcho } from '@shared/innerVoice'
 import { EDGE_VOICE_CARDS, ENGINE_LABEL } from './engineVoices'
+import { useConfirm } from '../ui/ConfirmDialog'
 
 
 type FilterTab = 'all' | 'drama' | 'male' | 'female' | 'khmer' | 'custom'
@@ -34,6 +38,24 @@ function edgeVoiceOf(voiceId: string | undefined): string | undefined {
  * panel entirely (App.tsx's RightSidebar). */
 export function VoiceModelPanel(): JSX.Element {
   const aiDubber = useAiDubber()
+  const confirm = useConfirm()
+  // One voice on EVERY line is asked first: a click on a voice card with no
+  // line selected used to do it at once -- 3000 made lines of a series lost
+  // their voices (and their "made" state) to one slip of the mouse.
+  const setVoiceOnAll = async (voiceId: string, name: string): Promise<void> => {
+    const count = aiDubber.segments.length
+    const made = aiDubber.segments.filter((s) => aiDubber.getSegmentState(s.id).status === 'generated').length
+    if (count > 1) {
+      const ok = await confirm({
+        title: `Use ${name} for all ${count} lines?`,
+        message: `Every line will speak in ${name}${made > 0 ? `, and the ${made} line(s) already made will need making again` : ''}. To change one line, select it first (click it in the list or on the Timeline).`,
+        confirmLabel: `Use for all ${count}`,
+        danger: made > 0
+      })
+      if (!ok) return
+    }
+    aiDubber.setAllSegmentsVoice(voiceId)
+  }
   const [filter, setFilter] = useState<FilterTab>('all')
   const [search, setSearch] = useState('')
   // Search is an icon at the end of the Test row; it turns the row into the
@@ -58,6 +80,18 @@ export function VoiceModelPanel(): JSX.Element {
   const [kiriActing, setKiriActingState] = useState<boolean>(
     () => parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey())).kiriActing
   )
+  const [echoStyle, setEchoStyleState] = useState<InnerVoiceEcho>(
+    () => parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey())).echoStyle
+  )
+  const setEchoStyle = (next: InnerVoiceEcho): void => {
+    setEchoStyleState(next)
+    try {
+      const current = parseStoredVoxCpmSettings(localStorage.getItem(getVoxCpmSettingsStorageKey()))
+      localStorage.setItem(getVoxCpmSettingsStorageKey(), serializeVoxCpmSettings({ ...current, echoStyle: next }))
+    } catch {
+      // Storage unavailable -- the choice still applies for this session.
+    }
+  }
   const setKiriActing = (next: boolean): void => {
     setKiriActingState(next)
     try {
@@ -67,6 +101,42 @@ export function VoiceModelPanel(): JSX.Element {
       // Storage unavailable -- the choice still applies for this session.
     }
   }
+  const [optionsOpen, setOptionsOpenState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cae.dubOptionsOpen') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setOptionsOpen = (open: boolean): void => {
+    setOptionsOpenState(open)
+    try {
+      localStorage.setItem('cae.dubOptionsOpen', open ? '1' : '0')
+    } catch {
+      // Remembered for this session only.
+    }
+  }
+  const [joinLines, setJoinLinesState] = useState<boolean>(
+    () => parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey())).joinLines
+  )
+  const setJoinLines = (next: boolean): void => {
+    setJoinLinesState(next)
+    try {
+      const current = parseStoredVoxCpmSettings(localStorage.getItem(getVoxCpmSettingsStorageKey()))
+      localStorage.setItem(getVoxCpmSettingsStorageKey(), serializeVoxCpmSettings({ ...current, joinLines: next }))
+    } catch {
+      // Storage unavailable -- the choice still applies for this session.
+    }
+  }
+  // What the folded Options row says is on.
+  const optionsSummary = [
+    steadyPace && 'Steady speed',
+    joinLines && 'Joined takes',
+    engine === 'kiritts' && kiriActing && 'Emotions',
+    `Echo: ${INNER_VOICE_ECHOES.find((style) => style.id === echoStyle)?.label ?? echoStyle}`
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const setSteadyPace = (next: boolean): void => {
     setSteadyPaceState(next)
     try {
@@ -99,6 +169,8 @@ export function VoiceModelPanel(): JSX.Element {
   })
   const anyGenerated = generatedCount > 0
   const anyGenerating = aiDubber.segments.some((s) => aiDubber.getSegmentState(s.id).status === 'generating')
+  // Lines not made yet: what Generate Dubbing makes (the rest stay).
+  const remainingCount = aiDubber.segments.filter((s) => aiDubber.getSegmentState(s.id).status !== 'generated').length
 
 
   // The user's own recorded voices sit in the same grid as the catalog ones
@@ -134,6 +206,70 @@ export function VoiceModelPanel(): JSX.Element {
           : [...VOICE_MODELS, ...savedVoices.map((v) => savedVoiceToModel(v, savedVoiceId(v.id)))]
     return all.filter((v) => matchesFilter(v, filter) && (!term || v.name.toLowerCase().includes(term) || v.description.toLowerCase().includes(term)))
   }, [filter, search, savedVoices, engine, kiri.state])
+
+  // Two voices for the whole story (one man, one woman): the engine's
+  // voices, the two picks remembered per engine.
+  const engineVoices = useMemo(
+    () =>
+      engine === 'kiritts'
+        ? kiri.state.status === 'ready'
+          ? kiri.state.voices.map(kiriVoiceToModel)
+          : []
+        : engine === 'edge-tts'
+          ? EDGE_VOICE_CARDS
+          : [...VOICE_MODELS, ...savedVoices.map((v) => savedVoiceToModel(v, savedVoiceId(v.id)))],
+    [engine, kiri.state, savedVoices]
+  )
+  const twoVoicesKey = storyVoicesKey(engine)
+  const [twoVoices, setTwoVoicesPick] = useState<StoryVoices>({ male: '', female: '' })
+  useEffect(() => {
+    let saved: Partial<StoryVoices> = {}
+    try {
+      saved = JSON.parse(localStorage.getItem(twoVoicesKey) ?? '{}') as Partial<StoryVoices>
+    } catch {
+      // Nothing remembered.
+    }
+    const has = (id?: string): boolean => !!id && engineVoices.some((v) => v.id === id)
+    setTwoVoicesPick({
+      male: has(saved.male) ? saved.male! : (engineVoices.find((v) => v.gender === 'male') ?? engineVoices[0])?.id ?? '',
+      female: has(saved.female) ? saved.female! : (engineVoices.find((v) => v.gender === 'female') ?? engineVoices[0])?.id ?? '',
+      // Child / old voices: only when picked (none = the man's or woman's).
+      child: has(saved.child) ? saved.child : undefined,
+      oldMale: has(saved.oldMale) ? saved.oldMale : undefined,
+      oldFemale: has(saved.oldFemale) ? saved.oldFemale : undefined
+    })
+  }, [twoVoicesKey, engineVoices])
+  const pickTwoVoice = (slot: keyof StoryVoices, id: string): void => {
+    setTwoVoicesPick((prev) => {
+      const next = { ...prev, [slot]: id || undefined }
+      try {
+        localStorage.setItem(twoVoicesKey, JSON.stringify(next))
+      } catch {
+        // Remembered for this session only.
+      }
+      return next
+    })
+  }
+  const [twoVoicesBusy, setTwoVoicesBusy] = useState(false)
+  const [twoVoicesStatus, setTwoVoicesStatus] = useState<string | null>(null)
+  const applyTwoVoices = async (): Promise<void> => {
+    if (!twoVoices.male || !twoVoices.female || twoVoicesBusy) return
+    setTwoVoicesBusy(true)
+    setTwoVoicesStatus('Listening to every line to tell men from women…')
+    try {
+      const counts = await aiDubber.setTwoVoices(twoVoices)
+      const name = (id: string): string => engineVoices.find((v) => v.id === id)?.name ?? id
+      setTwoVoicesStatus(
+        counts
+          ? `${counts.child ? `${counts.child} child line${counts.child === 1 ? '' : 's'} → ${name(twoVoices.child ?? '')} · ` : ''}${counts.old ? `${counts.old} old → old voices · ` : ''}${counts.male} line${counts.male === 1 ? '' : 's'} → ${name(twoVoices.male)} · ${counts.female} → ${name(twoVoices.female)}${counts.unknown ? ` · ${counts.unknown} could not be told (given ${name(twoVoices.male)} — check them in Detect Gender)` : ''}`
+          : 'There are no subtitles yet.'
+      )
+    } catch (error) {
+      setTwoVoicesStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTwoVoicesBusy(false)
+    }
+  }
 
   // Edge cannot clone a voice, and has only its two own voices: its mode
   // has no Custom or Drama tab to be left on. KiriTTS has no Drama catalog.
@@ -285,6 +421,74 @@ export function VoiceModelPanel(): JSX.Element {
           </div>
         )}
         {cloneOpen && <KiriCloneDialog voices={kiri.state.status === 'ready' ? kiri.state.voices : []} onChanged={kiri.refresh} onClose={() => setCloneOpen(false)} />}
+        {/* Two voices for the whole story: a man's and a woman's, every line
+            given one by its gender in one click. The cards below work as
+            before, for any line or speaker to be changed afterwards. */}
+        {engineVoices.length > 0 && aiDubber.segments.length > 0 && (
+          <div className="ai-dubber-two-voices">
+            <div className="ai-dubber-two-voices-title">
+              <span>Voices for the whole story</span>
+              <span
+                className="ai-dubber-two-voices-info"
+                title="Men and women are told apart by their voices. Children and the old: mark them Child / Old in the Cast window (one click per character). Lines with no voice of their own already speak in these."
+                aria-label="How these voices are used"
+              >
+                ⓘ
+              </span>
+            </div>
+            <label>
+              <span>♂ Man</span>
+              <select value={twoVoices.male} onChange={(e) => pickTwoVoice('male', e.target.value)} disabled={twoVoicesBusy}>
+                {engineVoices.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>♀ Woman</span>
+              <select value={twoVoices.female} onChange={(e) => pickTwoVoice('female', e.target.value)} disabled={twoVoicesBusy}>
+                {engineVoices.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {/* By age, for the characters marked Child / Old in the Cast
+                window: a voice here, or none (they keep the man's or the
+                woman's). */}
+            {(
+              [
+                ['child', '🧒 Child'],
+                ['oldMale', '👴 Old man'],
+                ['oldFemale', '👵 Old woman']
+              ] as const
+            ).map(([slot, label]) => (
+              <label key={slot}>
+                <span>{label}</span>
+                <select value={twoVoices[slot] ?? ''} onChange={(e) => pickTwoVoice(slot, e.target.value)} disabled={twoVoicesBusy}>
+                  <option value="">— none —</option>
+                  {engineVoices.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            <button
+              className="ai-dubber-two-voices-apply"
+              disabled={twoVoicesBusy || !twoVoices.male || !twoVoices.female}
+              title="Every subtitle is listened to and told male or female, then given the man's or the woman's voice. Replaces the voices picked so far; any line can still be changed afterwards."
+              onClick={() => void applyTwoVoices()}
+            >
+              {twoVoicesBusy ? 'Working…' : `Use for all ${aiDubber.segments.length} lines`}
+            </button>
+            {twoVoicesStatus && <div className="ai-dubber-two-voices-status">{twoVoicesStatus}</div>}
+          </div>
+        )}
         {/* Each card: click it to put that voice on the SELECTED subtitle --
             or, with no subtitle selected, on every subtitle. Its "All" pill
             always does every subtitle regardless of selection. Replaces a
@@ -339,7 +543,7 @@ export function VoiceModelPanel(): JSX.Element {
                   onClick={() => {
                     if (selectedSpeaker && selectedSpeakerId) aiDubber.setSpeakerVoice(selectedSpeakerId, voice.id)
                     else if (aiDubber.selectedSubtitleId) aiDubber.setSegmentVoice(aiDubber.selectedSubtitleId, voice.id)
-                    else aiDubber.setAllSegmentsVoice(voice.id)
+                    else void setVoiceOnAll(voice.id, voice.name)
                   }}
                 >
                   <span className="ai-dubber-voice-text">
@@ -361,7 +565,7 @@ export function VoiceModelPanel(): JSX.Element {
                   className="ai-dubber-voice-card-all"
                   title={`Use ${voice.name} for ALL ${aiDubber.segments.length} subtitles`}
                   disabled={aiDubber.segments.length === 0}
-                  onClick={() => aiDubber.setAllSegmentsVoice(voice.id)}
+                  onClick={() => void setVoiceOnAll(voice.id, voice.name)}
                 >
                   All
                 </button>
@@ -379,14 +583,32 @@ export function VoiceModelPanel(): JSX.Element {
             nothing read them, and Language offered only Khmer. Per-line
             speed lives on each subtitle row's own ⚙ settings. */}
         <div className="ai-dubber-generate-summary">
-          <span>{aiDubber.segments.length} subtitles</span>
-          {generatedCount > 0 && <span className="ai-dubber-generate-summary-done">{generatedCount} ready</span>}
-          {needsReviewCount > 0 && <span className="ai-dubber-generate-summary-failed">{needsReviewCount} failed</span>}
+          <span className="ai-dubber-summary-pill">{aiDubber.segments.length} subtitles</span>
+          {generatedCount > 0 && <span className="ai-dubber-summary-pill ai-dubber-generate-summary-done">{generatedCount} ready</span>}
+          {needsReviewCount > 0 && <span className="ai-dubber-summary-pill ai-dubber-generate-summary-failed">{needsReviewCount} failed</span>}
+          {/* Names the engine the next run will actually use, so a mismatch
+              between what's selected above and what runs is visible before
+              pressing Generate rather than guessed at afterwards. */}
+          <span className="ai-dubber-generate-engine" title="The engine the next Generate uses">
+            {ENGINE_LABEL[engine]}
+          </span>
         </div>
-        {/* Names the engine the next run will actually use, so a mismatch
-            between what's selected above and what runs is visible before
-            pressing Generate rather than guessed at afterwards. */}
-        <div className="ai-dubber-generate-engine">Using {ENGINE_LABEL[engine]}</div>
+        {/* The run's options, folded to one line (what is on) until opened:
+            open, they took most of the panel's height from the voices. */}
+        <button
+          type="button"
+          className={`ai-dubber-options-toggle${optionsOpen ? ' ai-dubber-options-toggle-open' : ''}`}
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen(!optionsOpen)}
+        >
+          <span className="ai-dubber-options-toggle-label">⚙ Options</span>
+          <span className="ai-dubber-options-toggle-summary">{optionsSummary}</span>
+          <span className="ai-dubber-options-toggle-caret" aria-hidden="true">
+            ▾
+          </span>
+        </button>
+        {optionsOpen && (
+        <div className="ai-dubber-options">
         <label
           className="ai-dubber-steady-pace"
           title="On: every line is spoken at the voice's own normal speed -- never sped up to fit its subtitle, never slower or faster because of its emotion. A line that runs long starts the next one a little later; 🎬 Video Sync slows the picture there to make room. Off: long lines are sped up to fit (up to 1.28x)."
@@ -394,14 +616,35 @@ export function VoiceModelPanel(): JSX.Element {
           <input type="checkbox" checked={steadyPace} onChange={(e) => setSteadyPace(e.target.checked)} />
           Steady voice speed
         </label>
+        <label
+          className="ai-dubber-steady-pace"
+          title="Off (recommended): every subtitle gets its own voice clip, starting exactly on that subtitle -- the voice matches the character speaking. On: subtitles less than 0.8 s apart are read as one long take, which flows more smoothly but only its first line is on its subtitle; the lines after it are spoken wherever the voice gets to them. Applies to lines generated from now on."
+        >
+          <input type="checkbox" checked={joinLines} onChange={(e) => setJoinLines(e.target.checked)} />
+          Join nearby lines into one take
+        </label>
         {engine === 'kiritts' && (
           <label
             className="ai-dubber-steady-pace"
-            title="On: each line's emotion is sent to KiriTTS (e.g. 'very angry, hard, forceful'). Off: the voice speaks plainly -- on cloned voices this fails far less often (no babble or tails) and often sounds better."
+            title="On: each line's emotion is sent to KiriTTS as how to say it (e.g. 'Shouting furiously, enraged...'). Its own voices follow that well; cloned voices only sometimes. Off: the voice speaks plainly -- on cloned voices this fails less often (no babble or tails)."
           >
             <input type="checkbox" checked={kiriActing} onChange={(e) => setKiriActing(e.target.checked)} />
             Send emotions to KiriTTS
           </label>
+        )}
+        {/* How a thought (a line marked Echo / inner voice) sounds. Used
+            by the next Generate, for the lines it makes. */}
+        <label className="ai-dubber-echo-style" title={INNER_VOICE_ECHOES.find((style) => style.id === echoStyle)?.hint}>
+          <span>Inner-voice echo</span>
+          <select value={echoStyle} onChange={(e) => setEchoStyle(e.target.value as InnerVoiceEcho)}>
+            {INNER_VOICE_ECHOES.map((style) => (
+              <option key={style.id} value={style.id} title={style.hint}>
+                {style.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        </div>
         )}
         {engine === 'edge-tts' && hasRecordedVoiceLines && (
           <div className="ai-dubber-generate-note">Edge TTS can't clone a recording -- lines set to My Voice / Custom Voice are spoken by its built-in Khmer male or female voice.</div>
@@ -418,7 +661,7 @@ export function VoiceModelPanel(): JSX.Element {
             disabled={generatedCount === 0 || aiDubber.autoSpeedRunning}
             onClick={() => setAutoStatus(`Auto-Sync: ${aiDubber.autoSyncDubClips()} line(s) re-aligned`)}
           >
-            ⟲ Auto-Sync
+            <span aria-hidden="true">⟲</span> Auto-Sync
           </button>
           <button
             className="ai-dubber-auto-button ai-dubber-auto-button-speed"
@@ -429,7 +672,13 @@ export function VoiceModelPanel(): JSX.Element {
               void aiDubber.autoSpeedDubClips().then((n) => setAutoStatus(`Auto-Speed: ${n} line(s) re-fitted`))
             }}
           >
-            {aiDubber.autoSpeedRunning ? '… Working' : '⚡ Auto-Speed'}
+            {aiDubber.autoSpeedRunning ? (
+              '… Working'
+            ) : (
+              <>
+                <span aria-hidden="true">⚡</span> Auto-Speed
+              </>
+            )}
           </button>
           <button
             className="ai-dubber-auto-button ai-dubber-auto-button-video"
@@ -441,19 +690,41 @@ export function VoiceModelPanel(): JSX.Element {
               setAutoStatus(lines === 0 ? (stillLong > 0 ? `Video Sync: nothing more to slow${late}` : 'Video Sync: every line already fits') : `Video Sync: video slowed under ${lines} line(s), +${addedSeconds.toFixed(1)} s${late}`)
             }}
           >
-            🎬 Video Sync
+            <span aria-hidden="true">🎬</span> Video Sync
           </button>
         </div>
         {autoStatus && <div className="ai-dubber-auto-status">{autoStatus}</div>}
 
         <div className="ai-dubber-generate-row">
-          <button className="ai-dubber-generate-button" onClick={() => aiDubber.generateDubbing()} disabled={!aiDubber.state.videoMediaId || anyGenerating}>
-            {anyGenerating && aiDubber.state.generationProgress
-              ? `Generating ${aiDubber.state.generationProgress.completed} / ${aiDubber.state.generationProgress.total}…`
-              : anyGenerating
-                ? 'Generating…'
-                : 'Generate Dubbing'}
+          <button
+            className={`ai-dubber-generate-button${anyGenerating ? ' ai-dubber-generate-button-running' : ''}`}
+            onClick={() => aiDubber.generateDubbing()}
+            disabled={!aiDubber.state.videoMediaId || anyGenerating}
+            title={remainingCount > 0 && remainingCount < aiDubber.segments.length ? `Makes only the ${remainingCount} line(s) not made yet (failed, new, or given another voice); the ${aiDubber.segments.length - remainingCount} made ones stay.` : undefined}
+          >
+            {/* Energy: a bolt that flickers, light sweeping across and a
+                charge running round the edge (styles.css) -- faster while
+                a run is going, still when there is nothing to make. */}
+            <span className="ai-dubber-generate-bolt" aria-hidden="true">
+              <svg width="14" height="16" viewBox="0 0 14 16">
+                <path d="M8.6 0.6 1.4 9.1h4.9L5 15.4l7.6-8.9H7.6L8.6 0.6Z" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="ai-dubber-generate-label">
+              {anyGenerating && aiDubber.state.generationProgress
+                ? `Generating ${aiDubber.state.generationProgress.completed} / ${aiDubber.state.generationProgress.total}…`
+                : anyGenerating
+                  ? 'Generating…'
+                  : remainingCount > 0 && remainingCount < aiDubber.segments.length
+                    ? `Generate ${remainingCount} remaining`
+                    : 'Generate Dubbing'}
+            </span>
           </button>
+          {!anyGenerating && remainingCount < aiDubber.segments.length && aiDubber.segments.length > 0 && (
+            <button className="ai-dubber-redo-all-button" title="Redo all: make every line again, also the ones already made" aria-label="Redo all" onClick={() => aiDubber.generateDubbing(true)} disabled={!aiDubber.state.videoMediaId}>
+              ↻
+            </button>
+          )}
           {anyGenerating && aiDubber.state.generationProgress ? (
             // Stop a long run part-way: finished lines stay on the Timeline.
             <button className="ai-dubber-cancel-button" title="Stop generating — lines already made are kept" onClick={() => aiDubber.cancelGeneration()}>
@@ -481,7 +752,14 @@ export function VoiceModelPanel(): JSX.Element {
 
       {reviewOpen && (
         <DetectGenderReviewModal
-          initialIndex={Math.max(0, aiDubber.segments.findIndex((segment) => segment.id === aiDubber.selectedSubtitleId))}
+          // Where it was left (or, never opened here, the first line with
+          // no voice picked yet) -- not line 1 every time.
+          initialIndex={reviewStartIndex(
+            aiDubber.segments.map((segment) => segment.id),
+            (segmentId) => !!aiDubber.getSegmentState(segmentId).voiceManuallyAssigned,
+            loadReviewPlace(aiDubber.state.videoMediaId ?? ''),
+            aiDubber.selectedSubtitleId
+          )}
           onClose={() => setReviewOpen(false)}
         />
       )}

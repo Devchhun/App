@@ -69,9 +69,11 @@ export function findSubtitleBand(frames: Uint8Array[], width: number, height: nu
     for (let y = from; y < to; y++) if (smooth[y] > best.v) best = { y, v: smooth[y] }
     return best
   }
-  // Subtitles are nearly always in the lower half; a top band only counts
-  // when the bottom has nothing comparable.
-  const bottom = bestIn(Math.floor(height * 0.5), height)
+  // Subtitles are nearly always below the middle -- at the bottom in a
+  // filmed drama, around the middle (to two thirds down) in the vertical
+  // AI-made ones; a top band only counts when that part has nothing
+  // comparable. From 40% down: a line centred on the middle is found too.
+  const bottom = bestIn(Math.floor(height * 0.4), height)
   const top = bestIn(0, Math.floor(height * 0.25))
   const peak = bottom.v >= top.v * 0.6 ? bottom : top
   const MIN_ROW_DENSITY = 0.01

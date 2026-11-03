@@ -18,7 +18,12 @@ export const WAVEFORM_CACHE_FILE = 'waveform-v2.json'
 export async function generateWaveform(jobId: string, sourcePath: string, cacheDir: string): Promise<WaveformData> {
   const outPath = join(cacheDir, WAVEFORM_CACHE_FILE)
   if (await pathExists(outPath)) {
-    return JSON.parse(await readFile(outPath, 'utf-8')) as WaveformData
+    try {
+      return JSON.parse(await readFile(outPath, 'utf-8')) as WaveformData
+    } catch {
+      // A cache file that did not survive (a power cut leaves it full of
+      // zeros): made again below, rather than failing for good.
+    }
   }
 
   const { stdout } = await runFfmpeg(

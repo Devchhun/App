@@ -39,6 +39,14 @@ extraResources:
     to: kuanimation
     filter:
       - '**/*'
+  # The Cast window's two small networks (see app/main/ai/castScanService.ts):
+  # CAM++ speaker recognition (28 MB, 3D-Speaker, Apache-2.0) and the
+  # Ultra-Light face detector (1.6 MB, MIT). Downloaded on first use when
+  # a build was made without them.
+  - from: resources/cast-models
+    to: cast-models
+    filter:
+      - '*.onnx'
   # Reference clips of the Khmer drama voices, picked by ear (see
   # app/main/media/voxcpmTts.ts's bundledVoiceReferencePath).
   - from: resources/voice-refs

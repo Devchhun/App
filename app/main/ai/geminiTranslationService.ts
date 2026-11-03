@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai'
+import { createGemini } from './geminiClient'
 import { CanceledError } from '../media/jobRunner'
 import { ProviderError, type SegmentInput } from './providers/AiProvider'
 import type { ClaudeErrorKind } from '@shared/suggestions'
@@ -43,7 +43,7 @@ export async function translateSegmentsWithGemini(
   if (segments.length === 0) return []
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new ProviderError('auth', 'Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
 
   const request = async (batch: SegmentInput[], context: TranslatedPair[]): Promise<{ results: TranslationResult[]; truncated: boolean }> => {
     let lastError: unknown

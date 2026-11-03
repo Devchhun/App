@@ -129,6 +129,11 @@ interface DragState {
 }
 
 const MIN_CLIP_WIDTH_PX = 6
+/** Narrower than this on screen, a clip shows no filmstrip or waveform:
+ * zoomed out over a series cut into a clip per subtitle, there were 850
+ * waveform canvases a few pixels wide, all repainted on every frame of
+ * playback -- most of what made it stutter -- for nothing anyone could see. */
+const MIN_DETAIL_WIDTH_PX = 18
 const SNAP_THRESHOLD_PX = 4
 const DRAG_THRESHOLD_PX = 4
 /** How close (screen px) a pointerdown must land to a clip's edge, in Roll
@@ -873,11 +878,11 @@ function ClipTrackImpl({
             )}
 
             <div className="clip-track-clip-body" style={{ height: bodyHeightPx }}>
-              {clip.type === 'video' && media && (
+              {clip.type === 'video' && media && widthPx >= MIN_DETAIL_WIDTH_PX && (
                 <VideoFilmstrip src={media.proxyUrl ?? media.originalUrl} duration={clip.duration * clipRate(clip)} widthPx={widthPx} startOffset={clip.sourceIn} poster={media.thumbnailUrl} />
               )}
               {clip.type === 'image' && media?.thumbnailUrl && <img className="clip-track-clip-thumb" src={media.thumbnailUrl} alt="" draggable={false} />}
-              {isAudio && showWaveforms && (
+              {isAudio && showWaveforms && widthPx >= MIN_DETAIL_WIDTH_PX && (
                 <WaveformTrack
                   waveform={media?.waveform}
                   sourceDurationSeconds={media?.metadata?.durationSeconds ?? 0}

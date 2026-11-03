@@ -4,6 +4,7 @@ import { samePerformance, type LinePerformance } from '@shared/dubbingPerformanc
 import { isSavedVoiceId } from './savedVoices'
 import { edgeFallbackVoiceId, recommendVoiceId } from './voiceModels'
 import { kiriVoiceId, kiriVoiceOf } from '@shared/kiriTts'
+import { storyVoiceFor, type StoryVoices } from './storyVoices'
 
 /** KiriTTS's built-in Khmer voices a line falls back to by gender. */
 export const KIRI_FALLBACK_FEMALE = 'Nita'
@@ -20,14 +21,22 @@ export const KIRI_FALLBACK_MALE = 'Chanda'
  * through to Male Adult, and a dub with five detected speakers came out
  * all male. */
 export function resolveLineVoice(
-  line: Pick<DubbingSegmentState, 'voiceId' | 'detectedGender'>,
-  speaker: Pick<DubbingSpeakerProfile, 'voiceId' | 'gender'> | undefined,
+  line: Pick<DubbingSegmentState, 'voiceId' | 'detectedGender'> & Partial<Pick<DubbingSegmentState, 'ageGroup'>>,
+  speaker: (Pick<DubbingSpeakerProfile, 'voiceId' | 'gender'> & Partial<Pick<DubbingSpeakerProfile, 'ageCategory'>>) | undefined,
   engine: DubbingEngine,
   /** KiriTTS: the account's copy of a VoxCPM2 voice (its Kiri voice id). */
-  kiriCopyOf?: (voiceId: string) => string | undefined
+  kiriCopyOf?: (voiceId: string) => string | undefined,
+  /** "Two voices for the whole story" picked for this engine: the voice of
+   * a line with none of its own, by its gender (unknown -> the man's).
+   * Without it such a line fell to the engine's stock voice of its gender
+   * -- not the two voices picked for the story. */
+  storyVoices?: StoryVoices
 ): { voiceId: string; gender: NarrationSpeaker } {
   const gender: NarrationSpeaker = line.detectedGender !== 'unknown' ? line.detectedGender : speaker?.gender ?? 'unknown'
-  let voiceId = line.voiceId ?? speaker?.voiceId ?? recommendVoiceId(gender) ?? 'male-adult'
+  // By gender, and by the character's age where it is set (a child's or
+  // an old person's voice, when the story has one).
+  const story = storyVoices ? storyVoiceFor(storyVoices, gender, line.ageGroup ?? speaker?.ageCategory) : undefined
+  let voiceId = line.voiceId ?? speaker?.voiceId ?? story ?? recommendVoiceId(gender) ?? 'male-adult'
   // Edge TTS cannot clone a recording: a cloned voice falls back to Edge's
   // own Khmer voice of the same gender (see AiDubberContext.generateDubbing).
   if (engine === 'edge-tts' && (voiceId === 'custom-voice' || isSavedVoiceId(voiceId) || kiriVoiceOf(voiceId))) voiceId = edgeFallbackVoiceId(gender)
@@ -44,6 +53,95 @@ export function resolveLineVoice(
   return { voiceId, gender }
 }
 
+/** The genders heard for the lines (voice prints, worked out by itself as
+ * soon as the SRT is there), written onto every line that has none yet. A
+ * gender a line already has -- picked by hand, or heard before -- is kept,
+ * and no voice is changed: Generate takes a line's voice from its gender
+ * only where no voice was chosen for it. Null when nothing changes. */
+export function withHeardGenders(
+  lineIds: string[],
+  states: Record<string, DubbingSegmentState | undefined>,
+  heard: Record<string, { gender: NarrationSpeaker; confidence: number }>,
+  fresh: (lineId: string) => DubbingSegmentState
+): Record<string, DubbingSegmentState> | null {
+  const segments: Record<string, DubbingSegmentState> = {}
+  let changed = false
+  for (const id of lineIds) {
+    const told = heard[id]
+    if (!told || told.gender === 'unknown') continue
+    const existing = states[id] ?? fresh(id)
+    if (existing.detectedGender !== 'unknown') continue
+    segments[id] = { ...existing, detectedGender: told.gender, detectedConfidence: told.confidence }
+    changed = true
+  }
+  return changed ? segments : null
+}
+
+/** "Two voices for the whole story": every line gets the man's voice or
+ * the woman's, by its gender alone -- age (old, young, child) plays no part.
+ * The gender is what was just heard for the line (Detect Gender's voice
+ * prints), else the one it already had; a line with neither gets the man's
+ * voice and is counted as unknown, to be checked by ear. Lines being
+ * generated keep their status; every other line is ready to generate again
+ * in its new voice. Pure: the counts are worked out once, here. */
+export function assignTwoVoices(
+  lineIds: string[],
+  states: Record<string, DubbingSegmentState | undefined>,
+  heard: Record<string, { gender: NarrationSpeaker; confidence: number }> | null,
+  voices: StoryVoices,
+  fresh: (lineId: string) => DubbingSegmentState
+): { segments: Record<string, DubbingSegmentState>; counts: { male: number; female: number; unknown: number; child: number; old: number } } {
+  const counts = { male: 0, female: 0, unknown: 0, child: 0, old: 0 }
+  const segments: Record<string, DubbingSegmentState> = {}
+  for (const id of lineIds) {
+    const existing = states[id] ?? fresh(id)
+    const told = heard?.[id]
+    const known = told && told.gender !== 'unknown' ? told : undefined
+    const gender: NarrationSpeaker = known ? known.gender : existing.detectedGender
+    if (gender === 'male' || gender === 'female') counts[gender]++
+    else counts.unknown++
+    // The character's age (Cast window: Child / Adult / Old) picks a
+    // child's or an old person's voice when the story has one.
+    const voiceId = storyVoiceFor(voices, gender, existing.ageGroup)
+    if (voiceId !== (gender === 'female' ? voices.female : voices.male)) counts[existing.ageGroup === 'child' ? 'child' : 'old']++
+    segments[id] = {
+      ...existing,
+      ...(known ? { detectedGender: known.gender, detectedConfidence: known.confidence } : {}),
+      voiceId,
+      voiceManuallyAssigned: true,
+      status: existing.status === 'generating' ? existing.status : 'voice-assigned'
+    }
+  }
+  return { segments, counts }
+}
+
+/** One voice and the lines that speak in it. */
+export interface VoiceUsage {
+  voiceId: string
+  gender: NarrationSpeaker
+  segmentIds: string[]
+}
+
+/** Which voices the script uses in `engine` and on which lines -- each
+ * line by the voice Generate Dubbing would give it (resolveLineVoice), so
+ * the count is what will be heard, not only what was picked by hand.
+ * The most used voice first; lines stay in script order. */
+export function voiceUsage(
+  lines: { id: string; state: Pick<DubbingSegmentState, 'voiceId' | 'detectedGender'>; speaker: Pick<DubbingSpeakerProfile, 'voiceId' | 'gender'> | undefined }[],
+  engine: DubbingEngine,
+  kiriCopyOf?: (voiceId: string) => string | undefined,
+  storyVoices?: { male: string; female: string }
+): VoiceUsage[] {
+  const byVoice = new Map<string, VoiceUsage>()
+  for (const line of lines) {
+    const { voiceId, gender } = resolveLineVoice(line.state, line.speaker, engine, kiriCopyOf, storyVoices)
+    const entry = byVoice.get(voiceId)
+    if (entry) entry.segmentIds.push(line.id)
+    else byVoice.set(voiceId, { voiceId, gender, segmentIds: [line.id] })
+  }
+  return [...byVoice.values()].sort((a, b) => b.segmentIds.length - a.segmentIds.length)
+}
+
 export interface PlannedLine {
   id: string
   text: string
@@ -57,6 +155,8 @@ export interface PlannedLine {
   takeNonce?: number
   /** A thought: the finished line gets the inner-voice echo. */
   innerVoice?: boolean
+  /** More voices saying the line together with `voiceId`. */
+  together?: string[]
 }
 
 /** One request to the voice engine: a single line, or several neighbouring
@@ -77,6 +177,9 @@ export interface GenerationUnit {
   performance?: LinePerformance
   takeNonce?: number
   innerVoice?: boolean
+  /** More voices saying the take together with `voiceId` (such a take is
+   * always one line). */
+  together?: string[]
 }
 
 /** Neighbouring lines join only while they are close enough that reading
@@ -121,7 +224,8 @@ export function planGenerationUnits(lines: PlannedLine[], join = true): Generati
       volumeDb: leader.volumeDb,
       performance: leader.performance,
       takeNonce: leader.takeNonce,
-      innerVoice: leader.innerVoice
+      innerVoice: leader.innerVoice,
+      ...(leader.together?.length ? { together: leader.together } : {})
     })
     current = null
   }
@@ -142,6 +246,9 @@ export function planGenerationUnits(lines: PlannedLine[], join = true): Generati
       // A thought and the spoken line beside it are two takes: only one of
       // them gets the echo.
       !!line.innerVoice === !!previous.innerVoice &&
+      // A line said by several voices together is mixed on its own.
+      !line.together?.length &&
+      !previous.together?.length &&
       line.startTime - previous.endTime <= JOIN_MAX_GAP_SECONDS &&
       line.endTime - current.lines[0].startTime <= JOIN_MAX_SPAN_SECONDS
     if (!joins) flush()

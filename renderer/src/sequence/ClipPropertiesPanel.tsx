@@ -16,6 +16,15 @@ import { AUDIO_EFFECT_PRESETS, createDefaultAudioEffectSettings, type AudioEffec
 import type { ClipTransform, TimelineClip } from '@shared/project'
 import type { KeyframeableProperty } from '@shared/keyframes'
 import { positionScale } from '@shared/clipPosition'
+import { DEFAULT_BACKGROUND_BLUR, isNeutralAdjust, type AdjustField } from '@shared/clipAdjust'
+import { AutoReframeSection } from './AutoReframeSection'
+
+const ADJUST_ROWS: { field: AdjustField; label: string }[] = [
+  { field: 'brightness', label: 'Brightness' },
+  { field: 'contrast', label: 'Contrast' },
+  { field: 'saturation', label: 'Saturation' },
+  { field: 'hue', label: 'Hue' }
+]
 
 function formatSeconds(value: number): string {
   return value.toFixed(2)
@@ -72,12 +81,15 @@ function Section({
   defaultOpen = true,
   onReset,
   resetTitle = 'Reset',
+  action,
   children
 }: {
   title: string
   defaultOpen?: boolean
   onReset?: () => void
   resetTitle?: string
+  /** A small control in the header, beside the reset (ApplyAllChip). */
+  action?: ReactNode
   children: ReactNode
 }): JSX.Element {
   const [open, setOpen] = useState(defaultOpen)
@@ -88,14 +100,27 @@ function Section({
           {title}
           <ChevronDownIcon size={11} />
         </button>
-        {onReset && (
-          <button type="button" className="cp-icon-btn" title={resetTitle} onClick={onReset}>
-            <RotateIcon size={14} />
-          </button>
-        )}
+        <span className="cp-section-actions">
+          {open && action}
+          {onReset && (
+            <button type="button" className="cp-icon-btn" title={resetTitle} onClick={onReset}>
+              <RotateIcon size={14} />
+            </button>
+          )}
+        </span>
       </div>
       {open && <div className="cp-section-body">{children}</div>}
     </section>
+  )
+}
+
+/** "Apply to all on this track", small, in a section's header: the full-
+ * width button under every section made the panel look crowded. */
+function ApplyAllChip({ count, disabled, title, onClick }: { count: number; disabled: boolean; title: string; onClick: () => void }): JSX.Element {
+  return (
+    <button type="button" className="cp-apply-chip" disabled={disabled || count < 2} title={`${title} -- all ${count} on this track`} onClick={onClick}>
+      All {count}
+    </button>
   )
 }
 
@@ -317,13 +342,13 @@ function AudioEffectsSection({ clip, trackName, trackClipIds, locked }: { clip: 
 
 export function ClipPropertiesPanel(): JSX.Element {
   const { items } = useMedia()
-  const { sequence, selectedTimelineClipIds, toggleClipLock, toggleClipMute, moveClip, trimClip, updateClipProperties, updateClipsProperties } = useSequence()
+  const { sequence, selectedTimelineClipIds, toggleClipLock, toggleClipMute, moveClip, trimClip, updateClipProperties, updateClipsProperties, placeClips } = useSequence()
   const { currentTime } = usePlaybackTime()
   const [volumeNote, setVolumeNote] = useState<string | null>(null)
   // Each clip starts without the last clip's message.
   useEffect(() => setVolumeNote(null), [selectedTimelineClipIds])
   const { brandPreset } = useBrandPreset()
-  const [tab, setTab] = useState<'basic' | 'animation'>('basic')
+  const [tab, setTab] = useState<'basic' | 'animation' | 'adjustment'>('basic')
   const { linkageOn } = useTimelineView()
   const historyFieldProps = useHistoryFieldProps()
   const [durationText, setDurationText] = useState<string | null>(null)
@@ -366,12 +391,16 @@ export function ClipPropertiesPanel(): JSX.Element {
   const setTransform = (patch: Partial<ClipTransform>): void => {
     updateClipProperties(clip.id, { transform: { ...transform, ...patch } })
   }
-  const uniform = uniformPref ?? Math.abs(transform.scaleX - transform.scaleY) < 1e-6
-  const scalePercent = Math.round(transform.scaleX * 100)
+  // A negative scale is Mirror (the toolbar's flip): Scale shows and sets
+  // the size only, and the flip stays as it is.
+  const flipX = transform.scaleX < 0 ? -1 : 1
+  const flipY = transform.scaleY < 0 ? -1 : 1
+  const uniform = uniformPref ?? Math.abs(Math.abs(transform.scaleX) - Math.abs(transform.scaleY)) < 1e-6
+  const scalePercent = Math.round(Math.abs(transform.scaleX) * 100)
   const setScalePercent = (pct: number, axis?: 'scaleX' | 'scaleY'): void => {
     const v = Math.max(0.01, pct / 100)
-    if (axis && !uniform) setTransform({ [axis]: v })
-    else setTransform({ scaleX: v, scaleY: v })
+    if (axis && !uniform) setTransform({ [axis]: v * (axis === 'scaleX' ? flipX : flipY) })
+    else setTransform({ scaleX: v * flipX, scaleY: v * flipY })
   }
 
   const align = (kind: Align): void => {
@@ -380,8 +409,8 @@ export function ClipPropertiesPanel(): JSX.Element {
     // In Position's reference units (shared/clipPosition.ts), not the
     // Player's pixels.
     const unit = positionScale(stage)
-    const dx = (stage.width * (1 - transform.scaleX)) / 2 / unit
-    const dy = (stage.height * (1 - transform.scaleY)) / 2 / unit
+    const dx = (stage.width * (1 - Math.abs(transform.scaleX))) / 2 / unit
+    const dy = (stage.height * (1 - Math.abs(transform.scaleY))) / 2 / unit
     switch (kind) {
       case 'left':
         return setTransform({ x: -dx })
@@ -400,9 +429,16 @@ export function ClipPropertiesPanel(): JSX.Element {
 
   const clipMedia = items.find((item) => item.id === clip.mediaId)
   const fillScale = clipFillScale(clipMedia?.metadata, brandPreset.defaultAspectRatio)
+  // Which of Fit / Fill the picture is at now (centred, at that size).
+  const centred = Math.abs(transform.x) < 0.5 && Math.abs(transform.y) < 0.5
+  const isFit = centred && Math.abs(Math.abs(transform.scaleX) - 1) < 0.005 && Math.abs(Math.abs(transform.scaleY) - 1) < 0.005
+  const isFill = centred && !!fillScale && Math.abs(Math.abs(transform.scaleX) - fillScale) < 0.005
   const opacityPercent = Math.round((clip.opacity ?? 1) * 100)
   const volumePercent = Math.round((clip.volume ?? 1) * 100)
   const isVisual = clip.type === 'video' || clip.type === 'image'
+  // Every picture on this clip's track: "Apply to all" for a video cut into
+  // a clip per subtitle.
+  const sameTrackPictureIds = sequence.clips.filter((c) => c.trackId === clip.trackId && !c.locked && (c.type === 'video' || c.type === 'image')).map((c) => c.id)
   const hasAudioTrack = clip.type === 'video' || clip.type === 'audio'
   const playbackRate = clip.playbackRate ?? 1
   const linkedPartner = clip.linkedClipId ? sequence.clips.find((c) => c.id === clip.linkedClipId) : undefined
@@ -438,7 +474,14 @@ export function ClipPropertiesPanel(): JSX.Element {
             Animation
           </button>
           {isVisual && (
-            <button type="button" role="tab" className="cp-tab" disabled title="Coming soon">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'adjustment'}
+              className={tab === 'adjustment' ? 'cp-tab cp-tab-active' : 'cp-tab'}
+              title="Brightness, contrast, saturation, hue"
+              onClick={() => setTab('adjustment')}
+            >
               Adjustment
             </button>
           )}
@@ -451,12 +494,44 @@ export function ClipPropertiesPanel(): JSX.Element {
           </Section>
         </div>
       )}
-      <div className="panel-scroll-body editor-scroll cp-body" hidden={tab === 'animation' && isVisual}>
+      {tab === 'adjustment' && isVisual && (
+        <div className="panel-scroll-body editor-scroll cp-body">
+          <Section
+            title="Adjust"
+            resetTitle="Reset all"
+            onReset={() => updateClipProperties(clip.id, { adjust: undefined })}
+            action={<ApplyAllChip count={sameTrackPictureIds.length} disabled={locked} title="These colours on every video/picture clip (shown in the Player and exported alike)" onClick={() => updateClipsProperties(sameTrackPictureIds, { adjust: clip.adjust })} />}
+          >
+            {ADJUST_ROWS.map(({ field, label }) => {
+              const value = Math.round(clip.adjust?.[field] ?? 0)
+              const set = (v: number): void => {
+                const next = { ...clip.adjust, [field]: Math.max(-100, Math.min(100, v)) }
+                updateClipProperties(clip.id, { adjust: isNeutralAdjust(next) ? undefined : next })
+              }
+              return (
+                <Row key={field} label={label}>
+                  <Slider min={-100} max={100} value={value} disabled={locked} onChange={set} />
+                  <NumberField value={value} min={-100} max={100} disabled={locked} onChange={set} />
+                </Row>
+              )
+            })}
+          </Section>
+        </div>
+      )}
+      <div className="panel-scroll-body editor-scroll cp-body" hidden={(tab === 'animation' || tab === 'adjustment') && isVisual}>
         {isVisual && (
           <Section
             title="Transform"
             resetTitle="Reset transform"
             onReset={() => setTransform({ x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 })}
+            action={
+              <ApplyAllChip
+                count={sameTrackPictureIds.length}
+                disabled={locked}
+                title="This place, size and rotation on every video/picture clip (each keeps its own Mirror)"
+                onClick={() => placeClips(sameTrackPictureIds, { x: transform.x, y: transform.y, scaleX: transform.scaleX, scaleY: transform.scaleY, rotation: transform.rotation })}
+              />
+            }
           >
             <Row label="Scale" keyframe={<KeyframeToggle clip={clip} property="scaleX" value={transform.scaleX} timeInClip={timeInClip} />}>
               <Slider min={1} max={400} value={scalePercent} disabled={locked} onChange={(v) => setScalePercent(v, 'scaleX')} />
@@ -464,8 +539,8 @@ export function ClipPropertiesPanel(): JSX.Element {
             </Row>
             {!uniform && (
               <Row label="Scale Y" keyframe={<KeyframeToggle clip={clip} property="scaleY" value={transform.scaleY} timeInClip={timeInClip} />}>
-                <Slider min={1} max={400} value={Math.round(transform.scaleY * 100)} disabled={locked} onChange={(v) => setScalePercent(v, 'scaleY')} />
-                <NumberField value={Math.round(transform.scaleY * 100)} unit="%" min={1} max={1000} disabled={locked} onChange={(v) => setScalePercent(v, 'scaleY')} />
+                <Slider min={1} max={400} value={Math.round(Math.abs(transform.scaleY) * 100)} disabled={locked} onChange={(v) => setScalePercent(v, 'scaleY')} />
+                <NumberField value={Math.round(Math.abs(transform.scaleY) * 100)} unit="%" min={1} max={1000} disabled={locked} onChange={(v) => setScalePercent(v, 'scaleY')} />
               </Row>
             )}
             <Row label="Uniform scale">
@@ -475,7 +550,7 @@ export function ClipPropertiesPanel(): JSX.Element {
                 disabled={locked}
                 onChange={(next) => {
                   setUniformPref(next)
-                  if (next) setTransform({ scaleY: transform.scaleX })
+                  if (next) setTransform({ scaleY: Math.abs(transform.scaleX) * flipY })
                 }}
               />
             </Row>
@@ -497,16 +572,17 @@ export function ClipPropertiesPanel(): JSX.Element {
                 <RotateIcon size={12} />
               </button>
             </Row>
-            <div className="cp-fit-row" role="group" aria-label="Fit or fill the frame">
-              <button type="button" className="cp-fit-btn" disabled={locked} title="The whole picture inside the frame (black bars where shapes differ)" onClick={() => setTransform({ scaleX: 1, scaleY: 1, x: 0, y: 0 })}>
+            <div className="cp-fit-align">
+            <div className="cp-seg" role="group" aria-label="Fit or fill the frame">
+              <button type="button" className={isFit ? 'cp-seg-btn cp-seg-btn-active' : 'cp-seg-btn'} disabled={locked} title="The whole picture inside the frame (bars where shapes differ)" onClick={() => setTransform({ scaleX: flipX, scaleY: flipY, x: 0, y: 0 })}>
                 Fit
               </button>
               <button
                 type="button"
-                className="cp-fit-btn"
+                className={isFill ? 'cp-seg-btn cp-seg-btn-active' : 'cp-seg-btn'}
                 disabled={locked || !fillScale}
-                title="Fill the whole frame, no black bars (the edges that do not fit are cut off)"
-                onClick={() => fillScale && setTransform({ scaleX: fillScale, scaleY: fillScale, x: 0, y: 0 })}
+                title={fillScale ? 'Fill the whole frame, no bars (the edges that do not fit are cut off)' : 'Already fills the frame'}
+                onClick={() => fillScale && setTransform({ scaleX: fillScale * flipX, scaleY: fillScale * flipY, x: 0, y: 0 })}
               >
                 Fill
               </button>
@@ -524,17 +600,62 @@ export function ClipPropertiesPanel(): JSX.Element {
                 </button>
               ))}
             </div>
+            </div>
+          </Section>
+        )}
+
+        {clip.type === 'video' && (
+          <Section title="Auto Reframe">
+            <AutoReframeSection clip={clip} trackClipIds={sequence.clips.filter((c) => c.trackId === clip.trackId && c.type === 'video' && !c.locked).map((c) => c.id)} />
+          </Section>
+        )}
+        {isVisual && (
+          <Section
+            title="Background fill"
+            resetTitle="Black bars"
+            onReset={() => updateClipProperties(clip.id, { backgroundBlur: undefined })}
+            action={<ApplyAllChip count={sameTrackPictureIds.length} disabled={locked} title="The same fill on every video/picture clip" onClick={() => updateClipsProperties(sameTrackPictureIds, { backgroundBlur: clip.backgroundBlur })} />}
+          >
+            <Row label="Fill">
+              <div className="cp-seg" role="radiogroup" aria-label="What fills the frame around the picture">
+                <button type="button" role="radio" aria-checked={!clip.backgroundBlur} className={!clip.backgroundBlur ? 'cp-seg-btn cp-seg-btn-active' : 'cp-seg-btn'} disabled={locked} title="Black bars around the picture" onClick={() => updateClipProperties(clip.id, { backgroundBlur: undefined })}>
+                  None
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!!clip.backgroundBlur}
+                  className={clip.backgroundBlur ? 'cp-seg-btn cp-seg-btn-active' : 'cp-seg-btn'}
+                  disabled={locked}
+                  title="The bars filled with the picture itself, enlarged and blurred -- in the Player and the export"
+                  onClick={() => !clip.backgroundBlur && updateClipProperties(clip.id, { backgroundBlur: DEFAULT_BACKGROUND_BLUR })}
+                >
+                  Blur
+                </button>
+              </div>
+            </Row>
+            {!!clip.backgroundBlur && (
+              <Row label="Blur">
+                <Slider min={1} max={100} value={clip.backgroundBlur} disabled={locked} onChange={(v) => updateClipProperties(clip.id, { backgroundBlur: v })} />
+                <NumberField value={clip.backgroundBlur} min={1} max={100} disabled={locked} onChange={(v) => updateClipProperties(clip.id, { backgroundBlur: Math.max(1, Math.min(100, v)) })} />
+              </Row>
+            )}
           </Section>
         )}
 
         {clip.type === 'image' && (
           <Section title="Background">
-            <div className="cp-bg-remove">
-              <button type="button" className="cp-bg-remove-button" disabled={locked} onClick={() => window.dispatchEvent(new CustomEvent(REMOVE_BACKGROUND_EVENT, { detail: clip.id }))}>
+            <Row label="Cut out">
+              <button
+                type="button"
+                className="cp-bg-remove-button"
+                disabled={locked}
+                title="AI cuts out the subject (a logo, a person) and makes the rest see-through. The first time downloads its model (~180 MB)."
+                onClick={() => window.dispatchEvent(new CustomEvent(REMOVE_BACKGROUND_EVENT, { detail: clip.id }))}
+              >
                 Remove Background
               </button>
-              <span className="cp-bg-remove-note">AI cuts out the subject (a logo, a person) and makes the rest see-through. The first time downloads its model (~180 MB).</span>
-            </div>
+            </Row>
           </Section>
         )}
         {isVisual && (

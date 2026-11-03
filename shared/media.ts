@@ -174,8 +174,26 @@ export const MEDIA_IPC = {
    * missing (a failed/interrupted background job, an older project) --
    * the Timeline asks for this when an audio clip has none to draw. */
   ensureWaveform: 'media:ensureWaveform',
-  getDefaultStillDir: 'media:getDefaultStillDir'
+  getDefaultStillDir: 'media:getDefaultStillDir',
+  /** Timeline clip menu > Save Audio as WAV: the part of the file the clip
+   * plays (its trim, speed, volume and fades) written to a .wav the user
+   * picks -- the saved path, or null when the dialog was canceled. */
+  saveClipAudio: 'media:saveClipAudio'
 } as const
+
+export interface SaveClipAudioRequest {
+  sourcePath: string
+  sourceIn: number
+  sourceOut: number
+  /** 1 = normal speed. */
+  speed?: number
+  /** 0-1; undefined = full volume. */
+  volume?: number
+  fadeIn?: number
+  fadeOut?: number
+  /** The file name offered in the save dialog (without .wav). */
+  suggestedName: string
+}
 
 /** Remove Background's result for one picture. */
 export type RemoveBackgroundResult = { ok: true; outputPath: string } | { ok: false; error: string; canceled?: boolean }

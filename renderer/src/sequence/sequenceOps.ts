@@ -6,7 +6,7 @@
 // clips get inserted, moved, trimmed, split, deleted, and duplicated --
 // SequenceContext.tsx only wires these into React state + undo/redo
 // transactions, it doesn't reimplement any of this math.
-import type { ProjectSequence, TimelineClip, Marker } from '@shared/project'
+import type { ProjectSequence, TimelineClip, Marker, ClipTransform } from '@shared/project'
 import { computeSequenceDuration, sanitizeLinkedClips } from '@shared/project'
 import { clipRate, sourceEnd } from '@shared/clipTiming'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
@@ -121,6 +121,29 @@ export function insertClip(
   }
   clips = [...clips, ...inserted]
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
+}
+
+/** Puts a clip in at `atTime` and moves EVERYTHING from there on later by
+ * its length: every clip on every track that starts at or after `atTime`
+ * (the later episodes, their dub lines, music placed under them) and the
+ * markers. An episode added to a series afterwards goes where it belongs
+ * (Batch Load: between Episode 5 and Episode 7) and what follows stays in
+ * step with its own picture. A clip that starts before `atTime` and runs
+ * across it is left where it is. */
+export function insertClipShiftingAll(
+  sequence: ProjectSequence,
+  asset: InsertableAsset,
+  atTime: number,
+  trackId: string,
+  makeId: IdFactory = defaultMakeId,
+  overrides?: Partial<Pick<TimelineClip, 'muted'>>
+): ProjectSequence {
+  const inserted = buildInsertedClips(asset, atTime, trackId, makeId, overrides)
+  const length = inserted.reduce((max, clip) => Math.max(max, clip.duration), 0)
+  const from = Math.max(0, atTime) - 0.0005
+  const clips = [...sequence.clips.map((clip) => (clip.startTime >= from ? { ...clip, startTime: clip.startTime + length } : clip)), ...inserted]
+  const markers = sequence.markers.map((marker) => (marker.time >= from ? { ...marker, time: marker.time + length } : marker))
+  return { ...sequence, clips, markers, duration: computeSequenceDuration(clips) }
 }
 
 /** Story Narration Workspace's "Accept & Next" -- inserts an accepted take
@@ -619,7 +642,7 @@ export function setClipsMuted(sequence: ProjectSequence, clipIds: string[], mute
  * timing/track/media/link identity. Includes `keyframes` so pasting a
  * keyframed clip's attributes onto another carries its animation too,
  * consistent with every other appearance property here. */
-export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform' | 'keyframes' | 'motion'>>
+export type ClipPropertyPatch = Partial<Pick<TimelineClip, 'playbackRate' | 'opacity' | 'volume' | 'fadeIn' | 'fadeOut' | 'transform' | 'keyframes' | 'motion' | 'adjust' | 'backgroundBlur'>>
 
 export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
   return {
@@ -630,7 +653,9 @@ export function pickClipProperties(clip: TimelineClip): ClipPropertyPatch {
     fadeOut: clip.fadeOut,
     transform: clip.transform,
     keyframes: clip.keyframes,
-    motion: clip.motion
+    motion: clip.motion,
+    adjust: clip.adjust,
+    backgroundBlur: clip.backgroundBlur
   }
 }
 
@@ -666,13 +691,21 @@ export function applyClipProperties(sequence: ProjectSequence, clipIds: string[]
   })
   // Slowing a clip down makes it longer. Make room on its own track and
   // carry any pushed clip's linked partner along, just like an insert.
-  for (const original of sequence.clips) {
-    const changed = clips.find((c) => c.id === original.id)
-    if (!changed || changed.duration <= original.duration + 1e-6) continue
-    const exclude = new Set([changed.id, ...(changed.linkedClipId ? [changed.linkedClipId] : [])])
-    const plan = planRippleInsert(clips, changed.trackId, changed.startTime, changed.duration, exclude)
-    const pushes = extendRippleInsertWithLinkedPartners(clips, plan.pushes)
-    clips = clips.map((c) => pushes.has(c.id) ? { ...c, startTime: pushes.get(c.id)! } : c)
+  // Only a speed change makes anything longer -- and the lookup is by id:
+  // a find() per clip made a change to every clip of a 4000-clip Timeline
+  // (Ctrl+A, then a property) square in the clip count.
+  if (speedChanged) {
+    let byId = new Map(clips.map((c) => [c.id, c]))
+    for (const original of sequence.clips) {
+      const changed = byId.get(original.id)
+      if (!changed || changed.duration <= original.duration + 1e-6) continue
+      const exclude = new Set([changed.id, ...(changed.linkedClipId ? [changed.linkedClipId] : [])])
+      const plan = planRippleInsert(clips, changed.trackId, changed.startTime, changed.duration, exclude)
+      const pushes = extendRippleInsertWithLinkedPartners(clips, plan.pushes)
+      if (pushes.size === 0) continue
+      clips = clips.map((c) => (pushes.has(c.id) ? { ...c, startTime: pushes.get(c.id)! } : c))
+      byId = new Map(clips.map((c) => [c.id, c]))
+    }
   }
   return { ...sequence, clips, duration: computeSequenceDuration(clips) }
 }
@@ -692,7 +725,9 @@ export function resetClipProperties(sequence: ProjectSequence, clipIds: string[]
     fadeOut: 0,
     transform: undefined,
     keyframes: undefined,
-    motion: undefined
+    motion: undefined,
+    adjust: undefined,
+    backgroundBlur: undefined
   })
 }
 
@@ -1093,8 +1128,20 @@ export function removeKeyframe(sequence: ProjectSequence, clipId: string, proper
  * clip above it (same place and length on the Timeline, same point in the
  * file, same speed), with the clip's own sound (and a linked audio
  * partner's) muted. A clip cut and slowed by Video Sync, starting partway
- * into the file, therefore still lines up. One sequence change: one Undo. */
-export function addMirroredAudioClips(sequence: ProjectSequence, videoClipIds: string[], audioMediaId: string, makeId: IdFactory = defaultMakeId): ProjectSequence {
+ * into the file, therefore still lines up. One sequence change: one Undo.
+ * `replaces` names another instrumental already under a clip, which this one
+ * takes the place of -- two of them would play on top of each other. */
+export function addMirroredAudioClips(
+  input: ProjectSequence,
+  videoClipIds: string[],
+  audioMediaId: string,
+  makeId: IdFactory = defaultMakeId,
+  replaces: (mediaId: string) => boolean = () => false
+): ProjectSequence {
+  const videos = input.clips.filter((c) => c.type === 'video' && videoClipIds.includes(c.id))
+  const replaced = (c: TimelineClip): boolean =>
+    c.type === 'audio' && c.mediaId !== audioMediaId && replaces(c.mediaId) && videos.some((video) => Math.abs(c.startTime - video.startTime) < 1e-6 && Math.abs(c.sourceIn - video.sourceIn) < 1e-6)
+  const sequence = input.clips.some(replaced) ? { ...input, clips: input.clips.filter((c) => !replaced(c)) } : input
   let tracks = sequence.tracks
   const added: TimelineClip[] = []
   const mute = new Set<string>()
@@ -1128,4 +1175,104 @@ export function addMirroredAudioClips(sequence: ProjectSequence, videoClipIds: s
   if (added.length === 0 && !sequence.clips.some((c) => mute.has(c.id) && !c.muted)) return sequence
   const clips = [...sequence.clips.map((c) => (mute.has(c.id) ? { ...c, muted: true } : c)), ...added]
   return { ...sequence, tracks, clips, duration: computeSequenceDuration(clips) }
+}
+
+/** "Remove Vocal (all videos)": every video FILE on the Timeline once, in
+ * the order it first plays, with all of its clips (Video Sync can cut one
+ * film into many) -- the separation is of the whole file, so one run each.
+ * Files with no sound are left out. */
+export function videoFilesInOrder(
+  clips: TimelineClip[],
+  hasAudio: (mediaId: string) => boolean,
+  /** Clips to leave out (their vocals are already removed). */
+  skip: (clip: TimelineClip) => boolean = () => false
+): { mediaId: string; clipIds: string[] }[] {
+  const byMedia = new Map<string, { mediaId: string; clipIds: string[]; first: number }>()
+  for (const clip of clips) {
+    if (clip.type !== 'video' || !hasAudio(clip.mediaId) || skip(clip)) continue
+    const entry = byMedia.get(clip.mediaId) ?? { mediaId: clip.mediaId, clipIds: [], first: clip.startTime }
+    entry.clipIds.push(clip.id)
+    entry.first = Math.min(entry.first, clip.startTime)
+    byMedia.set(clip.mediaId, entry)
+  }
+  return [...byMedia.values()].sort((a, b) => a.first - b.first).map(({ mediaId, clipIds }) => ({ mediaId, clipIds }))
+}
+
+/** A video clip Remove Vocal has already done: muted, with an instrumental
+ * (`isInstrumental`, by its media) at exactly its place and source time on
+ * an audio track. */
+export function hasVocalsRemoved(video: TimelineClip, clips: TimelineClip[], isInstrumental: (mediaId: string) => boolean): boolean {
+  if (video.type !== 'video' || !video.muted) return false
+  return clips.some(
+    (c) =>
+      c.type === 'audio' &&
+      isInstrumental(c.mediaId) &&
+      Math.abs(c.startTime - video.startTime) < 1e-6 &&
+      Math.abs(c.sourceIn - video.sourceIn) < 1e-6 &&
+      Math.abs(c.duration - video.duration) < 1e-6
+  )
+}
+
+/** Mirror (the toolbar's) on many clips in one go -- every video/picture
+ * among `clipIds` flipped left-right (`mirrored`) or back, its size kept: a
+ * mirror is a negative scaleX. One pass: a property change per clip on a
+ * Timeline cut into a clip per subtitle froze the app. */
+export function setClipsMirrored(sequence: ProjectSequence, clipIds: string[], mirrored: boolean): ProjectSequence {
+  const ids = new Set(clipIds)
+  let changed = false
+  const clips = sequence.clips.map((c) => {
+    if (!ids.has(c.id) || c.locked || (c.type !== 'video' && c.type !== 'image')) return c
+    const t = c.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
+    const scaleX = Math.abs(t.scaleX) * (mirrored ? -1 : 1)
+    if (c.transform && scaleX === t.scaleX) return c
+    changed = true
+    return { ...c, transform: { ...t, scaleX } }
+  })
+  return changed ? { ...sequence, clips } : sequence
+}
+
+/** Where a picture sits in the frame, for {@link setClipsPlacement}: scale
+ * is a size (its sign ignored), so each clip keeps its own Mirror. */
+export type ClipPlacement = Partial<Pick<ClipTransform, 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation'>>
+
+/** The same place, size and turn for every video/picture among `clipIds`
+ * (a drag in the Player, "Apply to all" on a video cut into a clip per
+ * subtitle), in one pass. Only the given properties change; each clip
+ * keeps its own Mirror, and a property a clip has keyframes for is left
+ * to its keyframes. */
+export function setClipsPlacement(sequence: ProjectSequence, clipIds: string[], placement: ClipPlacement): ProjectSequence {
+  const ids = new Set(clipIds)
+  const props = (Object.keys(placement) as (keyof ClipPlacement)[]).filter((k) => typeof placement[k] === 'number')
+  if (props.length === 0) return sequence
+  let changed = false
+  const clips = sequence.clips.map((c) => {
+    if (!ids.has(c.id) || c.locked || (c.type !== 'video' && c.type !== 'image')) return c
+    const t = c.transform ?? { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, cropTop: 0, cropRight: 0, cropBottom: 0, cropLeft: 0 }
+    const next = { ...t }
+    for (const k of props) {
+      if ((c.keyframes?.[k]?.length ?? 0) > 1) continue
+      const v = placement[k] as number
+      next[k] = k === 'scaleX' || k === 'scaleY' ? (t[k] < 0 ? -1 : 1) * Math.abs(v) : v
+    }
+    if (c.transform && props.every((k) => next[k] === t[k])) return c
+    changed = true
+    return { ...c, transform: next }
+  })
+  return changed ? { ...sequence, clips } : sequence
+}
+
+/** A different property patch for each clip, in one pass (Auto Reframe
+ * gives every clip of a series its own keyframes). Timing never changes:
+ * a patch with a speed in it goes through applyClipProperties instead. */
+export function applyEachClipProperties(sequence: ProjectSequence, patches: Record<string, ClipPropertyPatch>): ProjectSequence {
+  let changed = false
+  const clips = sequence.clips.map((c) => {
+    const patch = patches[c.id]
+    if (!patch || c.locked) return c
+    changed = true
+    const { playbackRate: _ignored, ...rest } = patch
+    void _ignored
+    return { ...c, ...rest }
+  })
+  return changed ? { ...sequence, clips } : sequence
 }

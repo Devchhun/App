@@ -8,6 +8,9 @@ import type { ProjectSequence, TimelineClip } from './project'
 import { clipRate, sourceEnd } from './clipTiming'
 import { positionScale } from './clipPosition'
 import { clipMotionExprs } from './clipMotion'
+import { isAnimated, keyframesExpr } from './keyframes'
+import { adjustFfmpegSteps, backgroundBlurSigma } from './clipAdjust'
+import { hasPictureFade, pictureFadeFfmpegSteps } from './pictureFade'
 import type { TimelineTrack } from './timelineTracks'
 import { isTrackAudioMuted } from './timelineTracks'
 
@@ -250,10 +253,9 @@ export function planExportWindows(
   if (touching(0, durationSeconds) <= maxInputs) return [{ start: 0, end: durationSeconds }]
   const frame = 1 / frameRate
   const snap = (t: number): number => Math.round(t / frame) * frame
-  // Where a boundary must not fall: inside an audio fade.
+  // Where a boundary must not fall: inside a fade (a picture's or a sound's).
   const fades: [number, number][] = []
   for (const c of clips) {
-    if (!c.isAudio) continue
     if (c.fadeIn) fades.push([c.startTime, c.startTime + c.fadeIn])
     if (c.fadeOut) fades.push([c.startTime + c.duration - c.fadeOut, c.startTime + c.duration])
   }
@@ -309,7 +311,9 @@ export function sliceClipsToWindow(clips: ResolvedExportClip[], window: ExportWi
         sourceIn,
         sourceOut: sourceIn + duration * rate,
         fadeIn: cutStart ? undefined : clip.fadeIn,
-        fadeOut: cutEnd ? undefined : clip.fadeOut
+        fadeOut: cutEnd ? undefined : clip.fadeOut,
+        pictureFadeIn: cutStart ? undefined : clip.pictureFadeIn,
+        pictureFadeOut: cutEnd ? undefined : clip.pictureFadeOut
       }
     })
   }
@@ -360,16 +364,20 @@ export function buildExportFilterGraph(
   // before the point) instead of `trim` -- which decodes the file from its
   // very start: a clip at minute 80 of a film decoded 80 minutes to keep
   // two seconds.
+  // Background > Blur (shared/clipAdjust.ts) on a picture.
+  const hasBackgroundBlur = (clip: TimelineClip): boolean => (clip.backgroundBlur ?? 0) > 0 && (clip.type === 'video' || clip.type === 'image')
   const onGpu = (rc: ResolvedExportClip): boolean => {
     const t = rc.clip.transform
-    return !!build.gpuDecode && rc.clip.type === 'video' && !(t && (t.cropTop || t.cropRight || t.cropBottom || t.cropLeft))
+    // Background > Blur takes the frame before it is fitted (its own
+    // enlarged copy), so that clip is decoded on the CPU.
+    return !!build.gpuDecode && rc.clip.type === 'video' && !(t && (t.cropTop || t.cropRight || t.cropBottom || t.cropLeft)) && !hasBackgroundBlur(rc.clip)
   }
   const inputFor = (rc: ResolvedExportClip): string[] => {
     // A still image is one frame at time 0: a window starting partway
     // through its clip would seek past it and show nothing. A moving one
     // needs a frame for every moment it moves.
     if (rc.clip.type === 'image') {
-      return rc.clip.motion ? ['-loop', '1', '-framerate', String(frameRate), '-t', seconds(Math.max(0.001, rc.clip.duration * clipRate(rc.clip))), '-i', rc.sourcePath] : ['-i', rc.sourcePath]
+      return rc.clip.motion || hasPictureFade(rc.clip) ? ['-loop', '1', '-framerate', String(frameRate), '-t', seconds(Math.max(0.001, rc.clip.duration * clipRate(rc.clip))), '-i', rc.sourcePath] : ['-i', rc.sourcePath]
     }
     if (!build.seekInputs) return ['-i', rc.sourcePath]
     const length = Math.max(0.001, sourceEnd(rc.clip) - rc.clip.sourceIn)
@@ -394,19 +402,37 @@ export function buildExportFilterGraph(
   const canvas = `color=c=black:s=${dimensions.width}x${dimensions.height}:r=${frameRate}`
   // A clip's own picture: its stretch of the file at its speed, cropped,
   // fitted to the frame, scaled, turned and faded as on the Timeline.
-  const clipPicture = (rc: ResolvedExportClip): string[] => {
+  // `clipSource` is the first part (its stretch, speed and crop) and
+  // `clipFitted` the rest: Background > Blur splits between the two.
+  const clipSource = (rc: ResolvedExportClip): string[] => {
     const { clip } = rc
     const rate = clipRate(clip)
-    const opacity = clip.opacity ?? 1
     const t = clip.transform
     const steps: string[] = build.seekInputs ? ['setpts=PTS-STARTPTS'] : [`trim=start=${clip.sourceIn}:end=${sourceEnd(clip)}`, 'setpts=PTS-STARTPTS']
     if (rate !== 1) steps.push(`setpts=PTS/${rate}`)
     if (t && (t.cropTop || t.cropRight || t.cropBottom || t.cropLeft)) {
       steps.push(`crop=iw*(1-${t.cropLeft}-${t.cropRight}):ih*(1-${t.cropTop}-${t.cropBottom}):iw*${t.cropLeft}:ih*${t.cropTop}`)
     }
+    return steps
+  }
+  const clipPicture = (rc: ResolvedExportClip): string[] => [...clipSource(rc), ...clipFitted(rc)]
+  const clipFitted = (rc: ResolvedExportClip): string[] => {
+    const { clip } = rc
+    const opacity = clip.opacity ?? 1
+    const t = clip.transform
+    const steps: string[] = []
     if (onGpu(rc)) steps.push(`scale_cuda=${dimensions.width}:${dimensions.height}:force_original_aspect_ratio=decrease:format=yuv420p`, 'hwdownload', 'format=yuv420p')
     else steps.push(`scale=${dimensions.width}:${dimensions.height}:force_original_aspect_ratio=decrease`)
-    if (t && (t.scaleX !== 1 || t.scaleY !== 1)) steps.push(`scale=iw*${t.scaleX ?? 1}:ih*${t.scaleY ?? 1}`)
+    // A negative scale is Mirror (the toolbar's): the size from its
+    // magnitude, the flip by hflip/vflip -- `scale=iw*-1` is ffmpeg's "keep
+    // the aspect ratio", so a mirrored clip came out of Export unflipped.
+    const sx = t?.scaleX ?? 1
+    const sy = t?.scaleY ?? 1
+    if (Math.abs(sx) !== 1 || Math.abs(sy) !== 1) steps.push(`scale=iw*${Math.abs(sx)}:ih*${Math.abs(sy)}`)
+    if (sx < 0) steps.push('hflip')
+    if (sy < 0) steps.push('vflip')
+    // Adjustment: the Player's colours (shared/clipAdjust.ts).
+    steps.push(...adjustFfmpegSteps(clip.adjust))
     // Motion (shared/clipMotion.ts), `t` here being seconds into the clip:
     // turned first at a fixed size (a turn after a size change smeared),
     // then sized frame by frame.
@@ -421,17 +447,26 @@ export function buildExportFilterGraph(
   // Shown whole and centred, as fitted: no moving, zoom, turn or fade.
   const isPlainPicture = (clip: TimelineClip): boolean => {
     const t = clip.transform
-    return !clip.motion && (clip.opacity ?? 1) >= 1 && (!t || (!t.x && !t.y && (t.scaleX ?? 1) === 1 && (t.scaleY ?? 1) === 1 && !t.rotation))
+    return !clip.motion && !clip.keyframes?.x?.length && !clip.keyframes?.y?.length && (clip.opacity ?? 1) >= 1 && (!t || (!t.x && !t.y && Math.abs(t.scaleX ?? 1) === 1 && Math.abs(t.scaleY ?? 1) === 1 && !t.rotation))
   }
   // Where the picture sits; `clipTime` is the overlay's time expressed as
   // seconds into the clip, for its motion.
   const place = (rc: ResolvedExportClip, clipTime: string): { x: string; y: string } => {
     const t = rc.clip.transform
     const motion = rc.clip.motion ? clipMotionExprs(rc.clip.motion, `${clipTime}+${seconds(rc.motionOffset ?? 0)}`) : null
-    // Position in reference units, scaled to this frame (shared/clipPosition.ts).
+    // Position in reference units, scaled to this frame (shared/clipPosition.ts)
+    // -- moving frame by frame when it has keyframes (Auto Reframe, or
+    // animated by hand), as the Player moves it.
     const unit = positionScale(dimensions)
-    const x = `(W-w)/2${t?.x ? `+${t.x * unit}` : ''}${motion?.dx ? `+${motion.dx}` : ''}`
-    const y = `(H-h)/2${t?.y ? `+${t.y * unit}` : ''}${motion?.dy ? `+${motion.dy}` : ''}`
+    const keyTime = `${clipTime}+${seconds(rc.motionOffset ?? 0)}`
+    const along = (prop: 'x' | 'y'): string => {
+      const kf = rc.clip.keyframes?.[prop]
+      if (isAnimated(kf)) return `+(${keyframesExpr(kf, keyTime, t?.[prop] ?? 0)})*${unit}`
+      const v = kf && kf.length === 1 ? kf[0].value : t?.[prop]
+      return v ? `+${v * unit}` : ''
+    }
+    const x = `(W-w)/2${along('x')}${motion?.dx ? `+${motion.dx}` : ''}`
+    const y = `(H-h)/2${along('y')}${motion?.dy ? `+${motion.dy}` : ''}`
     return { x: `'${x}'`, y: `'${y}'` }
   }
 
@@ -469,7 +504,21 @@ export function buildExportFilterGraph(
       // A file that ends early (or a still image) holds its last frame, and
       // one with no frames at all leaves black -- never a shorter stretch
       // that would pull everything after it earlier.
-      if (isPlainPicture(rc.clip)) {
+      if (hasBackgroundBlur(rc.clip)) {
+        // Background > Blur: the clip itself, enlarged to fill the frame
+        // and blurred (worked at a quarter size: as soft, far quicker),
+        // under the clip as it is placed.
+        const qw = Math.max(2, Math.round(dimensions.width / 8) * 2)
+        const qh = Math.max(2, Math.round(dimensions.height / 8) * 2)
+        const sigma = backgroundBlurSigma(rc.clip.backgroundBlur!, dimensions.height) / 4
+        filterParts.push(`[${videoInputIndex.get(rc)!}:v]${clipSource(rc).join(',')},split=2[fgs${i}][bgs${i}]`)
+        // The same way round and in the same colours as the clip.
+        const turned = [...((rc.clip.transform?.scaleX ?? 1) < 0 ? ['hflip'] : []), ...((rc.clip.transform?.scaleY ?? 1) < 0 ? ['vflip'] : []), ...adjustFfmpegSteps(rc.clip.adjust)]
+        filterParts.push(`[bgs${i}]${[`scale=${qw}:${qh}:force_original_aspect_ratio=increase`, `crop=${qw}:${qh}`, ...turned, `gblur=sigma=${seconds(sigma)}`, `scale=${dimensions.width}:${dimensions.height}`, 'setsar=1', `fps=${fps}`, 'tpad=stop_mode=clone:stop=-1'].join(',')}[bg${i}]`)
+        filterParts.push(`[fgs${i}]${clipFitted(rc).join(',')}[c${i}]`)
+        const at = place(rc, 't')
+        filterParts.push(`[bg${i}][c${i}]overlay=x=${at.x}:y=${at.y}:eof_action=repeat,trim=end_frame=${frames},setpts=PTS-STARTPTS[${label}]`)
+      } else if (isPlainPicture(rc.clip)) {
         // Centred as it is: padded to the frame, after one black frame
         // that is dropped again (all that is left if the file gave none).
         filterParts.push(`${input},pad=${dimensions.width}:${dimensions.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[c${i}]`)
@@ -482,7 +531,10 @@ export function buildExportFilterGraph(
         const at = place(rc, 't')
         filterParts.push(`[bg${i}][c${i}]overlay=x=${at.x}:y=${at.y}:eof_action=repeat,trim=end_frame=${frames}[${label}]`)
       }
-      stretches.push(label)
+      // Its fade, to black on this bottom track (shared/pictureFade.ts).
+      const fade = pictureFadeFfmpegSteps(rc.clip, false)
+      if (fade.length > 0) filterParts.push(`[${label}]${fade.join(',')}[${label}f]`)
+      stretches.push(fade.length > 0 ? `${label}f` : label)
       cursor = to
     })
     if (cursor < totalFrames) gap(totalFrames - cursor)
@@ -497,7 +549,7 @@ export function buildExportFilterGraph(
   upper.forEach((rc, i) => {
     const { clip } = rc
     const clipLabel = `v${i}`
-    filterParts.push(`[${videoInputIndex.get(rc)!}:v]${[...clipPicture(rc), `setpts=PTS-STARTPTS+${clip.startTime}/TB`].join(',')}[${clipLabel}]`)
+    filterParts.push(`[${videoInputIndex.get(rc)!}:v]${[...clipPicture(rc), ...pictureFadeFfmpegSteps(clip, true), `setpts=PTS-STARTPTS+${clip.startTime}/TB`].join(',')}[${clipLabel}]`)
     const nextLabel = `ov${i}`
     const at = place(rc, `t-${seconds(clip.startTime)}`)
     filterParts.push(`[${lastLabel}][${clipLabel}]overlay=x=${at.x}:y=${at.y}:enable='between(t,${clip.startTime},${clip.startTime + clip.duration})'[${nextLabel}]`)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAiDubber } from './AiDubberContext'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { useMicrophoneCapture } from '../timeline/useMicrophoneCapture'
 import { addSavedVoice, loadSavedVoices, loadStoryNarratorVoiceId, removeSavedVoice, savedVoiceId, storeSavedVoices, storeStoryNarratorVoiceId, type SavedCustomVoice, BUILTIN_NARRATORS, narratorDisplayName, type BuiltinNarrator } from './savedVoices'
 import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey } from './voxcpmSettings'
@@ -51,7 +52,22 @@ function readEvenVoicePref(): boolean {
  * buttons and note are left out since there is no subtitle in scope. */
 export function CustomVoiceReference({ variant = 'dubber' }: { variant?: 'dubber' | 'script' } = {}): JSX.Element {
   const aiDubber = useAiDubber()
+  const confirm = useConfirm()
   const isScript = variant === 'script'
+  const putOnAllLines = async (voiceId: string, name: string): Promise<void> => {
+    const count = aiDubber.segments.length
+    const made = aiDubber.segments.filter((s) => aiDubber.getSegmentState(s.id).status === 'generated').length
+    if (count > 1) {
+      const ok = await confirm({
+        title: `Use ${name} for all ${count} lines?`,
+        message: `Every line will speak in ${name}${made > 0 ? `, and the ${made} line(s) already made will need making again` : ''}.`,
+        confirmLabel: `Use for all ${count}`,
+        danger: made > 0
+      })
+      if (!ok) return
+    }
+    aiDubber.setAllSegmentsVoice(voiceId)
+  }
   const [recording, setRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -83,7 +99,7 @@ export function CustomVoiceReference({ variant = 'dubber' }: { variant?: 'dubber
       const next = narratorVoiceId === id ? null : id
       setNarratorVoiceId(next)
       storeStoryNarratorVoiceId(next)
-      if (next) aiDubber.setAllSegmentsVoice(next)
+      if (next) aiDubber.setAllSegmentsVoice(next, { onlyUnpicked: true })
     },
     [narratorVoiceId, aiDubber]
   )
@@ -94,7 +110,7 @@ export function CustomVoiceReference({ variant = 'dubber' }: { variant?: 'dubber
       const next = narratorVoiceId === narrator.id ? null : narrator.id
       setNarratorVoiceId(next)
       storeStoryNarratorVoiceId(next)
-      if (next) aiDubber.setAllSegmentsVoice(narrator.dubberVoiceId)
+      if (next) aiDubber.setAllSegmentsVoice(narrator.dubberVoiceId, { onlyUnpicked: true })
     },
     [narratorVoiceId, aiDubber]
   )
@@ -387,7 +403,7 @@ export function CustomVoiceReference({ variant = 'dubber' }: { variant?: 'dubber
               </button>
               )}
               {!isScript && (
-              <button className="ai-dubber-saved-voice-all" title={`Use ${v.name} for EVERY subtitle`} onClick={() => aiDubber.setAllSegmentsVoice(savedVoiceId(v.id))}>
+              <button className="ai-dubber-saved-voice-all" title={`Use ${v.name} for EVERY subtitle`} onClick={() => void putOnAllLines(savedVoiceId(v.id), v.name)}>
                 All
               </button>
               )}

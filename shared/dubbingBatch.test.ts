@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createEmptySequence, type ProjectSequence, type TimelineClip } from './project'
 import type { DetectedSpeakerProfile, TranscriptSegment } from './transcription'
-import { batchPartsOf, findGaps, lineSource, mergeGapLines, mergePartSegments, partLocalSegments, placePartTranscript, pairSrtsWithVideos } from './dubbingBatch'
+import { batchPartsOf, findGaps, lineSource, mergeGapLines, mergePartSegments, partLocalSegments, placePartTranscript, pairSrtsWithVideos, srtSpansTimeline, textsAtSameTimes } from './dubbingBatch'
 
 const seg = (id: string, startTime: number, endTime: number, speakerId?: string): TranscriptSegment => ({ id, words: [], startTime, endTime, language: 'km', confidence: 0.9, text: id, needsReview: false, speakerId })
 
@@ -51,6 +51,15 @@ describe('batch Auto SRT', () => {
     expect(partLocalSegments(merged, parts[1]).map((s) => [s.id, s.startTime])).toEqual([['new', 1]])
   })
 
+  it('places videos transcribed at once under their own clips, whichever finishes first', () => {
+    const parts = batchPartsOf(sequenceWith([{ startTime: 0 }, { startTime: 10 }, { startTime: 20 }]))
+    const own = (i: number): TranscriptSegment[] => placePartTranscript(parts[i], `EP${i + 1}`, [seg(`l${i}`, 2, 4)], []).segments
+    const inOrder = [0, 1, 2].reduce<TranscriptSegment[]>((all, i) => mergePartSegments(all, parts[i], own(i)), [])
+    const lastFirst = [2, 0, 1].reduce<TranscriptSegment[]>((all, i) => mergePartSegments(all, parts[i], own(i)), [])
+    expect(lastFirst).toEqual(inOrder)
+    expect(lastFirst.map((s) => [s.text, s.startTime])).toEqual([['l0', 2], ['l1', 12], ['l2', 22]])
+  })
+
   it('finds the video a Timeline line comes from, and its time in that file', () => {
     const parts = batchPartsOf(sequenceWith([{ startTime: 0, duration: 20 }, { startTime: 20, duration: 20, sourceIn: 5 }]))
     expect(lineSource(parts, 3, 5)).toEqual({ mediaId: 'm0', start: 3, end: 5 })
@@ -83,5 +92,38 @@ describe('pairSrtsWithVideos', () => {
   })
   it('falls back to name order, one SRT per video', () => {
     expect(pairSrtsWithVideos(['b.mp4', 'a.mp4'], ['x.srt', 'y.srt', 'z.srt'])).toEqual([1, 0, null])
+  })
+})
+
+describe('srtSpansTimeline', () => {
+  it('knows a joined SRT (Timeline time) from one video\'s SRT, whatever its name says', () => {
+    // Videos of a minute or so; the joined SRT runs to 1:01:25.
+    expect(srtSpansTimeline([2.6, 3685.79], [369.3, 108.7, 64.1])).toBe(true)
+    expect(srtSpansTimeline([2.6, 60.2], [369.3, 108.7, 64.1])).toBe(false)
+    // One video on the Timeline: its SRT is simply its own.
+    expect(srtSpansTimeline([2.6, 3685.79], [64.1])).toBe(false)
+    expect(srtSpansTimeline([], [10, 20])).toBe(false)
+  })
+})
+
+describe('textsAtSameTimes', () => {
+  const lines = [
+    { id: 'a', startTime: 0, endTime: 2.6 },
+    { id: 'b', startTime: 2.6, endTime: 4.6 },
+    { id: 'c', startTime: 3621.991, endTime: 3624.591 }
+  ]
+
+  it('gives each line the text of the cue at its times (an SRT saved here, reworded elsewhere)', () => {
+    const cues = [
+      { startTime: 0, endTime: 2.6, text: 'ក' },
+      { startTime: 2.6, endTime: 4.6, text: 'ខ' },
+      { startTime: 3621.99, endTime: 3624.59, text: 'គ' }
+    ]
+    expect(textsAtSameTimes(lines, cues)).toEqual({ a: 'ក', b: 'ខ', c: 'គ' })
+  })
+
+  it('is null for an SRT whose times do not line up', () => {
+    expect(textsAtSameTimes(lines, [{ startTime: 1, endTime: 3, text: 'x' }, { startTime: 5, endTime: 6, text: 'y' }, { startTime: 7, endTime: 8, text: 'z' }])).toBeNull()
+    expect(textsAtSameTimes([], [{ startTime: 0, endTime: 1, text: 'x' }])).toBeNull()
   })
 })

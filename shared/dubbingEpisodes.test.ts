@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultDubbingWorkspaceState, withoutTransientDubbingState, type DubbingEpisode } from './dubbing'
-import { episodeSrtFileName, episodesToTranscribe, episodeWorkspaceOf, isSeriesWideFailure, withEpisodeOpen, withEpisodesAdded } from './dubbingEpisodes'
+import { episodeSrtFileName, episodesToTranscribe, episodeWorkspaceOf, isSeriesWideFailure, seriesSrtFileName, withEpisodeOpen, withEpisodesAdded } from './dubbingEpisodes'
 
 const ep = (mediaId: string, fileName: string, status: DubbingEpisode['status'] = 'waiting'): DubbingEpisode => ({ mediaId, fileName, status })
 
@@ -58,5 +58,15 @@ describe('series episodes', () => {
     const saved = withoutTransientDubbingState(state)
     expect(saved.episodes?.[0].status).toBe('waiting')
     expect(saved.episodes?.[1].workspace?.segments.s.status).toBe('voice-assigned')
+  })
+})
+
+describe('seriesSrtFileName', () => {
+  it('names one SRT for a whole run of episodes after the series, its episode number left out', () => {
+    expect(seriesSrtFileName(['Episode 1 - My Strongest Master Likes Acting Weak.mp4', 'Episode 2 - My Strongest Master Likes Acting Weak.mp4'])).toBe('My Strongest Master Likes Acting Weak - 2 episodes.srt')
+    expect(seriesSrtFileName(['My Drama EP03.mp4', 'My Drama EP04.mp4', 'My Drama EP05.mp4'])).toBe('My Drama - 3 episodes.srt')
+    expect(seriesSrtFileName(['រឿងថ្មី ភាគទី 1.mp4'])).toBe('រឿងថ្មី - 1 episode.srt')
+    expect(seriesSrtFileName(['01.mp4', '02.mp4'])).toBe('01 - 2 episodes.srt')
+    expect(seriesSrtFileName([])).toBe('All episodes - 0 episodes.srt')
   })
 })

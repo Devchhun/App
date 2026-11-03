@@ -50,9 +50,10 @@ import { ConfirmDialogProvider } from './ui/ConfirmDialog'
 import { ThemeProvider } from './nav/ThemeContext'
 import { SparkleIcon } from './nav/icons'
 import { HomeScreen } from './home/HomeScreen'
-import { AUTO_GENERATE_RECAP_VOICE_EVENT } from './aiScript/videoStoryEvents'
+import { AUTO_GENERATE_RECAP_VOICE_EVENT, CANCEL_RECAP_VOICE_EVENT, publishRecapProgress } from './aiScript/videoStoryEvents'
 import { YinYangOrb } from './recap/YinYangOrb'
 import { AiAnimationPanel } from './aiAnimation/AiAnimationPanel'
+import { MangaPanel } from './manga/MangaPanel'
 import { VideoStoryRecapControls } from './aiScript/VideoStoryRecapControls'
 
 /** AI Dubber's right column: the Voice Model panel -- and, while a Timeline
@@ -136,6 +137,15 @@ function RightSidebar(): JSX.Element {
     return () => window.removeEventListener(AUTO_GENERATE_RECAP_VOICE_EVENT, queue)
   }, [])
 
+  // The Narrator voice panel's Generate button follows (and can stop) this
+  // same generator -- one run, placed even if that panel is closed.
+  useEffect(() => publishRecapProgress(recap.progress), [recap.progress])
+  useEffect(() => {
+    const stop = (): void => recap.cancel()
+    window.addEventListener(CANCEL_RECAP_VOICE_EVENT, stop)
+    return () => window.removeEventListener(CANCEL_RECAP_VOICE_EVENT, stop)
+  }, [recap.cancel])
+
   useEffect(() => {
     if (!autoVoicePending || recap.progress || recap.blocker) return
     setAutoVoicePending(false)
@@ -172,6 +182,9 @@ function RightSidebar(): JSX.Element {
         <button className={rightTab === 'aiAnimation' ? 'panel-tab panel-tab-active' : 'panel-tab'} onClick={() => setRightTab('aiAnimation')} title="AI Animation">
           AI Animation
         </button>
+        <button className={rightTab === 'manga' ? 'panel-tab panel-tab-active' : 'panel-tab'} onClick={() => setRightTab('manga')} title="AI Manga: manga panels into a narrated video">
+          AI Manga
+        </button>
       </div>
       {/* Nothing selected on the Timeline -> the project's own Details
           sheet, rather than a "select something" placeholder. */}
@@ -180,6 +193,7 @@ function RightSidebar(): JSX.Element {
       {rightTab === 'brand' && <BrandPresetPanel />}
       {rightTab === 'videoStory' && <VideoStoryRecapControls />}
       {rightTab === 'aiAnimation' && <AiAnimationPanel />}
+      {rightTab === 'manga' && <MangaPanel />}
     </aside>
     {/* Its own strip under the panel, not part of it: one-click route to
         the Recap Script workspace (the same view the rail's AI button

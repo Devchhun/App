@@ -10,6 +10,9 @@
 import type { LinePerformance } from './dubbingPerformance'
 
 export const KIRI_API_BASE = 'https://api.kiritts.com/v1'
+/** What a voice says to be listened to in Detect Gender: one line, the same
+ * for every voice so they compare, made once per voice and kept. */
+export const KIRI_SAMPLE_TEXT = 'សួស្តី! ថ្ងៃនេះខ្ញុំសប្បាយចិត្តណាស់ ដែលបានជួបអ្នក។'
 export const KIRI_MODEL = 'kiritts'
 /** The server's own limit on `instructions`. */
 export const KIRI_INSTRUCTIONS_MAX = 100
@@ -25,7 +28,9 @@ export const KIRI_IPC = {
   listVoices: 'kiri:listVoices',
   cloneVoice: 'kiri:cloneVoice',
   /** File dialog for a clone's recording: its path, name and length. */
-  pickCloneSource: 'kiri:pickCloneSource'
+  pickCloneSource: 'kiri:pickCloneSource',
+  /** A voice's kept sample (made the first time): a URL the app can play. */
+  voiceSample: 'kiri:voiceSample'
 } as const
 
 /** Which part of a recording a clone is made from, and how. */
@@ -86,35 +91,67 @@ export function parseKiriVoices(body: unknown): KiriVoice[] {
   return voices.sort((a, b) => Number(b.cloned) - Number(a.cloned))
 }
 
+/** How each emotion is asked of KiriTTS: by the DELIVERY (shouting,
+ * sobbing, whispering), not by the feeling's name. Measured on a built-in
+ * voice and two clones, three takes each, against the same line with no
+ * guidance: "very angry, fast, harsh, forceful" (what was sent before)
+ * moved the pitch by about one semitone -- heard as no anger at all --
+ * while "Shouting furiously, enraged, loud and aggressive, yelling at
+ * someone" raised it by 2 to 5 semitones and doubled the voice's edge, on
+ * every voice. The same held for the others: a shout, a whisper (7 dB
+ * quieter, lower), joy (faster, 4 to 7 semitones up), a stern or calm
+ * voice (lower, slower). Clones follow less far than the built-in voices,
+ * in the same direction. Instructions in Khmer and tags in the text
+ * ("[angry]", "(ស្រែក)") did nothing, or were read aloud.
+ * Strong first, then the milder form for a low intensity. */
+const KIRI_DELIVERY: Record<Exclude<LinePerformance['emotion'], 'neutral'>, { strong: string; mild?: string }> = {
+  angry: { strong: 'Shouting furiously, enraged, loud and aggressive, yelling at someone', mild: 'Annoyed, irritated, tense and clipped voice' },
+  shout: { strong: 'Yelling at the top of the voice, very loud, calling out across a distance' },
+  sad: { strong: 'Very sad, slow, soft, sorrowful, low voice' },
+  crying: { strong: 'Crying, sobbing, voice trembling and breaking, heartbroken, slow', mild: 'Tearful, voice trembling, holding back tears, slow' },
+  happy: { strong: 'Speaking with a big smile, joyful, bright and cheerful' },
+  excited: { strong: 'Overjoyed, excited, cheering, bright and energetic' },
+  fear: { strong: 'Terrified, panicking, trembling voice, pleading, breathless', mild: 'Nervous, uneasy, shaky and hesitant voice' },
+  shocked: { strong: 'Gasping in shock, stunned disbelief, voice rising sharply' },
+  serious: { strong: 'Stern, grave and firm, low steady voice, commanding' },
+  calm: { strong: 'Calm, gentle and relaxed, soft warm voice, unhurried' },
+  whisper: { strong: 'Whispering very quietly, secretive, breathy' }
+}
+
+/** Below this intensity an emotion is asked for in its milder form. */
+const KIRI_MILD_BELOW = 40
+
 /** A line's acting, as KiriTTS's `instructions` (100 characters at most):
- * the emotion with its strength, the pace, and the style words -- an inner
- * thought is asked for quietly. Empty for a plain neutral line. */
+ * the emotion as a delivery (KIRI_DELIVERY) and the pace -- an inner
+ * thought is asked for quietly, with the feeling only named. Empty for a
+ * plain neutral line. */
 export function kiriInstructions(performance: LinePerformance | undefined, innerVoice = false): string {
+  const pace = performance?.pace
+  const paceWord = pace === 'very_fast' ? 'very fast' : pace === 'fast' ? 'fast' : pace === 'very_slow' ? 'very slow' : pace === 'slow' ? 'slow' : ''
+  const quick = pace === 'fast' || pace === 'very_fast'
   const parts: string[] = []
-  if (innerVoice) parts.push('soft inner thought, quiet')
-  if (performance) {
-    const strength = performance.emotionIntensity >= 70 ? 'very ' : performance.emotionIntensity <= 30 ? 'slightly ' : ''
-    if (performance.emotion !== 'neutral') parts.push(`${strength}${performance.emotion}`)
-    if (performance.pace === 'fast' || performance.pace === 'very_fast') parts.push(performance.pace === 'very_fast' ? 'very fast' : 'fast')
-    else if (performance.pace === 'slow' || performance.pace === 'very_slow') parts.push(performance.pace === 'very_slow' ? 'very slow' : 'slow')
-    if (performance.speakingStyle?.trim()) parts.push(performance.speakingStyle.trim())
+  const emotion = performance?.emotion ?? 'neutral'
+  if (innerVoice) {
+    // A thought stays quiet whatever is felt: "shouting" would undo it.
+    parts.push('Soft inner thought', 'quiet')
+    if (emotion !== 'neutral' && emotion !== 'whisper' && emotion !== 'shout') parts.push(emotion === 'fear' ? 'afraid' : emotion)
+  } else if (emotion !== 'neutral') {
+    const delivery = KIRI_DELIVERY[emotion]
+    const phrase = (performance?.emotionIntensity ?? 50) < KIRI_MILD_BELOW && delivery.mild ? delivery.mild : delivery.strong
+    // Asked to go faster (a line over its room): the slowness goes.
+    parts.push(...phrase.split(/\s*,\s*/).filter((word) => !quick || !/\b(slow|unhurried)\b/i.test(word)))
   }
-  // Each word once: the emotion often reappears in the style words
-  // ("excited" + "excited, eager, bright"), which only used up the
-  // 100-character budget.
-  const words: string[] = []
-  for (const word of parts.flatMap((part) => part.split(/\s*,\s*/))) {
-    const bare = word.trim()
-    const core = bare.replace(/^(very|slightly) /i, '').toLowerCase()
-    if (bare && !words.some((w) => w.replace(/^(very|slightly) /i, '').toLowerCase() === core)) words.push(bare)
-  }
+  // The pace is kept whatever else has to go to stay within the limit.
+  const room = KIRI_INSTRUCTIONS_MAX - (paceWord ? paceWord.length + 2 : 0)
   let text = ''
-  for (const part of words) {
+  for (const part of parts) {
+    if (paceWord && part.toLowerCase() === paceWord) continue
     const next = text ? `${text}, ${part}` : part
-    if (next.length > KIRI_INSTRUCTIONS_MAX) break
+    if (next.length > room) break
     text = next
   }
-  return text
+  if (!paceWord) return text
+  return text ? `${text}, ${paceWord}` : paceWord
 }
 
 /** What a failed KiriTTS request means, in words a user can act on. */
@@ -207,6 +244,69 @@ export function kiriExpectedSeconds(text: string): number {
   const words = text.split(/[\s.,!?;:។៕…]+/).filter(Boolean).length
   const breaks = (text.trim().replace(/[\s.,!?;:។៕…'"]+$/, '').match(/[.!?។៕…]+/g) ?? []).length
   return Math.max(0.35, Math.max(letters / KIRI_CHARS_PER_SECOND, words * 0.3) + breaks * 0.35)
+}
+
+/** Letters of a line, as `kiriExpectedSeconds` counts them. */
+export function kiriLetterCount(text: string): number {
+  return [...text.replace(/[\s.,!?;:។៕…'"“”()\-]/g, '')].length
+}
+
+/** Now and then a voice stops a word early and ends cleanly -- no cut to hear
+ * in the sound, the last word simply not said ("…ទាំងស្រុង" came back as
+ * "…ទាំង", 21.5 letters a second from a voice whose lines run at 15.4). So a
+ * take much quicker than this voice's own usual pace is suspect. Voices differ
+ * too much (9.5 to 18.7 letters a second, measured) for one fixed speed; short
+ * lines vary too much to judge. */
+const DROPPED_WORDS_PACE = 1.3
+const DROPPED_WORDS_MIN_LETTERS = 12
+const PACE_SAMPLES_NEEDED = 5
+
+export function kiriTakeMissesWords(letters: number, speechSeconds: number, voicePaces: number[]): boolean {
+  if (letters < DROPPED_WORDS_MIN_LETTERS || !(speechSeconds > 0) || voicePaces.length < PACE_SAMPLES_NEEDED) return false
+  const sorted = [...voicePaces].sort((x, y) => x - y)
+  return letters / speechSeconds > sorted[Math.floor(sorted.length / 2)] * DROPPED_WORDS_PACE
+}
+
+/** The line closed with an end mark, for asking again: a sentence with its end
+ * written is a sentence the voice has to finish. */
+export function kiriWithEndMark(text: string): string {
+  const clean = text.trim()
+  return /[.!?។៕…]$/.test(clean) ? clean : `${clean}។`
+}
+
+/** Where a KiriTTS take's words begin, when it opens with a stray sound.
+ * Measured on 71 takes from two runs: every one began at full loudness in
+ * its very first hundredth of a second -- a low thump, heard as an "ss" or
+ * "uh" that is not in the text -- that died away within 0.2 s, and then
+ * came 0.15 to 1.3 s of silence before the words. Speech does not start
+ * like that (a voice takes a moment to build up), so: sound at once, then
+ * a real silence inside the first half second, then speech -- the take is
+ * used from just before that speech.
+ *
+ * `levels`: the take's loudest sample per 10 ms, in order. Returns the
+ * second to start from, or undefined when the take does not open that way. */
+export function kiriLeadInEnd(levels: ArrayLike<number>): number | undefined {
+  const n = levels.length
+  let peak = 0
+  for (let i = 0; i < n; i++) if (levels[i] > peak) peak = levels[i]
+  if (n < 40 || peak <= 0) return undefined
+  // Loud from the first instant (within 15 dB of the take's peak).
+  if (Math.max(levels[0], levels[1], levels[2]) < peak * 0.18) return undefined
+  const quiet = peak * 0.018 // 35 dB under the peak
+  // The silence after the thump: a tenth of a second or more, beginning
+  // within the first 0.35 s.
+  let silence = -1
+  for (let i = 3; i <= 35 && silence < 0; i++) {
+    let run = 0
+    while (i + run < n && levels[i + run] <= quiet) run++
+    if (run >= 10) silence = i
+  }
+  if (silence < 0) return undefined
+  let speech = silence
+  while (speech < n && levels[speech] <= peak * 0.03) speech++
+  // Nothing much after it: that was the line itself.
+  if (n - speech < 30) return undefined
+  return Math.max(0, speech / 100 - 0.04)
 }
 
 /** What to do with a KiriTTS take, from its sound spans (seconds of

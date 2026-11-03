@@ -9,8 +9,8 @@ vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmpdir() }
 import { buildVocalRemovalFilter, makeDemucsProgressParser } from './vocalRemoval'
 
 describe('buildVocalRemovalFilter', () => {
-  it('is the centre-channel cancellation pan', () => {
-    expect(buildVocalRemovalFilter()).toBe('pan=stereo|c0=c0-c1|c1=c1-c0')
+  it('is the centre-channel cancellation pan, the same on both channels (audible on a single speaker)', () => {
+    expect(buildVocalRemovalFilter()).toBe('pan=stereo|c0=c0-c1|c1=c0-c1')
   })
 })
 

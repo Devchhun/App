@@ -23,7 +23,7 @@ import { useAiDubber } from '../dubbing/AiDubberContext'
 import { planSequentialDrop, planStackDrop, type DropAsset, type PlannedPlacement } from './placementPlanning'
 import { DropGhostPreview } from './DropGhostPreview'
 import { normalizeRect, clipsInRect, applyBoxSelection, clampBoxSelectionX, type ClipGeometry, type ScreenRect } from './boxSelection'
-import { canSplitClip } from '../sequence/sequenceOps'
+import { canSplitClip, hasVocalsRemoved, videoFilesInOrder } from '../sequence/sequenceOps'
 import { updateClipSelection, type ClickModifiers } from '../sequence/sequenceSelection'
 import { canFreezeFrame as canFreezeFrameCheck, useFreezeFrame } from './useFreezeFrame'
 import { findGapAt } from './gapOps'
@@ -43,6 +43,8 @@ import type { MediaItem } from '@shared/media'
 import type { TimelineClip, Scene } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import type { KeyframeableProperty } from '@shared/keyframes'
+import { clipRate } from '@shared/clipTiming'
+import { speechRangesInFile } from '@shared/vocalRemoval'
 
 // Mirrors styles.css's --timeline-ruler-height/--timeline-top-safe-zone --
 // kept in sync by hand since CSS custom properties aren't readable from
@@ -233,7 +235,14 @@ export function Timeline(): JSX.Element {
   /** The instrumental track waiting on its import round-trip, plus the video
    * clip it belongs under -- same pending-ref-then-items-effect pattern as
    * pendingReplaceRef above. */
-  const pendingVocalRemovalRef = useRef<{ clipIds: string[]; path: string } | null>(null)
+  // Instrumentals waiting to be imported before they go under their clips
+  // (several at once while Remove Vocal (all videos) runs).
+  const pendingVocalRemovalRef = useRef<{ clipIds: string[]; path: string }[]>([])
+  /** Remove Vocal (all videos): which video it is on, and a stop request. */
+  const [vocalBatch, setVocalBatch] = useState<{ index: number; total: number } | null>(null)
+  const vocalBatchStopRef = useRef(false)
+  const itemsRef = useRef(items)
+  itemsRef.current = items
   /** Remove Background on a picture: the running job (its pill), or the
    * last error to show. The cut-out comes back through the same import +
    * pendingReplaceRef round-trip Replace Media uses. */
@@ -813,6 +822,38 @@ export function Timeline(): JSX.Element {
    * what plays is the background WITHOUT the original dialogue. Keeping the
    * original clip (muted) rather than replacing it means the change is
    * undoable and the original voice is one un-mute away. */
+  /** Clip menu > Save Audio as WAV: the sound this clip plays (its trim,
+   * speed, volume and fades) as a .wav file the user picks. */
+  const handleSaveAudioWav = useCallback(
+    async (clip: TimelineClip): Promise<void> => {
+      const media = mediaById[clip.mediaId]
+      if (!media?.originalPath) return
+      const speed = clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1
+      try {
+        const saved = await window.api.media.saveClipAudio({
+          sourcePath: media.originalPath,
+          sourceIn: clip.sourceIn,
+          sourceOut: clip.sourceOut ?? clip.sourceIn + clip.duration * speed,
+          speed,
+          volume: clip.muted ? 0 : clip.volume,
+          fadeIn: clip.fadeIn,
+          fadeOut: clip.fadeOut,
+          suggestedName: media.fileName.replace(/\.[^.]+$/, '')
+        })
+        if (saved) await confirm({ title: 'Audio saved', message: saved, confirmLabel: 'OK', hideCancel: true })
+      } catch (err) {
+        await confirm({ title: 'Could not save the audio', message: err instanceof Error ? err.message : String(err), confirmLabel: 'OK', hideCancel: true })
+      }
+    },
+    [mediaById, confirm]
+  )
+
+  /** A file Remove Vocal made (either kind), by its name. */
+  const isInstrumentalMedia = useCallback(
+    (mediaId: string): boolean => /(?:^|[\\/])(?:no-vocals-[^\\/]*|[^\\/]*-instrumental)\.m4a$/i.test(mediaById[mediaId]?.originalPath ?? ''),
+    [mediaById]
+  )
+
   const handleRemoveVocal = useCallback(
     async (clip: TimelineClip): Promise<void> => {
       const media = mediaById[clip.mediaId]
@@ -838,10 +879,10 @@ export function Timeline(): JSX.Element {
         // Already in Media (an earlier Remove Vocal on this video): straight on.
         const existing = items.find((item) => item.originalPath === result.outputPath && item.stage === 'ready')
         if (existing) {
-          mirrorAudioUnderClips(targets, existing.id)
+          mirrorAudioUnderClips(targets, existing.id, isInstrumentalMedia)
           return
         }
-        pendingVocalRemovalRef.current = { clipIds: targets, path: result.outputPath }
+        pendingVocalRemovalRef.current = [...pendingVocalRemovalRef.current, { clipIds: targets, path: result.outputPath }]
         await importPaths([result.outputPath])
       } finally {
         vocalJobIdRef.current = null
@@ -849,19 +890,142 @@ export function Timeline(): JSX.Element {
         setVocalProgress(null)
       }
     },
-    [mediaById, importPaths, confirm, selectedTimelineClipIds, sequence.clips, mirrorAudioUnderClips, items]
+    [mediaById, importPaths, confirm, selectedTimelineClipIds, sequence.clips, mirrorAudioUnderClips, items, isInstrumentalMedia]
   )
 
+  /** "Remove Vocal (only where they speak)": the separation as usual, but the
+   * voice-free sound only over the subtitle lines -- everywhere else the
+   * clip keeps the file's own sound. `targets` are the videos to do, each
+   * with the clips to put the result under; a stop keeps those already done. */
+  const runRemoveVocalAtLines = useCallback(
+    async (targets: { mediaId: string; clipIds: string[] }[], busyId: string): Promise<void> => {
+      const voxcpm = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
+      const lines = aiDubber.segments
+      vocalBatchStopRef.current = false
+      setRemovingVocalsClipId(busyId)
+      const failed: string[] = []
+      const noLines: string[] = []
+      try {
+        for (let i = 0; i < targets.length; i++) {
+          if (vocalBatchStopRef.current) break
+          const { mediaId, clipIds } = targets[i]
+          const media = mediaById[mediaId]
+          if (!media?.originalPath) continue
+          // Every clip of the file counts, also those not being done now:
+          // the result is of the whole file.
+          const fileClips = sequence.clips.filter((c) => c.type === 'video' && c.mediaId === mediaId).map((c) => ({ startTime: c.startTime, duration: c.duration, sourceIn: c.sourceIn, rate: clipRate(c) }))
+          const ranges = speechRangesInFile(fileClips, lines, media.metadata?.durationSeconds)
+          if (ranges.length === 0) {
+            noLines.push(media.fileName)
+            continue
+          }
+          setVocalBatch(targets.length > 1 ? { index: i + 1, total: targets.length } : null)
+          setVocalProgress(null)
+          const jobId = `vocal-lines-${i}-${Date.now()}`
+          vocalJobIdRef.current = jobId
+          const result = await window.api.vocalRemoval.removeVocalsAtLines(jobId, media.originalPath, ranges, voxcpm.installDir, voxcpm.device)
+          if (!result.ok) {
+            if (result.canceled || vocalBatchStopRef.current) break
+            failed.push(`${media.fileName}: ${result.error}`)
+            continue
+          }
+          const existing = itemsRef.current.find((item) => item.originalPath === result.outputPath && item.stage === 'ready')
+          if (existing) {
+            mirrorAudioUnderClips(clipIds, existing.id, isInstrumentalMedia)
+          } else {
+            pendingVocalRemovalRef.current = [...pendingVocalRemovalRef.current, { clipIds, path: result.outputPath }]
+            await importPaths([result.outputPath])
+          }
+        }
+      } finally {
+        vocalJobIdRef.current = null
+        setRemovingVocalsClipId(null)
+        setVocalProgress(null)
+        setVocalBatch(null)
+      }
+      const problems = [...failed, ...noLines.map((name) => `${name}: no subtitle lines over it -- add its SRT first.`)]
+      if (problems.length > 0) {
+        await confirm({
+          title: 'Remove Vocal (only where they speak)',
+          message: problems.slice(0, 5).join('\n') + (problems.length > 5 ? `\n…and ${problems.length - 5} more` : ''),
+          confirmLabel: 'OK',
+          hideCancel: true
+        })
+      }
+    },
+    [aiDubber.segments, mediaById, sequence.clips, mirrorAudioUnderClips, importPaths, confirm, isInstrumentalMedia]
+  )
+
+  /** "Remove Vocal (all videos)" -- the same as Remove Vocal, for every
+   * video file on the Timeline, one after another: each one's instrumental
+   * goes under all of its clips as soon as it is ready, so a stop keeps the
+   * ones already done. A video done before comes straight from the cache. */
+  const handleRemoveVocalAll = useCallback(async (): Promise<void> => {
+    // A video already done (its music under it) is left as it is.
+    const files = videoFilesInOrder(
+      sequence.clips,
+      (mediaId) => !!mediaById[mediaId]?.metadata?.hasAudio && !!mediaById[mediaId]?.originalPath,
+      (clip) => hasVocalsRemoved(clip, sequence.clips, isInstrumentalMedia)
+    )
+    if (files.length === 0) {
+      await confirm({ title: 'Remove Vocal (all videos)', message: 'Every video on the Timeline already has its vocals removed.', confirmLabel: 'OK', hideCancel: true })
+      return
+    }
+    const voxcpm = parseStoredVoxCpmSettings(typeof localStorage === 'undefined' ? null : localStorage.getItem(getVoxCpmSettingsStorageKey()))
+    vocalBatchStopRef.current = false
+    setRemovingVocalsClipId('all')
+    const failed: string[] = []
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (vocalBatchStopRef.current) break
+        const { mediaId, clipIds } = files[i]
+        const media = mediaById[mediaId]
+        setVocalBatch({ index: i + 1, total: files.length })
+        setVocalProgress(null)
+        const jobId = `vocal-all-${i}-${Date.now()}`
+        vocalJobIdRef.current = jobId
+        const result = await window.api.vocalRemoval.removeVocals(jobId, media.originalPath, voxcpm.installDir, voxcpm.device)
+        if (!result.ok) {
+          if (result.canceled || vocalBatchStopRef.current) break
+          failed.push(`${media.fileName}: ${result.error}`)
+          continue
+        }
+        const existing = itemsRef.current.find((item) => item.originalPath === result.outputPath && item.stage === 'ready')
+        if (existing) {
+          mirrorAudioUnderClips(clipIds, existing.id, isInstrumentalMedia)
+        } else {
+          pendingVocalRemovalRef.current = [...pendingVocalRemovalRef.current, { clipIds, path: result.outputPath }]
+          await importPaths([result.outputPath])
+        }
+      }
+    } finally {
+      vocalJobIdRef.current = null
+      setRemovingVocalsClipId(null)
+      setVocalProgress(null)
+      setVocalBatch(null)
+    }
+    if (failed.length > 0) {
+      await confirm({
+        title: `Could not remove vocals from ${failed.length} video${failed.length === 1 ? '' : 's'}`,
+        message: failed.slice(0, 5).join('\n') + (failed.length > 5 ? `\n…and ${failed.length - 5} more` : ''),
+        confirmLabel: 'OK',
+        hideCancel: true
+      })
+    }
+  }, [sequence.clips, mediaById, mirrorAudioUnderClips, importPaths, confirm, isInstrumentalMedia])
+
   useEffect(() => {
-    const pending = pendingVocalRemovalRef.current
-    if (!pending) return
-    const match = items.find((item) => item.originalPath === pending.path)
-    if (!match || (match.stage !== 'ready' && match.stage !== 'error')) return
-    pendingVocalRemovalRef.current = null
-    if (match.stage === 'error') return
-    // Each clip gets the stretch of the instrumental that matches its own
-    // stretch of the video (not the file from its start).
-    mirrorAudioUnderClips(pending.clipIds, match.id)
+    const queue = pendingVocalRemovalRef.current
+    if (queue.length === 0) return
+    for (const pending of queue) {
+      const match = items.find((item) => item.originalPath === pending.path)
+      if (!match || (match.stage !== 'ready' && match.stage !== 'error')) continue
+      pendingVocalRemovalRef.current = pendingVocalRemovalRef.current.filter((p) => p !== pending)
+      if (match.stage === 'error') continue
+      // Each clip gets the stretch of the instrumental that matches its own
+      // stretch of the video (not the file from its start).
+      mirrorAudioUnderClips(pending.clipIds, match.id, isInstrumentalMedia)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `items` should retrigger this; the sequence mutators are stable context callbacks.
   }, [items])
 
@@ -918,11 +1082,41 @@ export function Timeline(): JSX.Element {
           onClick: () => extractAudio(clip.id),
           disabled: clip.type !== 'video' || !!clip.linkedClipId || !media?.metadata?.hasAudio
         },
+        { label: 'Save Audio as WAV…', onClick: () => void handleSaveAudioWav(clip), disabled: clip.type === 'image' || (clip.type === 'video' && !media?.metadata?.hasAudio) },
         {
           label: removingVocalsClipId === clip.id ? 'Removing Vocal…' : 'Remove Vocal',
           onClick: () => void handleRemoveVocal(clip),
           disabled: !media?.metadata?.hasAudio || removingVocalsClipId !== null
         },
+        ...(clip.type === 'video'
+          ? [
+              {
+                label: removingVocalsClipId === 'all' ? 'Removing Vocal (all videos)…' : 'Remove Vocal (all videos)',
+                onClick: () => void handleRemoveVocalAll(),
+                disabled: removingVocalsClipId !== null
+              },
+              {
+                label: 'Remove Vocal (only where they speak)',
+                onClick: () =>
+                  void runRemoveVocalAtLines(
+                    [
+                      {
+                        mediaId: clip.mediaId,
+                        // Every selected clip of this video, as Remove Vocal does.
+                        clipIds: selectedTimelineClipIds.includes(clip.id) ? sequence.clips.filter((c) => selectedTimelineClipIds.includes(c.id) && c.type === 'video' && c.mediaId === clip.mediaId).map((c) => c.id) : [clip.id]
+                      }
+                    ],
+                    clip.id
+                  ),
+                disabled: !media?.metadata?.hasAudio || removingVocalsClipId !== null || aiDubber.segments.length === 0
+              },
+              {
+                label: 'Remove Vocal (only where they speak, all videos)',
+                onClick: () => void runRemoveVocalAtLines(videoFilesInOrder(sequence.clips, (mediaId) => !!mediaById[mediaId]?.metadata?.hasAudio && !!mediaById[mediaId]?.originalPath), 'all'),
+                disabled: removingVocalsClipId !== null || aiDubber.segments.length === 0
+              }
+            ]
+          : []),
         ...(clip.type === 'image'
           ? [{ label: backgroundJob?.clipId === clip.id ? 'Removing Background…' : 'Remove Background', onClick: () => void handleRemoveBackground(clip), disabled: !!backgroundJob || clip.locked }]
           : []),
@@ -972,7 +1166,13 @@ export function Timeline(): JSX.Element {
       handleReplaceMedia,
       resetClipProperties,
       backgroundJob,
-      handleRemoveBackground
+      handleRemoveBackground,
+      removingVocalsClipId,
+      handleRemoveVocal,
+      handleRemoveVocalAll,
+      runRemoveVocalAtLines,
+      aiDubber.segments.length,
+      handleSaveAudioWav
     ]
   )
 
@@ -1038,23 +1238,58 @@ export function Timeline(): JSX.Element {
    * mouse position" to anchor to when the toolbar's zoom-in/out buttons or
    * slider are clicked, and the playhead is the one position on screen a
    * user zooming via those controls is most likely trying to keep in view. */
+  /** One zoom gesture's anchor: the playhead's time, where it sits on screen
+   * (px from the tracks' left edge), when it was last used and the scroll
+   * that was set for it. */
+  const zoomAnchorRef = useRef<{ time: number; x: number; at: number; scroll: number } | null>(null)
+  /** A zoom request whose new width is not laid out yet. */
+  const zoomPendingRef = useRef(false)
   const zoomAroundPlayhead = useCallback(
     (newPps: number) => {
       const scrollEl = scrollRef.current
       const clamped = Math.max(MIN_PPS, Math.min(MAX_PPS, newPps))
-      if (!scrollEl) {
+      if (!scrollEl || clamped === pixelsPerSecond) {
         setPixelsPerSecond(clamped)
         return
       }
-      const cursorX = currentTime * pixelsPerSecond - scrollEl.scrollLeft
-      const newScrollLeft = computeZoomAroundCursor(scrollEl.scrollLeft, cursorX, pixelsPerSecond, clamped)
+      // The playhead stays where it is on screen while everything around it
+      // grows or shrinks. Out of view, it is brought to the middle: zooming
+      // is "at the line", wherever the view was.
+      // One drag of the slider is many requests, and they share ONE anchor:
+      // measured afresh each time, every request added the half pixel the
+      // browser rounds a scroll position by, and the playhead crept 15 px
+      // across the screen in 30 requests. A new anchor is measured only
+      // once the playhead has moved, the view was scrolled by hand, or the
+      // zooming has stopped for a while.
+      const now = performance.now()
+      const held = zoomAnchorRef.current
+      const sameGesture = !!held && held.time === currentTime && now - held.at < 2000 && (zoomPendingRef.current || Math.abs(scrollEl.scrollLeft - held.scroll) <= 2)
+      if (held && sameGesture) {
+        held.at = now
+      } else {
+        const x = currentTime * pixelsPerSecond - scrollEl.scrollLeft
+        const inView = x >= 0 && x <= timelineViewportWidth
+        zoomAnchorRef.current = { time: currentTime, x: inView ? x : timelineViewportWidth / 2, at: now, scroll: scrollEl.scrollLeft }
+      }
+      zoomPendingRef.current = true
       setPixelsPerSecond(clamped)
-      requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollLeft = newScrollLeft
-      })
     },
-    [currentTime, pixelsPerSecond, setPixelsPerSecond]
+    [currentTime, pixelsPerSecond, timelineViewportWidth, setPixelsPerSecond]
   )
+  // The scroll that keeps the anchor in place, set once the new width
+  // exists and before it is painted. It used to be set on the next animation
+  // frame, computed from the view as it was at the request: dragging the
+  // slider sends requests faster than that, each one read a view the last
+  // had not finished changing, and the Timeline slid away from the playhead.
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current
+    const scrollEl = scrollRef.current
+    if (!zoomPendingRef.current || !anchor || !scrollEl) return
+    zoomPendingRef.current = false
+    scrollEl.scrollLeft = Math.max(0, anchor.time * pixelsPerSecond - anchor.x)
+    // What the browser made of it (rounded, or held at an end).
+    anchor.scroll = scrollEl.scrollLeft
+  }, [pixelsPerSecond])
 
   const buildRulerMenuItems = useCallback(
     (atTime: number): ContextMenuItem[] => [
@@ -1851,7 +2086,9 @@ export function Timeline(): JSX.Element {
       {removingVocalsClipId && (
         <div className="timeline-job-pill" role="status" aria-live="polite">
           <span className="timeline-job-pill-spinner" />
-          <span className="timeline-job-pill-label">Removing vocals · {vocalProgress?.stage ?? 'Starting'}</span>
+          <span className="timeline-job-pill-label">
+            Removing vocals{vocalBatch ? ` · video ${vocalBatch.index} of ${vocalBatch.total}` : ''} · {vocalProgress?.stage ?? 'Starting'}
+          </span>
           <span className="timeline-job-pill-track">
             <span className="timeline-job-pill-fill" style={{ width: `${vocalProgress?.percent ?? 0}%` }} />
           </span>
@@ -1861,6 +2098,7 @@ export function Timeline(): JSX.Element {
             title="Stop removing vocals"
             aria-label="Stop removing vocals"
             onClick={() => {
+              vocalBatchStopRef.current = true
               if (vocalJobIdRef.current) void window.api.vocalRemoval.cancel(vocalJobIdRef.current)
             }}
           >
@@ -1989,6 +2227,7 @@ export function Timeline(): JSX.Element {
                     }
                     height={trackDisplayHeight(track, trackHeightMode)}
                     hidden={track.hidden}
+                    genderOf={aiDubber.state.videoMediaId === selectedId ? (segmentId) => aiDubber.state.segments[segmentId]?.detectedGender : undefined}
                   />
                 )
               }

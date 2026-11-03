@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { createGemini } from './geminiClient'
 import { mkdir, rm } from 'fs/promises'
 import { join } from 'path'
 import { GoogleGenAI, FileState, MediaResolution, ThinkingLevel } from '@google/genai'
@@ -157,7 +158,7 @@ export async function buildStoryOutline(request: StoryOutlineRequest, onProgress
   active.set(request.jobId, controller)
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
   const workDir = join(app.getPath('temp'), 'creative-ai-story-outline', request.jobId.replace(/[^a-zA-Z0-9_-]/g, '_'))
   const report = (phase: VideoStoryNarrationProgress['phase'], percent: number, message: string, part?: { index: number; count: number }): void =>
     onProgress({ jobId: request.jobId, phase, percent: Math.round(percent), message, ...(part ? { currentChunk: part.index + 1, totalChunks: part.count } : {}) })
@@ -261,7 +262,7 @@ export async function writeRecapScript(request: StoryScriptRequest, onProgress: 
   active.set(request.jobId, controller)
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
   const report = (phase: VideoStoryNarrationProgress['phase'], percent: number, message: string): void => onProgress({ jobId: request.jobId, phase, percent: Math.round(percent), message })
   try {
     const beats = request.outline.beats.filter((beat) => beat.include)

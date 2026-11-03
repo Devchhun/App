@@ -137,7 +137,13 @@ export function NarrationProvider({ children }: { children: ReactNode }): JSX.El
 
   const currentSegmentIndex = useMemo(() => segments.findIndex((s) => s.id === state.currentSegmentId), [segments, state.currentSegmentId])
   const currentSegment = currentSegmentIndex >= 0 ? segments[currentSegmentIndex] : null
-  const currentSegmentState = state.currentSegmentId ? (state.segments[state.currentSegmentId] ?? defaultNarrationSegmentState(state.currentSegmentId)) : defaultNarrationSegmentState('')
+  // Memoised: this provider re-renders on every playback frame (it watches
+  // the playhead), and a fresh default object each time changed its context
+  // value, re-rendering the whole app every frame.
+  const currentSegmentState = useMemo(
+    () => (state.currentSegmentId ? (state.segments[state.currentSegmentId] ?? defaultNarrationSegmentState(state.currentSegmentId)) : defaultNarrationSegmentState('')),
+    [state.currentSegmentId, state.segments]
+  )
 
   const videoOriginalPath = useMemo(() => (state.videoMediaId ? items.find((m) => m.id === state.videoMediaId)?.originalPath : undefined), [state.videoMediaId, items])
 

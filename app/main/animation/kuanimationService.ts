@@ -1,4 +1,5 @@
 import { app, BrowserWindow, session } from 'electron'
+import { createGemini } from '../ai/geminiClient'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { existsSync } from 'fs'
 import { copyFile, mkdir, readFile, writeFile } from 'fs/promises'
@@ -712,7 +713,7 @@ export async function generateAnimation(input: AnimationRequest, onProgress: Pro
     const saveState = (): Promise<void> => writeFile(join(folder, 'state.json'), JSON.stringify(state, null, 1), 'utf8')
     await saveState()
 
-    const ai = new GoogleGenAI({ apiKey })
+    const ai = createGemini(apiKey)
     const model = { model: WRITER_MODEL }
     const style: AnimationStyle = request.style
     const khmer = languageOf(request.voice) === 'km'

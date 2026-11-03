@@ -1,5 +1,6 @@
 import { PLAIN_TEXT_POSITION } from '@shared/plainText'
-import { useRef } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import type { TimelineClip } from '@shared/project'
 import { useMedia } from '../media/MediaContext'
 import { usePlaybackTime } from '../playback/PlaybackContext'
 import { useScenes } from '../scenes/SceneContext'
@@ -8,11 +9,16 @@ import { useHistory } from '../history/HistoryContext'
 import { canSplitClip } from '../sequence/sequenceOps'
 import { findOrCreateTrack, type OccupiedRange } from './trackModel'
 import { AddTrackButton } from './AddTrackButton'
+import { CastGlyph, CastWindow } from '../dubbing/CastWindow'
 import { ToggleButton } from './ToggleButton'
 import { SelectionToolButton } from './SelectionToolButton'
 import { TimelineViewOptionsMenu } from './TimelineViewOptionsMenu'
 import { VoiceoverRecorder } from './VoiceoverRecorder'
 import { useNarration } from '../narration/NarrationContext'
+import { useBrandPreset } from '../brand/BrandPresetContext'
+import { EXPORT_ASPECT_RATIO_PARTS } from '@shared/export'
+import { clearReframeNote, loadAutoReframeOn, needsReframe, newlyAddedVideoClips, runAutoReframe, saveAutoReframeOn, stopAutoReframe, useAutoReframe } from '../sequence/autoReframe'
+import { useProject } from '../project/ProjectContext'
 import { canFreezeFrame as canFreezeFrameCheck, useFreezeFrame } from './useFreezeFrame'
 import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
 import {
@@ -27,6 +33,7 @@ import {
   LinkIcon,
   LockIcon,
   MirrorIcon,
+  ReframeIcon,
   RotateIcon,
   ZoomOutGlyphIcon,
   ZoomInGlyphIcon,
@@ -73,6 +80,7 @@ interface Props {
 
 export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, hasAdditionalSelection = false }: Props): JSX.Element {
   const zoomSliderRef = useRef<HTMLDivElement | null>(null)
+  const [castOpen, setCastOpen] = useState(false)
   const { items, selectedId } = useMedia()
   const { currentTime } = usePlaybackTime()
   const { scenesByMedia, selectedSceneId, deleteScene, splitScene, insertScene } = useScenes()
@@ -87,8 +95,71 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
     collapseAllTracks,
     toggleClipLock,
     updateClipProperties,
+    mirrorClips,
+    updateEachClipProperties,
     clearClipSelection
   } = useSequence()
+  const { brandPreset } = useBrandPreset()
+  const reframe = useAutoReframe()
+  // Auto Reframe in one click: the selected video clips, or -- nothing
+  // selected -- every video on the main (bottom) video track.
+  const reframeTargets = ((): string[] => {
+    const selectedVideos = sequence.clips.filter((c) => selectedTimelineClipIds.includes(c.id) && c.type === 'video' && !c.locked)
+    if (selectedVideos.length > 0) return selectedVideos.map((c) => c.id)
+    const main = [...sequence.tracks].filter((t) => t.kind === 'video').sort((a, b) => a.order - b.order)[0]
+    return main ? sequence.clips.filter((c) => c.trackId === main.id && c.type === 'video' && !c.locked).map((c) => c.id) : []
+  })()
+  const [reframeW, reframeH] = EXPORT_ASPECT_RATIO_PARTS[brandPreset.defaultAspectRatio]
+  const frameAspect = reframeW / reframeH
+  const reframeContext = {
+    clips: sequence.clips,
+    pathOf: (id: string) => items.find((m) => m.id === id)?.originalPath,
+    frameAspect,
+    aspectLabel: brandPreset.defaultAspectRatio,
+    apply: updateEachClipProperties
+  }
+  const handleReframe = (): void => {
+    if (reframe.busy) {
+      stopAutoReframe()
+      return
+    }
+    void runAutoReframe(reframeTargets, reframeContext)
+  }
+
+  // Auto: a video added to the main track in a frame of another shape (a
+  // 16:9 drama into a TikTok 9:16) is reframed on its own, without a
+  // click. Only video FILES new to the Timeline count -- opening a project,
+  // or cutting / splitting / Video Sync of a video already there, leaves the
+  // framing alone. A Batch Load's videos are gathered a moment and done
+  // together; ones landing while a run goes wait for it to end.
+  const [autoReframe, setAutoReframe] = useState(loadAutoReframeOn)
+  const { projectId } = useProject()
+  const knownMediaRef = useRef<{ project: string | null; media: Set<string> } | null>(null)
+  const pendingReframeRef = useRef<Set<string>>(new Set())
+  const mainVideoTrackId = [...sequence.tracks].filter((t) => t.kind === 'video').sort((a, b) => a.order - b.order)[0]?.id
+  useEffect(() => {
+    const onTimeline = new Set(sequence.clips.map((c) => c.mediaId))
+    const known = knownMediaRef.current
+    if (!known || known.project !== projectId) {
+      knownMediaRef.current = { project: projectId, media: onTimeline }
+      pendingReframeRef.current.clear()
+      return
+    }
+    if (autoReframe) {
+      for (const c of newlyAddedVideoClips(known.media, sequence.clips, mainVideoTrackId)) {
+        if (needsReframe(items.find((m) => m.id === c.mediaId)?.metadata, frameAspect)) pendingReframeRef.current.add(c.id)
+      }
+    }
+    knownMediaRef.current = { project: projectId, media: onTimeline }
+    if (!autoReframe || pendingReframeRef.current.size === 0 || reframe.busy) return
+    const timer = setTimeout(() => {
+      const ids = [...pendingReframeRef.current].filter((id) => sequence.clips.some((c) => c.id === id))
+      pendingReframeRef.current.clear()
+      if (ids.length > 0) void runAutoReframe(ids, { ...reframeContext, auto: true })
+    }, 2500)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reframeContext is rebuilt each render from these same values.
+  }, [sequence.clips, projectId, autoReframe, reframe.busy, mainVideoTrackId, frameAspect, items])
   const { canUndo, canRedo, undo, redo } = useHistory()
   const { triggerFreezeFrame } = useFreezeFrame()
   const narration = useNarration()
@@ -148,10 +219,29 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
   // one-click quick-action for two of its numeric fields. Both a no-op on a
   // locked clip (matching every other toolbar mutation's disabled-while-
   // locked convention).
-  const handleMirror = (): void => {
-    if (!selectedClip || selectedClip.locked) return
-    const transform = selectedClip.transform ?? IDENTITY_TRANSFORM
-    updateClipProperties(selectedClip.id, { transform: { ...transform, scaleX: -transform.scaleX } })
+  // The whole video at once: a click flips every picture on the selected
+  // pictures' track(s) -- a video cut into a clip per subtitle (and often
+  // from many source files) is mirrored whole, not just the clip that
+  // happened to be selected. Shift+click flips only the selected clips.
+  // Read from the pictures among the selection, not its first clip: Ctrl+A
+  // over a video cut into hundreds of clips also selects their sound, and
+  // an audio clip first left Mirror greyed out.
+  const isPicture = (c: TimelineClip): boolean => !c.locked && (c.type === 'video' || c.type === 'image')
+  const isFlipped = (c: TimelineClip): boolean => (c.transform?.scaleX ?? 1) < 0
+  const mirrorTargets = sequence.clips.filter((c) => selectedTimelineClipIds.includes(c.id) && isPicture(c))
+  const mirrorTracks = new Set(mirrorTargets.map((c) => c.trackId))
+  const mirrorTrackClips = sequence.clips.filter((c) => mirrorTracks.has(c.trackId) && isPicture(c))
+  // On only when the whole track is flipped: a track where a few clips were
+  // flipped one at a time gets the rest flipped on the next click.
+  const isMirrored = mirrorTrackClips.length > 0 && mirrorTrackClips.every(isFlipped)
+  // One change for them all (a change per clip froze the app on a video
+  // cut into a clip per subtitle).
+  const handleMirror = (event: MouseEvent): void => {
+    if (event.shiftKey) {
+      if (mirrorTargets.length > 0) mirrorClips(mirrorTargets.map((c) => c.id), !mirrorTargets.every(isFlipped))
+      return
+    }
+    if (mirrorTrackClips.length > 0) mirrorClips(mirrorTrackClips.map((c) => c.id), !isMirrored)
   }
 
   const handleRotate = (): void => {
@@ -270,8 +360,40 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
           disabled={!selectedClip}
           onClick={handleToggleLock}
         />
-        <ToggleButton icon={<MirrorIcon />} label="Mirror" active={false} disabled={!canTransformClip} onClick={handleMirror} />
+        <ToggleButton icon={<MirrorIcon />} label={isMirrored ? 'Mirror (on: click to turn the whole video back; Shift+click for the selected clips only)' : 'Mirror: flip the whole video left to right (Shift+click for the selected clips only)'} active={isMirrored} disabled={mirrorTargets.length === 0} onClick={handleMirror} />
         <ToggleButton icon={<RotateIcon />} label="Rotate 90°" active={false} disabled={!canTransformClip} onClick={handleRotate} />
+        <button
+          type="button"
+          className={`timeline-tool-button timeline-add-track-button timeline-reframe-button${reframe.busy ? ' timeline-reframe-busy' : ''}`}
+          disabled={!reframe.busy && reframeTargets.length === 0}
+          title={
+            reframe.busy
+              ? 'Auto Reframe is looking for people -- click to stop'
+              : `Auto Reframe: fill the ${brandPreset.defaultAspectRatio} frame and follow the people -- ${selectedTimelineClipIds.length > 0 ? `the ${reframeTargets.length} selected video clip(s)` : `all ${reframeTargets.length} videos on the main track`}`
+          }
+          onClick={handleReframe}
+        >
+          <ReframeIcon size={15} />
+          {reframe.busy ? `${reframe.busy.files > 1 ? `${reframe.busy.file}/${reframe.busy.files} · ` : ''}${reframe.busy.percent}% ✕` : 'Reframe'}
+        </button>
+        <button
+          type="button"
+          className={`timeline-tool-button timeline-reframe-auto${autoReframe ? ' timeline-reframe-auto-on' : ''}`}
+          role="switch"
+          aria-checked={autoReframe}
+          title={autoReframe ? 'Auto Reframe is ON: a video added in another shape (16:9 into 9:16) is reframed by itself. Click to turn off.' : 'Auto Reframe is OFF: click to reframe added videos by themselves.'}
+          onClick={() => {
+            setAutoReframe(!autoReframe)
+            saveAutoReframeOn(!autoReframe)
+          }}
+        >
+          Auto
+        </button>
+        {reframe.note && !reframe.busy && (
+          <span className="timeline-reframe-note" role="status" title={reframe.note} onClick={clearReframeNote}>
+            {reframe.note}
+          </span>
+        )}
         <ToggleButton
           icon={<span className="timeline-toolbar-freeze-glyph">❄</span>}
           label="Freeze Frame"
@@ -281,6 +403,12 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
         />
         <ToggleButton icon={<TextToolIcon />} label={media ? 'Insert a blank text graphic at the playhead' : 'Import media first'} active={false} disabled={!media} onClick={handleInsertText} />
         <AddTrackButton onAdd={addTrack} />
+        {/* The Cast window: every voice in the video with its speaker's
+            face, one voice model chosen per character. */}
+        <button className="timeline-tool-button timeline-add-track-button timeline-cast-button" title="Cast: find every voice in the video, see who speaks, and choose a voice model for each" onClick={() => setCastOpen(true)}>
+          <CastGlyph size={13} /> Cast
+        </button>
+        {castOpen && <CastWindow onClose={() => setCastOpen(false)} />}
       </div>
 
       <div className="timeline-tool-group timeline-tool-group-right">
@@ -340,15 +468,19 @@ export function TimelineToolbar({ onZoom, timelineDuration, onDeleteSelection, h
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
                 event.preventDefault()
+                event.stopPropagation()
                 onZoom(sliderToPps(Math.max(0, zoomSliderValue - 2)))
               } else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
                 event.preventDefault()
+                event.stopPropagation()
                 onZoom(sliderToPps(Math.min(ZOOM_SLIDER_MAX, zoomSliderValue + 2)))
               } else if (event.key === 'Home') {
                 event.preventDefault()
+                event.stopPropagation()
                 onZoom(MIN_PPS)
               } else if (event.key === 'End') {
                 event.preventDefault()
+                event.stopPropagation()
                 onZoom(MAX_PPS)
               }
             }}

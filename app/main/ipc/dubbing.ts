@@ -1,14 +1,26 @@
 import { detectBurnedSubtitles } from '../media/subtitleDetect'
-import { kiriSpeakLine, KiriTtsError } from '../media/kiriTts'
-import { kiriExpectedSeconds, kiriInstructions, kiriRetake, kiriTakeVerdict, kiriVoiceId } from '@shared/kiriTts'
+import { kiriSpeakLine, KiriTtsError, KIRI_UNREACHABLE } from '../media/kiriTts'
+import { kiriExpectedSeconds, kiriInstructions, kiriLeadInEnd, kiriRetake, kiriTakeVerdict, kiriVoiceId, kiriLetterCount, kiriTakeMissesWords, kiriWithEndMark } from '@shared/kiriTts'
+
+/** How fast each KiriTTS voice has been speaking, in letters a second, to
+ * notice a take that left words out (kept while the app runs). */
+const kiriVoicePaces = new Map<string, number[]>()
+const KIRI_PACE_KEPT = 200
 
 /** Lines asked of KiriTTS at once -- well inside its 100 requests/minute. */
 const KIRI_PARALLEL_LINES = 3
+/** A lost connection to KiriTTS is waited for this long before a run gives up. */
+const OFFLINE_WAIT_MS = 3 * 60_000
+const OFFLINE_RETRY_MS = 10_000
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { analyzeEcho } from '@shared/innerVoice'
+import type { CastScanLine, CastScanRequest, CastScanResult } from '@shared/cast'
+import type { SpeakerGender } from '@shared/transcription'
+import { cancelCastScan, detectLineGenders, isCastScanCanceled, scanCast } from '../ai/castScanService'
 import { cacheKeyForFile, ensureCacheDir, getMediaCacheRoot } from '../media/cache'
+import { withoutDamagedVideos } from '../media/damageCheck'
 import { runFfmpeg } from '../media/jobRunner'
 import { registerMediaToken } from '../media/protocol'
 import { SUPPORTED_MEDIA_EXTENSIONS } from '@shared/media'
@@ -26,7 +38,7 @@ import {
 import { buildLineControl, emotionProfile, lineLimiterAllowanceDb, lineLoudnessTargetLufs, restrainedPerformance, type DubbingLineDebug } from '@shared/dubbingPerformance'
 import { analyzeDubbingPerformance, DUBBING_PERFORMANCE_MODEL } from '../ai/dubbingPerformanceService'
 import { extractDubPlaceholderClip } from '../media/dubbingAudio'
-import { cutTake, masterDubbingLine, measureSpeechSeconds, measureSpeechSpans } from '../media/dubbingMaster'
+import { cutTake, masterDubbingLine, measureSpeechSeconds, measureSpeechSpans, takeLevels, trimTakeStart } from '../media/dubbingMaster'
 import { stitchAudio } from '../media/audioStitch'
 import {
   applyDubbingPostFx,
@@ -107,6 +119,30 @@ async function stretchAlreadyApplied(finalPath: string): Promise<number> {
 }
 
 export function registerDubbingIpc(): void {
+  // The Cast window: who speaks each line, and their faces.
+  ipcMain.handle(DUBBING_IPC.scanCast, async (event, request: CastScanRequest): Promise<{ ok: true; result: CastScanResult } | { ok: false; error: string; canceled?: boolean }> => {
+    try {
+      const result = await scanCast(request, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send(DUBBING_IPC.castProgress, progress)
+      })
+      return { ok: true, result }
+    } catch (error) {
+      if (isCastScanCanceled(error)) return { ok: false, error: 'Canceled', canceled: true }
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(DUBBING_IPC.cancelCast, (_event, jobId: string): boolean => cancelCastScan(jobId))
+  ipcMain.handle(
+    DUBBING_IPC.detectGenders,
+    async (_event, request: { jobId: string; lines: CastScanLine[] }): Promise<{ ok: true; genders: Record<string, { gender: SpeakerGender; confidence: number }> } | { ok: false; error: string }> => {
+      try {
+        return { ok: true, genders: await detectLineGenders(request) }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+  )
+
   ipcMain.handle(DUBBING_IPC.cancelGeneration, (_event, batchId?: string): boolean => {
     const controller = runningBatches.get(batchId || AI_DUBBER_BATCH)
     if (!controller) return false
@@ -197,8 +233,11 @@ export function registerDubbingIpc(): void {
       // Any number of SRTs: each goes to its own video (matched by name in
       // the renderer -- see shared/dubbingBatch.ts's pairSrtsWithVideos).
       const srts = await Promise.all(result.filePaths.filter(isSrt).map(async (path) => ({ fileName: basename(path), srtText: await readFile(path, 'utf-8') })))
+      // A video whose download was cut off is left out (and said so): it
+      // cannot be previewed, and the player stalls on it.
+      const videoPaths = await withoutDamagedVideos(win, result.filePaths.filter((path) => !isSrt(path)), true)
       return {
-        videoPaths: result.filePaths.filter((path) => !isSrt(path)),
+        videoPaths,
         srt: srts[0] ?? null,
         srts
       }
@@ -358,8 +397,8 @@ export function registerDubbingIpc(): void {
           pitch: segment.pitch + pitchCorrection,
           speed: segment.speed * autoFitSpeed,
           volumeDb: segment.volumeDb,
-          // A thought, not a spoken line: echoed like the original's.
-          echo: !!segment.innerVoice
+          // A thought, not a spoken line: echoed, in the style chosen.
+          echo: segment.innerVoice ? (request.echoStyle ?? true) : false
         })
         const debug: DubbingLineDebug | undefined =
           report && performance
@@ -400,9 +439,12 @@ export function registerDubbingIpc(): void {
       const workDir = await createEdgeTtsWorkDir()
       const jobs = kiriGroups.flatMap((group) => group.segments.map((segment) => ({ voice: group.kiriVoice as string, segment })))
       let next = 0
-      // A bad key, a plan without API access or used-up credits fails every
-      // line the same way: stop asking after the first, report the rest.
+      // A bad key, a plan without API access, used-up credits or no
+      // connection (after its own retries) fails every line the same way:
+      // stop asking after the first, report the rest.
       let fatal: string | null = null
+      // When the connection first dropped (null: it is up).
+      let offlineSince: number | null = null
       const worker = async (): Promise<void> => {
         while (next < jobs.length && !signal.aborted) {
           const index = next++
@@ -417,11 +459,27 @@ export function registerDubbingIpc(): void {
           const acting = !!request.kiriActing
           const instructions = acting ? kiriInstructions(segment.performance, !!segment.innerVoice) : ''
           try {
-            await kiriSpeakLine(voice, segment.text, outPath, { instructions, signal })
+            // A dropped connection is waited out (up to OFFLINE_WAIT_MS, the
+            // same line tried again every OFFLINE_RETRY_MS) before the run
+            // gives up: a short drop used to fail every line left at once
+            // ("29 changed, 280 could not be made").
+            for (;;) {
+              try {
+                await kiriSpeakLine(voice, segment.text, outPath, { instructions, signal })
+                offlineSince = null
+                break
+              } catch (err) {
+                if (signal.aborted || !(err instanceof KiriTtsError) || err.status !== KIRI_UNREACHABLE || fatal) throw err
+                offlineSince ??= Date.now()
+                if (Date.now() - offlineSince > OFFLINE_WAIT_MS) throw err
+                await new Promise((resolve) => setTimeout(resolve, OFFLINE_RETRY_MS))
+                if (signal.aborted) throw err
+              }
+            }
           } catch (err) {
             if (signal.aborted) return
             const message = err instanceof Error ? err.message : String(err)
-            if (err instanceof KiriTtsError && (err.status === 401 || err.status === 403 || (err.status === 429 && /credit/i.test(message)))) fatal = message
+            if (err instanceof KiriTtsError && (err.status === 401 || err.status === 403 || err.status === KIRI_UNREACHABLE || (err.status === 429 && /credit/i.test(message)))) fatal = message
             send({ segmentId: segment.segmentId, status: 'failed', error: message })
             continue
           }
@@ -430,8 +488,22 @@ export function registerDubbingIpc(): void {
           // babble is asked for again (at most KIRI_BABBLE_RETRIES times)
           // and, if it stays, capped at what the line could need.
           const expected = kiriExpectedSeconds(segment.text)
+          // A take that opens with KiriTTS's stray sound (shared/kiriTts.ts's
+          // kiriLeadInEnd) is used from where its words begin.
+          let leadCuts = 0
+          const withoutLeadIn = async (path: string): Promise<string> => {
+            const from = kiriLeadInEnd(await takeLevels(path))
+            if (from === undefined || signal.aborted) return path
+            const trimmed = join(workDir, `kiri-${index}-lead${++leadCuts}.wav`)
+            try {
+              await trimTakeStart(`dub-kiri-lead-${segment.segmentId}-${leadCuts}`, path, trimmed, from)
+              return trimmed
+            } catch {
+              return path
+            }
+          }
           const cleanTake = async (path: string, tag: string): Promise<string> => {
-            let current = path
+            let current = await withoutLeadIn(path)
             let verdict = kiriTakeVerdict(await measureSpeechSpans(current), expected)
             for (let attempt = 1; verdict.retry && attempt <= KIRI_BABBLE_RETRIES && !signal.aborted; attempt++) {
               const againPath = join(workDir, `kiri-${index}-${tag}again${attempt}.wav`)
@@ -440,9 +512,8 @@ export function registerDubbingIpc(): void {
               } catch {
                 break
               }
-              const againVerdict = kiriTakeVerdict(await measureSpeechSpans(againPath), expected)
-              current = againPath
-              verdict = againVerdict
+              current = await withoutLeadIn(againPath)
+              verdict = kiriTakeVerdict(await measureSpeechSpans(current), expected)
             }
             if (verdict.cutAt === undefined || signal.aborted) return current
             const cutPath = join(workDir, `kiri-${index}-${tag}cut.wav`)
@@ -456,6 +527,29 @@ export function registerDubbingIpc(): void {
           try {
             let take = await cleanTake(outPath, '')
             if (signal.aborted) return
+            // Much quicker than this voice usually speaks: it probably
+            // stopped a word short (shared/kiriTts.ts). Asked once more, and
+            // the take with more speech in it is the one kept.
+            const letters = kiriLetterCount(segment.text)
+            const paces = kiriVoicePaces.get(voice) ?? []
+            let said = await measureSpeechSeconds(`dub-kiri-said-${segment.segmentId}`, take)
+            if (kiriTakeMissesWords(letters, said, paces)) {
+              const wholePath = join(workDir, `kiri-${index}-whole.wav`)
+              try {
+                await kiriSpeakLine(voice, kiriWithEndMark(segment.text), wholePath, { instructions, signal })
+                const whole = await cleanTake(wholePath, 'whole')
+                const saidWhole = await measureSpeechSeconds(`dub-kiri-said-whole-${segment.segmentId}`, whole)
+                console.info(`[kiri] line ${segment.segmentId} (${voice}) sounded short: ${said.toFixed(2)} s, asked again: ${saidWhole.toFixed(2)} s`)
+                if (saidWhole > said) {
+                  take = whole
+                  said = saidWhole
+                }
+              } catch {
+                if (signal.aborted) return
+                // The first take stands.
+              }
+            }
+            if (said > 0 && letters > 0) kiriVoicePaces.set(voice, [...paces, letters / said].slice(-KIRI_PACE_KEPT))
             // Longer than its room: KiriTTS says it again, faster, itself
             // (shared/kiriTts.ts's kiriRetake) -- kept only if it really is
             // shorter. Whatever is still over is then stretched as before,

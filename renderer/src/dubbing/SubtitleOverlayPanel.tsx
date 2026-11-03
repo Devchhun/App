@@ -65,7 +65,7 @@ export function SubtitleOverlayPanel({ onClose }: { onClose: () => void }): JSX.
     })
 
   return (
-    <div className="subtitle-overlay-panel" role="dialog" aria-label="Subtitle and blur on the video">
+    <div className="subtitle-overlay-panel editor-scroll" role="dialog" aria-label="Subtitle and blur on the video">
       <div className="subtitle-overlay-panel-header">
         <span>Subtitle &amp; Blur on video</span>
         <button className="subtitle-overlay-panel-close" title="Close" onClick={onClose}>

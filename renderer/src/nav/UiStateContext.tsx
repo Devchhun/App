@@ -6,7 +6,7 @@ import { wasHomeSeen } from '../home/homeSession'
  * Suggestions, Local AI Planner and Story Visuals moved into the Settings
  * dialog (see settingsSections.ts's `tool` categories and `openSettings`
  * below), so the sidebar no longer competes with them for width. */
-export type RightTab = 'graphics' | 'brand' | 'videoStory' | 'aiAnimation'
+export type RightTab = 'graphics' | 'brand' | 'videoStory' | 'aiAnimation' | 'manga'
 /** Settings is deliberately NOT one of these: it configures the whole app
  * (theme, updates, the dubbing engine), not the left column's working
  * content, so it opens as its own dialog rather than replacing the Media

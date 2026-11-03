@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai'
+import { createGemini } from './geminiClient'
 import type { AnalyzePerformanceLine } from '@shared/dubbing'
 import {
   DUBBING_EMOTIONS,
@@ -136,7 +136,7 @@ export async function analyzeDubbingPerformance(lines: AnalyzePerformanceLine[],
   if (lines.length === 0) return {}
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
   const contexts = buildLineContexts(lines)
   const result: Record<string, LinePerformance> = {}
 

@@ -24,6 +24,9 @@ interface Props {
   onMoveSet?: (segmentIds: string[], draggedSegmentId: string, newStartTime: number) => void
   height: number
   hidden?: boolean
+  /** The line's gender (heard from its voice, or picked by hand), shown as
+   * a small ♂ / ♀ on the block. */
+  genderOf?: (segmentId: string) => 'male' | 'female' | 'unknown' | undefined
 }
 
 /** A press that travels less than this is a click (seek), not a drag --
@@ -42,7 +45,7 @@ interface DragState {
   latestStartTime: number
 }
 
-export function CaptionsTrack({ segments, visibleSegments, duration, visualMinWidthPx, pixelsPerSecond, activeSegmentId, selectedSegmentIds = [], onSelect, onSeek, onMove, onMoveSet, height, hidden }: Props): JSX.Element {
+export function CaptionsTrack({ segments, visibleSegments, duration, visualMinWidthPx, pixelsPerSecond, activeSegmentId, selectedSegmentIds = [], onSelect, onSeek, onMove, onMoveSet, height, hidden, genderOf }: Props): JSX.Element {
   const widthPx = Math.max(1, Math.round(duration * pixelsPerSecond), visualMinWidthPx ?? 0)
 
   const dragRef = useRef<DragState | null>(null)
@@ -176,6 +179,7 @@ export function CaptionsTrack({ segments, visibleSegments, duration, visualMinWi
         const left = seg.startTime * pixelsPerSecond
         const width = Math.max(2, (seg.endTime - seg.startTime) * pixelsPerSecond)
         const text = seg.editedText ?? seg.text
+        const gender = genderOf?.(seg.id)
         const classes = [
           'timeline-caption-block',
           onMove ? 'timeline-caption-movable' : '',
@@ -197,9 +201,19 @@ export function CaptionsTrack({ segments, visibleSegments, duration, visualMinWi
             // move); this only stops the Timeline's own background handler.
             onClick={(e) => e.stopPropagation()}
           >
-            <span className="timeline-caption-text" lang="km">
-              {text}
-            </span>
+            {/* Too narrow to read (zoomed out over hundreds of lines): the
+                block alone -- hundreds of clipped texts were repainted on
+                every frame of playback. */}
+            {width >= 14 && (gender === 'male' || gender === 'female') && (
+              <span className={`timeline-caption-gender timeline-caption-gender-${gender}`} title={gender === 'male' ? 'Male' : 'Female'}>
+                {gender === 'male' ? '♂' : '♀'}
+              </span>
+            )}
+            {width >= 14 && (
+              <span className="timeline-caption-text" lang="km">
+                {text}
+              </span>
+            )}
           </button>
         )
       })}

@@ -5,12 +5,7 @@ import { useTimelineView, MIN_PPS, MAX_PPS } from './TimelineViewContext'
 import { useNarration } from '../narration/NarrationContext'
 import { frameDuration } from './frameMath'
 import { useScenes } from '../scenes/SceneContext'
-
-function isEditingText(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  const tag = el?.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(el?.isContentEditable)
-}
+import { isTypingTarget, isWindowOpen, shortcutKey } from './shortcutKey'
 
 const MAX_SHUTTLE_SPEED = 8
 const FRAME_STEP_FPS = 30
@@ -65,7 +60,7 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
   // torn down and re-added 60x/sec during playback (its own effect used to
   // depend on `currentTime` directly).
   const { seekTo, isPlaying, setPlaying, getCurrentTime } = usePlaybackControls()
-  const { scenesByMedia, selectedSceneIds, selectScenes, deleteScenes } = useScenes()
+  const { scenesByMedia, selectedSceneIds, selectScenes, deleteScenes, splitScene } = useScenes()
   const allScenes = useMemo(() => Object.values(scenesByMedia).flat(), [scenesByMedia])
   const { linkageOn, tool, setTool, rangeSelection, setRangeSelection, rippleScope, pixelsPerSecond, setPixelsPerSecond, timelineViewportWidth } = useTimelineView()
   const { active: narrationActive, phase: narrationPhase, startRecording: startNarrationRecording, stopRecording: stopNarrationRecording, redoTake: redoNarrationTake } = useNarration()
@@ -114,7 +109,13 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (isEditingText(e.target)) return
+      if (isTypingTarget(e.target) || isWindowOpen()) return
+      // By the key's place, not its character: the Khmer layout types other
+      // letters (and a zero-width space for Space) -- see shortcutKey.ts.
+      const k = shortcutKey(e)
+      // Space on a button still focused from a click would also press that
+      // button again on its way up: the button lets go of the focus first.
+      if (k === ' ' && (e.target as HTMLElement | null)?.tagName === 'BUTTON') (e.target as HTMLElement).blur()
       // A point-in-time read, taken once per keypress -- every use below is
       // synchronous within this same handler invocation, never JSX.
       const currentTime = getCurrentTime()
@@ -125,7 +126,7 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
       // handlers below, which would otherwise also fire for the same
       // keypress while the Recording Assistant panel is active.
       if (narrationActive) {
-        if (e.shiftKey && e.key === ' ') {
+        if (e.shiftKey && k === ' ') {
           e.preventDefault()
           if (narrationPhase === 'idle') startNarrationRecording()
           else if (narrationPhase === 'recording') stopNarrationRecording()
@@ -139,7 +140,7 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
       }
 
       if (e.ctrlKey || e.metaKey) {
-        if (e.key.toLowerCase() === 'd' && selectedTimelineClipIds.length > 0) {
+        if (k === 'd' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
           // Always takes the linked partner along -- a linked pair is one
           // logical clip for a structural operation like this (create/
@@ -147,19 +148,19 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
           // be gated by the ambient Linkage toggle (see deleteSelected's own
           // fix, just below, for the full reasoning).
           duplicateSelected()
-        } else if (e.key.toLowerCase() === 'c' && selectedTimelineClipIds.length > 0) {
+        } else if (k === 'c' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
           copySelected()
-        } else if (e.key.toLowerCase() === 'x' && selectedTimelineClipIds.length > 0) {
+        } else if (k === 'x' && selectedTimelineClipIds.length > 0) {
           e.preventDefault()
           cutSelected()
-        } else if (e.key.toLowerCase() === 'v' && e.shiftKey) {
+        } else if (k === 'v' && e.shiftKey) {
           e.preventDefault()
           pasteAttributesToSelected()
-        } else if (e.key.toLowerCase() === 'v') {
+        } else if (k === 'v') {
           e.preventDefault()
           pasteAtTime(currentTime)
-        } else if (e.key.toLowerCase() === 'a') {
+        } else if (k === 'a') {
           e.preventDefault()
           selectClips(sequence.clips.map((c) => c.id))
           selectScenes(allScenes.map((s) => s.id))
@@ -193,41 +194,46 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
         // deleteSelected already defaults to linked: true; unlinkSelected is
         // the real, explicit way to detach a pair before deleting only one.
         deleteSelected(e.shiftKey ? { rippleScope } : undefined)
-      } else if (e.key.toLowerCase() === 's' && selectedTimelineClipIds.length > 0) {
+      } else if (k === 's' && selectedTimelineClipIds.length > 0) {
         e.preventDefault()
         // Alt is a per-action override that forces an UNlinked split
         // regardless of the Linkage toggle; otherwise the toggle decides.
         splitSelected(currentTime, { linked: e.altKey ? false : linkageOn })
-      } else if (e.key.toLowerCase() === 'a' && tool !== 'select') {
+      } else if (k === 's' && selectedSceneIds.length > 0) {
+        // A selected graphic splits too, as the toolbar's Split does.
+        e.preventDefault()
+        const scene = allScenes.find((sc) => sc.id === selectedSceneIds[0])
+        if (scene && !scene.locked && currentTime > scene.startTime && currentTime < scene.endTime) splitScene(scene.mediaId, scene.id, currentTime)
+      } else if (k === 'a' && tool !== 'select') {
         e.preventDefault()
         setTool('select')
-      } else if (e.key.toLowerCase() === 'b' && tool !== 'blade') {
+      } else if (k === 'b' && tool !== 'blade') {
         e.preventDefault()
         setTool('blade')
-      } else if (e.key.toLowerCase() === 'h' && tool !== 'hand') {
+      } else if (k === 'h' && tool !== 'hand') {
         e.preventDefault()
         setTool('hand')
-      } else if (e.key.toLowerCase() === 'r' && tool !== 'range') {
+      } else if (k === 'r' && tool !== 'range') {
         e.preventDefault()
         setTool('range')
-      } else if (e.key === '+' || e.key === '=') {
+      } else if (k === '=' || e.key === '+') {
         e.preventDefault()
         setPixelsPerSecond(Math.min(MAX_PPS, pixelsPerSecond * 1.25))
-      } else if (e.key === '-' || e.key === '_') {
+      } else if (k === '-' || e.key === '_') {
         e.preventDefault()
         setPixelsPerSecond(Math.max(MIN_PPS, pixelsPerSecond / 1.25))
-      } else if (e.key === '\\') {
+      } else if (k === '\\') {
         e.preventDefault()
         if (sequenceDuration > 0) setPixelsPerSecond(Math.max(MIN_PPS, Math.min(MAX_PPS, timelineViewportWidth / sequenceDuration)))
-      } else if (e.key === ' ') {
+      } else if (k === ' ') {
         e.preventDefault()
         stopShuttle()
         setPlaying(!isPlaying)
-      } else if (e.key.toLowerCase() === 'k') {
+      } else if (k === 'k') {
         e.preventDefault()
         stopShuttle()
         setPlaying(false)
-      } else if (e.key.toLowerCase() === 'l') {
+      } else if (k === 'l') {
         e.preventDefault()
         const s = shuttleRef.current
         if (s && s.direction === 1) {
@@ -238,7 +244,7 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
           stopShuttle()
           setPlaying(true)
         }
-      } else if (e.key.toLowerCase() === 'j') {
+      } else if (k === 'j') {
         e.preventDefault()
         const s = shuttleRef.current
         startShuttle(-1, s && s.direction === -1 ? Math.min(MAX_SHUTTLE_SPEED, s.speed * 2) : 1)
@@ -280,13 +286,13 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
         if (candidates.length > 0) {
           seekTo(e.key === 'ArrowUp' ? Math.max(...candidates) : Math.min(...candidates))
         }
-      } else if (e.key.toLowerCase() === 'i') {
+      } else if (k === 'i') {
         e.preventDefault()
         setRangeSelection({ start: currentTime, end: Math.max(currentTime, rangeSelection?.end ?? currentTime) })
-      } else if (e.key.toLowerCase() === 'o') {
+      } else if (k === 'o') {
         e.preventDefault()
         setRangeSelection({ start: Math.min(currentTime, rangeSelection?.start ?? currentTime), end: currentTime })
-      } else if (e.key.toLowerCase() === 'm') {
+      } else if (k === 'm') {
         e.preventDefault()
         addMarkerAtTime(currentTime)
       } else if (e.key === 'Escape') {
@@ -342,6 +348,11 @@ export function useTimelineShortcuts(sequenceDuration: number, captions?: Captio
     rippleScope,
     deleteRange,
     addMarkerAtTime,
+    allScenes,
+    selectedSceneIds,
+    selectScenes,
+    deleteScenes,
+    splitScene,
     pixelsPerSecond,
     setPixelsPerSecond,
     timelineViewportWidth

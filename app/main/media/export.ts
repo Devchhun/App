@@ -177,7 +177,7 @@ export async function runExport(params: RunExportParams): Promise<{ outputPath: 
   // neither overflows the Windows command line nor decodes its film from
   // the start for every clip. One window when everything fits.
   const windows = planExportWindows(
-    [...videoClips.map((rc) => ({ startTime: rc.clip.startTime, duration: rc.clip.duration, isAudio: false })), ...(options.includeAudio ? audioClips : []).map((rc) => ({ startTime: rc.clip.startTime, duration: rc.clip.duration, fadeIn: rc.clip.fadeIn, fadeOut: rc.clip.fadeOut, isAudio: true }))],
+    [...videoClips.map((rc) => ({ startTime: rc.clip.startTime, duration: rc.clip.duration, fadeIn: rc.clip.pictureFadeIn, fadeOut: rc.clip.pictureFadeOut, isAudio: false })), ...(options.includeAudio ? audioClips : []).map((rc) => ({ startTime: rc.clip.startTime, duration: rc.clip.duration, fadeIn: rc.clip.fadeIn, fadeOut: rc.clip.fadeOut, isAudio: true }))],
     durationSeconds,
     options.frameRate
   )

@@ -282,10 +282,43 @@ export function migrateProjectFile(project: ProjectFile): ProjectFile {
   // current-schema, every time. See sanitizeLinkedClips's own doc comment
   // for what a dangling reference actually breaks (a stale 🔗 "linked"
   // badge on a clip that isn't linked to anything anymore).
-  const sanitizedClips = sanitizeLinkedClips(result.sequence.clips)
+  const sanitizedClips = repairSquashedPictures(sanitizeLinkedClips(result.sequence.clips))
   if (sanitizedClips !== result.sequence.clips) {
     result = { ...result, sequence: { ...result.sequence, clips: sanitizedClips, duration: computeSequenceDuration(sanitizedClips) } }
   }
 
   return result
+}
+
+/** The Player's corner drag once clamped a Mirrored picture's signed scale
+ * to its 0.05 minimum, squashing it to a sliver as tall as before (and
+ * un-mirrored). A picture with one side at exactly 0.05 and the other far
+ * from it is that mark (the corner drag keeps the shape): its width/height
+ * comes back from the other side, and a lost Mirror from its neighbour on
+ * the track. Returns the same array when nothing needed it. */
+export function repairSquashedPictures(clips: TimelineClip[]): TimelineClip[] {
+  const MIN = 0.05
+  const squashed = (a: number, b: number): boolean => Math.abs(Math.abs(a) - MIN) < 1e-9 && Math.abs(b) > 0.2
+  let changed = false
+  const result = clips.map((c) => {
+    const t = c.transform
+    if (!t || (c.type !== 'video' && c.type !== 'image')) return c
+    const fixX = squashed(t.scaleX, t.scaleY)
+    const fixY = squashed(t.scaleY, t.scaleX)
+    if (!fixX && !fixY) return c
+    const neighbour = clips
+      .filter((o) => o.id !== c.id && o.trackId === c.trackId && (o.type === 'video' || o.type === 'image') && o.transform)
+      .sort((p, q) => Math.abs(p.startTime - c.startTime) - Math.abs(q.startTime - c.startTime))[0]?.transform
+    const sign = (own: number, theirs: number | undefined): number => ((theirs ?? own) < 0 ? -1 : 1)
+    changed = true
+    return {
+      ...c,
+      transform: {
+        ...t,
+        scaleX: fixX ? sign(t.scaleX, neighbour?.scaleX) * Math.abs(t.scaleY) : t.scaleX,
+        scaleY: fixY ? sign(t.scaleY, neighbour?.scaleY) * Math.abs(t.scaleX) : t.scaleY
+      }
+    }
+  })
+  return changed ? result : clips
 }

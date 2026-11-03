@@ -7,7 +7,8 @@ import { join } from 'path'
 // edgeTts.test.ts uses for the same reason.
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmpdir() } }))
 
-import { validateVoxCpmInstall, buildBatchArgs, buildDubbingPostFxFilterGraph, INNER_VOICE_ECHO_FILTER, computeAutoFitSpeed, buildVoiceDesignArgs, voiceReferenceClipPath, voiceSeedFor, buildSeededBatchArgs, VOICE_MATCH_THRESHOLD, VOICE_MATCH_RETRIES, VOICE_PITCH_TOLERANCE_SEMITONES, computePitchCorrection, fileNameSafe, toneSettings } from './voxcpmTts'
+import { INNER_VOICE_ECHOES } from '@shared/innerVoice'
+import { validateVoxCpmInstall, buildBatchArgs, buildDubbingPostFxFilterGraph, innerVoiceEchoFilter, computeAutoFitSpeed, buildVoiceDesignArgs, voiceReferenceClipPath, voiceSeedFor, buildSeededBatchArgs, VOICE_MATCH_THRESHOLD, VOICE_MATCH_RETRIES, VOICE_PITCH_TOLERANCE_SEMITONES, computePitchCorrection, fileNameSafe, toneSettings } from './voxcpmTts'
 
 describe('validateVoxCpmInstall', () => {
   let installDir: string
@@ -104,11 +105,24 @@ describe('buildDubbingPostFxFilterGraph', () => {
   })
 
   it('adds the inner-voice echo last, after the speed-fit, only when asked', () => {
-    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1, volumeDb: 0, echo: true })).toBe(INNER_VOICE_ECHO_FILTER)
-    const graph = buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 2, echo: true })!
-    expect(graph.endsWith(INNER_VOICE_ECHO_FILTER)).toBe(true)
-    expect(graph.indexOf('rubberband')).toBeLessThan(graph.indexOf('aecho'))
-    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 0, echo: false })).not.toContain('aecho')
+    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1, volumeDb: 0, echo: true })).toBe(innerVoiceEchoFilter('hall'))
+    const graph = buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 2, echo: 'echo' })!
+    expect(graph.endsWith(innerVoiceEchoFilter('echo'))).toBe(true)
+    expect(graph.indexOf('rubberband')).toBeLessThan(graph.indexOf('adelay'))
+    expect(buildDubbingPostFxFilterGraph({ pitch: 0, speed: 1.2, volumeDb: 0, echo: false })).toBe('rubberband=tempo=1.2')
+  })
+
+  it('has an effect of its own for every inner-voice style, each one chain in and one out', () => {
+    const graphs = INNER_VOICE_ECHOES.map((style) => innerVoiceEchoFilter(style.id))
+    expect(new Set(graphs).size).toBe(INNER_VOICE_ECHOES.length)
+    for (const graph of graphs) {
+      // Follows the steps before it by a comma, and leaves one unnamed output.
+      expect(graph.startsWith('[')).toBe(false)
+      expect(graph.endsWith(']')).toBe(false)
+      // Every named link is made once and used once.
+      const labels = graph.match(/\[[a-z0-9]+\]/g) ?? []
+      for (const label of new Set(labels)) expect(labels.filter((l) => l === label), label).toHaveLength(2)
+    }
   })
 
   it('builds a rubberband filter with formant preservation for a non-zero pitch shift', () => {

@@ -13,13 +13,16 @@ function crashLogPath(): string {
  * never. Appending to a plain file survives the app being closed/reopened,
  * so a crash that isn't screenshotted in time is still diagnosable later. */
 export function registerCrashIpc(): void {
-  ipcMain.handle(CRASH_IPC.report, async (_event, report: CrashReport) => {
-    try {
-      await mkdir(app.getPath('userData'), { recursive: true })
-      const entry = { at: new Date().toISOString(), ...report }
-      await appendFile(crashLogPath(), JSON.stringify(entry) + '\n')
-    } catch {
-      // Logging the crash must never itself throw.
-    }
-  })
+  ipcMain.handle(CRASH_IPC.report, async (_event, report: CrashReport) => appendCrashLog({ ...report }))
+}
+
+/** One line in the same file, for trouble the main process sees itself (a
+ * window that came up empty -- see windowWatch.ts). */
+export async function appendCrashLog(entry: Record<string, unknown>): Promise<void> {
+  try {
+    await mkdir(app.getPath('userData'), { recursive: true })
+    await appendFile(crashLogPath(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
+  } catch {
+    // Logging the crash must never itself throw.
+  }
 }

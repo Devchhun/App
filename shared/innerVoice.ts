@@ -138,3 +138,21 @@ export function effectiveInnerVoice(
   if (state?.innerVoiceSource === 'manual') return !!state.innerVoice
   return !!state?.innerVoice || !!segment.innerVoice || innerVoiceFromText(segment.editedText ?? segment.text)
 }
+
+/** How a thought is made to sound in the dub -- the effect itself is built
+ * in app/main/media/voxcpmTts.ts's innerVoiceEchoFilter. The first is the
+ * default. */
+export const INNER_VOICE_ECHOES = [
+  { id: 'hall', label: 'Hall', hint: 'A soft room around the voice -- how a thought usually sounds in a drama' },
+  { id: 'dream', label: 'Dream', hint: 'The room, with one quiet repeat of the voice inside it' },
+  { id: 'echo', label: 'Repeats', hint: 'The voice again three times, each fainter' },
+  { id: 'soft', label: 'Light', hint: 'Short and close to the voice (the effect of earlier versions)' }
+] as const
+
+export type InnerVoiceEcho = (typeof INNER_VOICE_ECHOES)[number]['id']
+
+export const DEFAULT_INNER_VOICE_ECHO: InnerVoiceEcho = 'hall'
+
+export function isInnerVoiceEcho(value: unknown): value is InnerVoiceEcho {
+  return INNER_VOICE_ECHOES.some((style) => style.id === value)
+}

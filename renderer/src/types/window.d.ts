@@ -15,7 +15,8 @@ import type { CrashReport } from '@shared/crash'
 import type { DetectSpeakerResult, NarrationOptimizationSettings } from '@shared/narration'
 import type { RefitClipAudioResult, PrepareReferenceClipResult, VoxCpmDevice } from '@shared/dubbing'
 import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent, AnalyzePerformanceLine, AnalyzePerformanceResult } from '@shared/dubbing'
-import type { RemoveVocalsResult, VocalRemovalProgress } from '@shared/vocalRemoval'
+import type { RemoveVocalsResult, SpeechRange, VocalRemovalProgress } from '@shared/vocalRemoval'
+import type { ReframeAnalyzeResult, ReframeProgress } from '@shared/reframe'
 import type { TranslateSubtitlesResult, TranslationError } from '@shared/translation'
 import type { RegenerateNarrationSceneRequest, StoryLibrary, StoryOutlineIpcResult, StoryOutlineRequest, StoryScriptRequest, VideoStoryNarrationIpcResult, VideoStoryNarrationProgress, VideoStoryNarrationRequest, VideoStoryNarrationScene } from '@shared/videoStoryNarration'
 interface StartTranscriptionParams {
@@ -91,6 +92,7 @@ declare global {
         saveGeneratedFile: (fileName: string, data: Uint8Array) => Promise<string>
         saveStillFrame: (dirPath: string, fileName: string, data: Uint8Array) => Promise<string>
         getDefaultStillDir: () => Promise<string>
+        saveClipAudio: (request: import('@shared/media').SaveClipAudioRequest) => Promise<string | null>
         ensureWaveform: (mediaId: string, originalPath: string) => Promise<WaveformData | null>
         onProgress: (callback: (update: MediaProgressUpdate) => void) => (() => void)
         getPathForFile: (file: File) => string
@@ -243,6 +245,11 @@ declare global {
         refitClipAudio: (jobId: string, sourcePath: string, speed: number) => Promise<RefitClipAudioResult>
         prepareReferenceClip: (jobId: string, sourcePath: string, installDir?: string, level?: boolean) => Promise<PrepareReferenceClipResult>
         onGenerationProgress: (callback: (event: DubbingGenerationProgressEvent) => void) => (() => void)
+        /** The Cast window's scan (shared/cast.ts). */
+        scanCast: (request: import('@shared/cast').CastScanRequest) => Promise<{ ok: true; result: import('@shared/cast').CastScanResult } | { ok: false; error: string; canceled?: boolean }>
+        cancelCast: (jobId: string) => Promise<boolean>
+        detectGenders: (request: { jobId: string; lines: import('@shared/cast').CastScanLine[] }) => Promise<{ ok: true; genders: Record<string, { gender: import('@shared/transcription').SpeakerGender; confidence: number }> } | { ok: false; error: string }>
+        onCastProgress: (callback: (progress: import('@shared/cast').CastScanProgress) => void) => (() => void)
       }
       kiri: {
         hasKey: () => Promise<boolean>
@@ -251,6 +258,7 @@ declare global {
         listVoices: () => Promise<import('@shared/kiriTts').KiriListResult>
         cloneVoice: (name: string, sourcePath?: string, options?: import('@shared/kiriTts').KiriCloneOptions) => Promise<import('@shared/kiriTts').KiriCloneResult>
         pickCloneSource: () => Promise<import('@shared/kiriTts').KiriCloneSource>
+        voiceSample: (voice: string) => Promise<{ ok: true; url: string } | { ok: false; error: string }>
       }
       videoStoryNarration: {
         hasApiKey: () => Promise<boolean>
@@ -274,13 +282,28 @@ declare global {
         saveSrt: (srtPath: string) => Promise<string | null>
         onProgress: (callback: (progress: AnimationProgress) => void) => (() => void)
       }
+      manga: {
+        pickImages: () => Promise<string[]>
+        getChapter: (jobId: string, pageUrl: string) => Promise<import('@shared/mangaRecap').MangaScenesResult>
+        cutScenes: (jobId: string, paths: string[]) => Promise<import('@shared/mangaRecap').MangaScenesResult>
+        backdrops: (jobId: string, paths: string[]) => Promise<string[]>
+        generate: (request: import('@shared/mangaRecap').MangaRequest) => Promise<import('@shared/mangaRecap').MangaIpcResult>
+        cancel: (jobId: string) => Promise<boolean>
+        onProgress: (callback: (progress: import('@shared/mangaRecap').MangaProgress) => void) => (() => void)
+      }
       translation: {
         previewTranslation: (segments: TranscriptSegment[]) => Promise<CloudRequestPreview>
         translateSubtitles: (requestId: string, segments: TranscriptSegment[], targetLanguage: string) => Promise<TranslationIpcResult<TranslateSubtitlesResult>>
         cancelTranslation: (requestId: string) => Promise<boolean>
       }
+      reframe: {
+        analyze: (jobId: string, path: string) => Promise<ReframeAnalyzeResult>
+        cancel: (jobId: string) => Promise<boolean>
+        onProgress: (callback: (progress: ReframeProgress) => void) => (() => void)
+      }
       vocalRemoval: {
         removeVocals: (jobId: string, sourcePath: string, installDir?: string, device?: VoxCpmDevice) => Promise<RemoveVocalsResult>
+        removeVocalsAtLines: (jobId: string, sourcePath: string, ranges: SpeechRange[], installDir?: string, device?: VoxCpmDevice) => Promise<RemoveVocalsResult>
         cancel: (jobId: string) => Promise<boolean>
         onProgress: (callback: (progress: VocalRemovalProgress) => void) => (() => void)
       }

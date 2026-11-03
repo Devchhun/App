@@ -60,10 +60,16 @@ async function runOne(item: QueueItem): Promise<void> {
     const cachePath = transcriptCachePath(cacheDir, modelId, language)
 
     if (await pathExists(cachePath)) {
-      const transcript = JSON.parse(await readFile(cachePath, 'utf-8')) as Transcript
-      onProgress({ mediaId, stage: 'ready', percent: 100, transcript })
-      resolve(transcript)
-      return
+      // A cache file that cannot be read (a power cut leaves it full of
+      // zeros) is transcribed again below, rather than failing for good.
+      const transcript = await readFile(cachePath, 'utf-8')
+        .then((text) => JSON.parse(text) as Transcript)
+        .catch(() => null)
+      if (transcript) {
+        onProgress({ mediaId, stage: 'ready', percent: 100, transcript })
+        resolve(transcript)
+        return
+      }
     }
 
     onProgress({ mediaId, stage: 'preparing-audio', percent: 0 })

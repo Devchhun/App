@@ -5,7 +5,7 @@
 // height (or width, for Wander's sideways travel); speed divides the
 // period, amount scales the distance.
 
-export const CLIP_MOTION_PRESETS = ['float', 'bounce', 'sway', 'circle', 'figure8', 'zigzag', 'wander', 'pulse', 'spin', 'swing', 'shake'] as const
+export const CLIP_MOTION_PRESETS = ['float', 'bounce', 'sway', 'updown', 'leftright', 'around', 'circle', 'figure8', 'zigzag', 'wander', 'pulse', 'spin', 'swing', 'shake'] as const
 export type ClipMotionPreset = (typeof CLIP_MOTION_PRESETS)[number]
 
 export interface ClipMotion {
@@ -23,6 +23,9 @@ export const CLIP_MOTION_LABELS: Record<ClipMotionPreset, string> = {
   float: 'Float',
   bounce: 'Bounce',
   sway: 'Sway',
+  updown: 'Up & Down',
+  leftright: 'Left & Right',
+  around: 'Around',
   circle: 'Circle',
   figure8: 'Figure 8',
   zigzag: 'Zigzag',
@@ -37,6 +40,9 @@ export const CLIP_MOTION_HINTS: Record<ClipMotionPreset, string> = {
   float: 'Drifts gently up and down',
   bounce: 'Hops up and lands, again and again',
   sway: 'Glides left and right',
+  updown: 'Runs up to the top of the screen and down to the bottom, again and again',
+  leftright: 'Runs across to the left edge of the screen and to the right edge, again and again',
+  around: 'Runs around the screen along its edges: down, across, up and back',
   circle: 'Goes round in a circle',
   figure8: 'Traces a figure 8',
   zigzag: 'Zigzags side to side',
@@ -48,10 +54,12 @@ export const CLIP_MOTION_HINTS: Record<ClipMotionPreset, string> = {
 }
 
 /** One wave: amp x f(t / period). `sin` is a sine; `hop` |sin| (a bounce);
- * `tri` a triangle wave (straight there and back, -1..1); `turns` t/period
- * itself (endless rotation). */
+ * `tri` a triangle wave (straight there and back, -1..1); `trap` the
+ * triangle cut flat at the ends (it waits at each edge while the other axis
+ * moves -- two of them a quarter apart run round a rectangle); `turns`
+ * t/period itself (endless rotation). */
 interface Wave {
-  shape: 'sin' | 'hop' | 'tri' | 'turns'
+  shape: 'sin' | 'hop' | 'tri' | 'trap' | 'turns'
   period: number
   amp: number
   /** Fraction of a period added to the phase (0.25 turns a sine into a cosine). */
@@ -76,6 +84,10 @@ const SPECS: Record<ClipMotionPreset, MotionSpec> = {
   float: { y: { shape: 'sin', period: 3, amp: -0.08 } },
   bounce: { y: { shape: 'hop', period: 1.2, amp: -0.14 } },
   sway: { x: { shape: 'sin', period: 3, amp: 0.14 } },
+  // Edge to edge, starting from where the clip was put (a quarter phase in).
+  updown: { y: { shape: 'tri', period: 4, amp: 1, phase: 0.25, edges: true } },
+  leftright: { x: { shape: 'tri', period: 6, amp: 1, phase: 0.25, edges: true } },
+  around: { x: { shape: 'trap', period: 12, amp: 1, edges: true }, y: { shape: 'trap', period: 12, amp: 1, phase: 0.25, edges: true } },
   circle: { x: { shape: 'sin', period: 4, amp: 0.12, phase: 0.25 }, y: { shape: 'sin', period: 4, amp: 0.12 } },
   figure8: { x: { shape: 'sin', period: 5, amp: 0.16 }, y: { shape: 'sin', period: 2.5, amp: 0.08 } },
   zigzag: { x: { shape: 'tri', period: 4, amp: 0.22 }, y: { shape: 'tri', period: 1, amp: 0.05 } },
@@ -95,7 +107,17 @@ function clampMotion(motion: ClipMotion): { spec: MotionSpec; speed: number; amo
 
 function waveValue(wave: Wave, t: number, speed: number, amount: number): number {
   const u = (t * speed) / wave.period + (wave.phase ?? 0)
-  const f = wave.shape === 'sin' ? Math.sin(2 * Math.PI * u) : wave.shape === 'hop' ? Math.abs(Math.sin(Math.PI * u)) : wave.shape === 'tri' ? 1 - 4 * Math.abs(u - Math.floor(u) - 0.5) : u
+  const tri = 1 - 4 * Math.abs(u - Math.floor(u) - 0.5)
+  const f =
+    wave.shape === 'sin'
+      ? Math.sin(2 * Math.PI * u)
+      : wave.shape === 'hop'
+        ? Math.abs(Math.sin(Math.PI * u))
+        : wave.shape === 'tri'
+          ? tri
+          : wave.shape === 'trap'
+            ? Math.min(1, Math.max(-1, 2 * tri))
+            : u
   return wave.amp * amount * f
 }
 
@@ -111,7 +133,9 @@ function waveExpr(wave: Wave, time: string, speed: number, amount: number): stri
         ? `abs(sin(PI*(${u})))`
         : wave.shape === 'tri'
           ? `(1-4*abs((${u})-floor(${u})-0.5))`
-          : `(${u})`
+          : wave.shape === 'trap'
+            ? `clip(2*(1-4*abs((${u})-floor(${u})-0.5)),-1,1)`
+            : `(${u})`
   return `${num(wave.amp * amount)}*${f}`
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useAiDubber } from './AiDubberContext'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { AUTO_SRT_AT_ONCE_CHOICES, loadAutoSrtAtOnce, saveAutoSrtAtOnce } from './autoSrtAtOnce'
 import type { AutoSrtTextSource } from '@shared/transcription'
 
 const TEXT_SOURCES: { id: AutoSrtTextSource; label: string; title: string }[] = [
@@ -25,8 +26,29 @@ function formatClock(seconds: number): string {
  * single video already on the Timeline (one row). */
 export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const aiDubber = useAiDubber()
-  const { batchRows, batchJob, batchMessage, autoSrtTextSource, setAutoSrtTextSource } = aiDubber
+  const { batchRows, batchJob, batchJobs, batchMessage, autoSrtTextSource, setAutoSrtTextSource } = aiDubber
   const [transcribeOnLoad, setTranscribeOnLoad] = useState(true)
+  const [atOnce, setAtOnceState] = useState(loadAutoSrtAtOnce)
+  const setAtOnce = (n: number): void => {
+    setAtOnceState(n)
+    saveAutoSrtAtOnce(n)
+  }
+  // Save SRTs: one file per video (as before), or one file for them all.
+  const [srtJoined, setSrtJoinedState] = useState(() => {
+    try {
+      return localStorage.getItem('cae.saveSrtsJoined') === '1'
+    } catch {
+      return false
+    }
+  })
+  const setSrtJoined = (on: boolean): void => {
+    setSrtJoinedState(on)
+    try {
+      localStorage.setItem('cae.saveSrtsJoined', on ? '1' : '0')
+    } catch {
+      // Remembered for this session only.
+    }
+  }
   const [loading, setLoading] = useState(false)
   const confirm = useConfirm()
   const running = !!batchJob
@@ -87,7 +109,7 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
   }
 
   const statusText = (row: (typeof groups)[number]): string => {
-    if (row.status === 'transcribing') return `${Math.round(batchJob?.percent ?? 0)}%`
+    if (row.status === 'transcribing') return `${Math.round(row.clipIds.map((id) => batchJobs[id]).find(Boolean)?.percent ?? 0)}%`
     if (row.status === 'done') return `${row.lines} line${row.lines === 1 ? '' : 's'}`
     return row.status === 'failed' ? 'Failed' : 'Waiting'
   }
@@ -105,7 +127,7 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
           </span>
           <div className="auto-srt-title">
             <strong>Auto SRT</strong>
-            <small>Transcribe one video at a time · subtitles in the picture or Gemini · speakers matched</small>
+            <small>several videos at once · subtitles in the picture or Gemini · speakers matched</small>
           </div>
           <button className="auto-srt-close" aria-label="Close Auto SRT" onClick={onClose}>
             ×
@@ -121,19 +143,47 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
               Stop
             </button>
           ) : (
-            <button className="ai-dubber-episodes-primary" disabled={waiting === 0} onClick={() => void aiDubber.transcribeBatch()} title="Gemini transcribes each video with no subtitles yet, one after another">
-              ✦ Transcribe {waiting > 0 ? `${waiting} video${waiting === 1 ? '' : 's'}` : 'all'}
+            // After a Stop (or the app closed mid-run) it carries on from the
+            // first video with no subtitles yet: those already done are kept.
+            <button
+              className="ai-dubber-episodes-primary"
+              disabled={waiting === 0}
+              onClick={() => void aiDubber.transcribeBatch()}
+              title={done > 0 && waiting > 0 ? `Carry on: the ${waiting} video${waiting === 1 ? '' : 's'} with no subtitles yet, several at a time -- the ${done} done are kept` : 'Transcribe each video with no subtitles yet, several at a time (At once below)'}
+            >
+              {done > 0 && waiting > 0 ? `▶ Continue · ${waiting} left` : `✦ Transcribe ${waiting > 0 ? `${waiting} video${waiting === 1 ? '' : 's'}` : 'all'}`}
             </button>
           )}
-          <button className="ai-dubber-remove-srt-button" disabled={done === 0} onClick={() => void aiDubber.saveBatchSrts()} title="Save one SRT per video (in that video's own time) into a folder">
-            Save SRTs
+          <span className="auto-srt-actions-right">
+          <span className="auto-srt-save">
+            <button
+              className="ai-dubber-remove-srt-button"
+              disabled={done === 0}
+              onClick={() => void aiDubber.saveBatchSrts(srtJoined)}
+              title={srtJoined ? 'Save ONE SRT for all the videos, joined end to end in Timeline time, into a folder' : "Save one SRT per video (in that video's own time) into a folder"}
+            >
+              {srtJoined ? 'Save SRT (joined)' : 'Save SRTs'}
+            </button>
+            <select className="auto-srt-save-mode" value={srtJoined ? 'joined' : 'each'} onChange={(e) => setSrtJoined(e.target.value === 'joined')} aria-label="How the SRTs are saved" title="How the SRTs are saved">
+              <option value="each">One per video</option>
+              <option value="joined">One file, all joined</option>
+            </select>
+          </span>
+          <button
+            className="auto-srt-clear"
+            disabled={groups.length === 0 || running}
+            onClick={() => void clearAll()}
+            title="Clear: take every video in this list off the Timeline (with its subtitles and dub) to start again"
+            aria-label="Clear"
+          >
+            🗑
           </button>
-          <button className="auto-srt-clear" disabled={groups.length === 0 || running} onClick={() => void clearAll()} title="Take every video in this list off the Timeline (with its subtitles and dub) to start again">
-            🗑 Clear
-          </button>
+          </span>
         </div>
-        <div className="auto-srt-source" role="radiogroup" aria-label="Text from">
+        <div className="auto-srt-settings">
+        <div className="auto-srt-setting-row">
           <span className="auto-srt-source-label">Text from</span>
+        <div className="auto-srt-source" role="radiogroup" aria-label="Text from">
           {TEXT_SOURCES.map((source) => (
             <button
               key={source.id}
@@ -149,10 +199,22 @@ export function AutoSrtPanel({ onClose }: { onClose: () => void }): JSX.Element 
             </button>
           ))}
         </div>
+        </div>
+        <label className="auto-srt-setting-row" title="More at once is faster, and works the computer (and Gemini) harder. Takes effect on the next Transcribe.">
+          <span className="auto-srt-source-label">At once</span>
+          <select className="auto-srt-save-mode auto-srt-at-once" value={atOnce} onChange={(e) => setAtOnce(Number(e.target.value))} disabled={running} aria-label="Videos transcribed at once">
+            {AUTO_SRT_AT_ONCE_CHOICES.map((n) => (
+              <option key={n} value={n}>
+                {n} video{n === 1 ? '' : 's'}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="auto-srt-option">
           <input type="checkbox" checked={transcribeOnLoad} onChange={(e) => setTranscribeOnLoad(e.target.checked)} />
           Transcribe the videos right after Batch Load
         </label>
+        </div>
 
         {batchJob && (
           <div className="ai-dubber-episodes-progress">

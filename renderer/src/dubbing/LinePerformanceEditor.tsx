@@ -144,9 +144,11 @@ export function LinePerformanceEditor({ segmentId, voiceDescription }: { segment
 
 const fmt = (value: number | null | undefined, digits = 2): string => (value === null || value === undefined ? '–' : value.toFixed(digits))
 
-/** What generation actually did for this line (Debug view). */
-export function LineDebugView({ debug, speaker }: { debug?: DubbingLineDebug; speaker?: string }): JSX.Element {
-  if (!debug) return <div className="ai-dubber-debug ai-dubber-debug-empty">No generation data yet for this line.</div>
+/** What generation actually did for this line (Debug view). Nothing for a
+ * line not made yet: an empty "no data" box under every such line doubled
+ * each row's height down the whole list. */
+export function LineDebugView({ debug, speaker }: { debug?: DubbingLineDebug; speaker?: string }): JSX.Element | null {
+  if (!debug) return null
   return (
     <div className="ai-dubber-debug">
       <div className="ai-dubber-debug-grid">

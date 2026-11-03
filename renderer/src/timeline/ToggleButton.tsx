@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
 
 interface Props {
   icon: ReactNode
@@ -9,7 +9,7 @@ interface Props {
   shortcut?: string
   active: boolean
   disabled?: boolean
-  onClick: () => void
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
 }
 
 /** One generic toggle button for the Timeline toolbar's right-hand group

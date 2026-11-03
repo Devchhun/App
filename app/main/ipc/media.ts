@@ -1,10 +1,11 @@
+import { withoutDamagedVideos } from '../media/damageCheck'
 import { existsSync } from 'fs'
 import { ipcMain, dialog, type BrowserWindow, type WebContents, app } from 'electron'
 import { spawn } from 'child_process'
 import { mkdir, writeFile, rm, rename, readFile } from 'fs/promises'
 import { extname, join } from 'path'
 import { SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_MEDIA_EXTENSIONS, MEDIA_IPC } from '@shared/media'
-import type { LogoTemplate, MediaItem, MediaProgressUpdate, RemoveBackgroundResult, WaveformData } from '@shared/media'
+import type { LogoTemplate, MediaItem, MediaProgressUpdate, RemoveBackgroundResult, SaveClipAudioRequest, WaveformData } from '@shared/media'
 import type { MediaSource } from '@shared/project'
 import { detectFfmpeg, ffmpegPath } from '../media/ffmpeg'
 import { processMediaFile } from '../media/pipeline'
@@ -14,6 +15,27 @@ import { getMediaCacheRoot, cacheKeyForFile, ensureCacheDir, pathExists } from '
 import { generateWaveform, WAVEFORM_CACHE_FILE } from '../media/waveform'
 import { checkCachedProxy } from '../media/proxy'
 import { removeImageBackground } from '../media/removeBackground'
+
+/** The clip's sound as the Timeline plays it: its trimmed part of the
+ * file, then speed (atempo takes 0.5-2 per step), volume and fades. */
+export function clipAudioFilter(request: SaveClipAudioRequest): string {
+  const steps = [`atrim=start=${request.sourceIn}:end=${request.sourceOut}`, 'asetpts=PTS-STARTPTS']
+  let speed = request.speed && request.speed > 0 ? request.speed : 1
+  while (speed > 2) {
+    steps.push('atempo=2')
+    speed /= 2
+  }
+  while (speed < 0.5) {
+    steps.push('atempo=0.5')
+    speed /= 0.5
+  }
+  if (Math.abs(speed - 1) > 1e-6) steps.push(`atempo=${speed}`)
+  if (request.volume !== undefined && request.volume !== 1) steps.push(`volume=${request.volume}`)
+  const length = (request.sourceOut - request.sourceIn) / (request.speed && request.speed > 0 ? request.speed : 1)
+  if (request.fadeIn) steps.push(`afade=t=in:st=0:d=${request.fadeIn}`)
+  if (request.fadeOut) steps.push(`afade=t=out:st=${Math.max(0, length - request.fadeOut)}:d=${request.fadeOut}`)
+  return steps.join(',')
+}
 
 /** A reopened project's proxies, checked one at a time in the background
  * (proxy.ts's checkCachedProxy: a few seconds each, once per proxy). A
@@ -154,7 +176,9 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
         { name: 'All Files', extensions: ['*'] }
       ]
     })
-    return result.canceled ? [] : result.filePaths
+    // A video file with no picture in it (only its sound was downloaded) is
+    // damaged too.
+    return result.canceled ? [] : withoutDamagedVideos(win, result.filePaths, true)
   })
 
   ipcMain.handle(MEDIA_IPC.importPaths, async (event, paths: string[]) => {
@@ -269,6 +293,22 @@ export function registerMediaIpc(getWindow: () => BrowserWindow | null): void {
     const copy = join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-cover${extname(picked).toLowerCase()}`)
     await writeFile(copy, await readFile(picked))
     return copy
+  })
+
+  ipcMain.handle(MEDIA_IPC.saveClipAudio, async (_event, request: SaveClipAudioRequest): Promise<string | null> => {
+    const win = getWindow()
+    const name = `${request.suggestedName.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'audio'}.wav`
+    const options = { title: 'Save audio as WAV', defaultPath: join(app.getPath('downloads'), name), filters: [{ name: 'WAV audio', extensions: ['wav'] }] }
+    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegPath, ['-v', 'error', '-y', '-i', request.sourcePath, '-vn', '-af', clipAudioFilter(request), '-ar', '48000', '-c:a', 'pcm_s16le', result.filePath!])
+      let stderr = ''
+      proc.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
+      proc.on('error', reject)
+      proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim().split('\n').pop() || `ffmpeg exited with code ${code}`))))
+    })
+    return result.filePath
   })
 
   ipcMain.handle(MEDIA_IPC.saveGeneratedFile, async (_event, fileName: string, data: Uint8Array) => {

@@ -19,6 +19,16 @@ export function aspectRatioFor(width: number, height: number): BrandPreset['defa
  * the user adding a first video. */
 const SETTLE_MS = 2000
 
+/** Set when a tool has just chosen the shape for the pictures it is about to
+ * place (AI Manga makes a recap 16:9; its first scene is a tall webtoon
+ * picture that would otherwise turn the project 9:16 a moment later). */
+let shapeChosen = false
+
+/** The next first picture keeps the project's shape as it is. */
+export function keepChosenAspectRatio(): void {
+  shapeChosen = true
+}
+
 /** As CapCut does: the first video or picture put on an empty project sets
  * the project's shape to its own, so a vertical drama fills a 9:16 frame
  * instead of sitting small between black bars in 16:9. Only that first
@@ -44,6 +54,11 @@ export function useAutoAspectRatio(): void {
       return
     }
     if (state.hadPicture) return
+    if (shapeChosen) {
+      shapeChosen = false
+      state.hadPicture = true
+      return
+    }
     if (Date.now() - state.openedAt < SETTLE_MS) {
       state.hadPicture = true
       return

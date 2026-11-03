@@ -251,6 +251,38 @@ export function measureSpeechSpans(inputPath: string): Promise<{ start: number; 
   })
 }
 
+/** A take's loudest sample per 10 ms (0-1), in order -- empty when it
+ * cannot be read. */
+export function takeLevels(inputPath: string): Promise<Float32Array> {
+  return new Promise((resolve) => {
+    const RATE = 16000
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-nostdin', '-v', 'error', '-i', inputPath, '-ac', '1', '-ar', String(RATE), '-f', 's16le', '-'])
+    const chunks: Buffer[] = []
+    proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+    proc.on('error', () => resolve(new Float32Array(0)))
+    proc.on('close', () => {
+      const pcm = Buffer.concat(chunks)
+      const step = RATE / 100
+      const count = Math.floor(pcm.length / 2 / step)
+      const levels = new Float32Array(count)
+      for (let w = 0; w < count; w++) {
+        let max = 0
+        for (let i = 0; i < step; i++) {
+          const v = Math.abs(pcm.readInt16LE((w * step + i) * 2))
+          if (v > max) max = v
+        }
+        levels[w] = max / 32768
+      }
+      resolve(levels)
+    })
+  })
+}
+
+/** A take from `seconds` on, the first 10 ms faded in. */
+export async function trimTakeStart(jobId: string, inputPath: string, outPath: string, seconds: number): Promise<void> {
+  await runFfmpeg(jobId, ['-y', '-ss', seconds.toFixed(3), '-i', inputPath, '-af', 'afade=t=in:st=0:d=0.01', outPath])
+}
+
 /** The first `seconds` of a take, the last 30 ms faded out. */
 export async function cutTake(jobId: string, inputPath: string, outPath: string, seconds: number): Promise<void> {
   const fadeStart = Math.max(0, seconds - 0.03)

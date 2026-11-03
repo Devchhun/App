@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface MicrophoneCapture {
   devices: MediaDeviceInfo[]
@@ -121,5 +121,12 @@ export function useMicrophoneCapture(active: boolean): MicrophoneCapture {
 
   useEffect(() => teardown, [teardown])
 
-  return { devices, selectedDeviceId, micReady, error, levelBarRef, streamRef, analyserRef, openMic, selectDevice, teardown }
+  // The same object until something in it changes: Story Narration puts it
+  // in its context, whose provider re-renders on every playback frame -- a
+  // new object each time re-rendered the whole app with it (the Media list's
+  // thousands of items included) and playback stuttered.
+  return useMemo(
+    () => ({ devices, selectedDeviceId, micReady, error, levelBarRef, streamRef, analyserRef, openMic, selectDevice, teardown }),
+    [devices, selectedDeviceId, micReady, error, openMic, selectDevice, teardown]
+  )
 }

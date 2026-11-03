@@ -21,6 +21,9 @@ export interface VoicePreviewState {
 export function useVoicePreview(options: { customVoiceReferenceAudioPath?: string; customVoiceReferenceText?: string }): {
   preview: VoicePreviewState | null
   play: (voice: VoiceModel, text: string, engine: DubbingEngine) => void
+  /** The voice's kept sound -- a saved voice's recording, a KiriTTS voice's
+   * sample (made once, then kept) -- whatever the line: false when it has none. */
+  playKept: (voice: VoiceModel) => boolean
   stop: () => void
 } {
   const [preview, setPreview] = useState<VoicePreviewState | null>(null)
@@ -126,7 +129,30 @@ export function useVoicePreview(options: { customVoiceReferenceAudioPath?: strin
     [playUrl]
   )
 
+  const playKept = useCallback(
+    (voice: VoiceModel): boolean => {
+      const kiriVoice = kiriVoiceOf(voice.id)
+      const recording = isSavedVoiceId(voice.id) ? findSavedVoice(loadSavedVoices(), voice.id)?.referenceAudioPath : voice.id === 'custom-voice' ? optionsRef.current.customVoiceReferenceAudioPath : undefined
+      if (!recording && !kiriVoice) return false
+      const token = ++playTokenRef.current
+      audioRef.current?.pause()
+      if (pendingRef.current) void window.api.dubbing.cancelGeneration(pendingRef.current.batchId)
+      pendingRef.current = null
+      setPreview({ voiceId: voice.id, status: 'generating' })
+      const url: Promise<{ ok: true; url: string } | { ok: false; error: string }> = recording
+        ? window.api.dubbing.audioUrl(recording).then((found) => (found ? { ok: true as const, url: found } : { ok: false as const, error: 'The recording of this voice is missing.' }))
+        : window.api.kiri.voiceSample(kiriVoice as string)
+      void url.then((result) => {
+        if (playTokenRef.current !== token) return
+        if (result.ok) playUrl(voice.id, result.url)
+        else setPreview({ voiceId: voice.id, status: 'error', error: result.error })
+      })
+      return true
+    },
+    [playUrl]
+  )
+
   useEffect(() => () => audioRef.current?.pause(), [])
 
-  return { preview, play, stop }
+  return { preview, play, playKept, stop }
 }

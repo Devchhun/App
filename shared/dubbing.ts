@@ -12,7 +12,7 @@ import type { NarrationSpeaker } from './narration'
 import type { DetectedSpeakerProfile, SpeakerAgeCategory, SpeakerGender } from './transcription'
 import type { DubbingLineDebug, LinePerformance } from './dubbingPerformance'
 import type { ProjectSequence } from './project'
-import type { InnerVoiceSource } from './innerVoice'
+import type { InnerVoiceEcho, InnerVoiceSource } from './innerVoice'
 
 export type { NarrationSpeaker }
 
@@ -98,6 +98,11 @@ export interface DubbingSegmentState {
   /** Who decided `innerVoice` -- automatic detection never overrides a
    * choice made by hand. */
   innerVoiceSource?: InnerVoiceSource
+  /** More voices that say this line together with its own (a crowd, two
+   * people at once) -- see shared/dubbingTogether.ts. */
+  togetherVoiceIds?: string[]
+  /** The clips those voices made, on the DUB tracks beside the line's own. */
+  togetherClipIds?: string[]
   /** What the last generation of this line did (prompt, seed, scores) --
    * shown in the Debug view. Not saved with the project. */
   debug?: DubbingLineDebug
@@ -112,6 +117,16 @@ export interface DubbingSpeakerProfile extends DetectedSpeakerProfile {
   voiceId?: string
   voiceManuallyAssigned?: boolean
   mergedFrom?: string[]
+  /** The Cast window (shared/cast.ts). Portraits of the speaker cut from
+   * the video (file paths, best first) and the one shown. */
+  faces?: string[]
+  faceIndex?: number
+  /** Its clearest lines, the best first: what is played to hear it. */
+  sampleIds?: string[]
+  /** Lines placed with this voice without being sure. */
+  unsureIds?: string[]
+  /** Seconds of speech in all its lines. */
+  speechSeconds?: number
 }
 
 export interface DubbingWorkspaceState {
@@ -200,6 +215,33 @@ function withoutTransientSegments(saved: DubbingWorkspaceState['segments'] | und
   return segments
 }
 
+/** Lines whose made audio is gone from disk (Windows emptied the temp
+ * folder dub lines used to be made in): back to "not made yet", so Generate
+ * makes just those again, each new take replacing its silent clip. Lines
+ * and episodes untouched by `lostClipIds` keep their own objects. */
+export function reopenLinesWithLostAudio(state: DubbingWorkspaceState, lostClipIds: Set<string>): DubbingWorkspaceState {
+  if (lostClipIds.size === 0) return state
+  const reopen = (saved: Record<string, DubbingSegmentState>): Record<string, DubbingSegmentState> => {
+    let out: Record<string, DubbingSegmentState> | null = null
+    for (const [id, line] of Object.entries(saved)) {
+      if (line.status !== 'generated') continue
+      if (![line.generatedClipId, ...(line.togetherClipIds ?? [])].some((clipId) => !!clipId && lostClipIds.has(clipId))) continue
+      out ??= { ...saved }
+      out[id] = { ...line, status: line.voiceId ? 'voice-assigned' : 'pending' }
+    }
+    return out ?? saved
+  }
+  const segments = reopen(state.segments ?? {})
+  const episodes = state.episodes?.map((episode) => {
+    if (!episode.workspace) return episode
+    const episodeSegments = reopen(episode.workspace.segments)
+    return episodeSegments === episode.workspace.segments ? episode : { ...episode, workspace: { ...episode.workspace, segments: episodeSegments } }
+  })
+  const episodesChanged = !!episodes && episodes.some((episode, i) => episode !== state.episodes?.[i])
+  if (segments === state.segments && !episodesChanged) return state
+  return { ...state, segments, ...(episodesChanged ? { episodes } : {}) }
+}
+
 export function createDefaultDubbingWorkspaceState(): DubbingWorkspaceState {
   return { active: false, genderDetectionStatus: 'idle', segments: {}, speakers: {} }
 }
@@ -273,7 +315,17 @@ export const DUBBING_IPC = {
    * process working on the current one is killed. Lines already finished
    * are kept. Takes the batch's `batchId`, or nothing for AI Dubber's own
    * untagged batch. */
-  cancelGeneration: 'dubbing:cancelGeneration'
+  cancelGeneration: 'dubbing:cancelGeneration',
+  /** The Cast window's scan (shared/cast.ts): every subtitle line is
+   * listened to and the lines are grouped by who speaks them, each voice
+   * with faces from the picture -- app/main/ai/castScanService.ts. */
+  scanCast: 'dubbing:scanCast',
+  /** Male or female for every subtitle line, from voice prints grouped by
+   * voice (castScanService.ts's detectLineGenders) -- Detect Gender. */
+  detectGenders: 'dubbing:detectGenders',
+  /** Main -> renderer: how far a running scan is. */
+  castProgress: 'dubbing:castProgress',
+  cancelCast: 'dubbing:cancelCast'
 } as const
 
 export interface DubbingGenerationGroupSegment {
@@ -367,6 +419,9 @@ export interface DubbingGenerationRequest {
   steadyPace?: boolean
   /** KiriTTS: send each line's emotion as instructions. Absent = off. */
   kiriActing?: boolean
+  /** How the inner-voice lines are echoed (shared/innerVoice.ts). Absent =
+   * the default. */
+  echoStyle?: InnerVoiceEcho
   /** Who this batch belongs to. The AI Dubber sends none; the Recap
    * narration tags its own so each side handles only its own results
    * off the shared `generationProgress` channel. */

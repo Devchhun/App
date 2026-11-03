@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
-import { mkdtemp, mkdir, readFile, unlink, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
+import { createDubAudioWorkDir } from './dubAudioStore'
+import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join, delimiter, dirname } from 'path'
 import { spawn } from 'child_process'
 import { createHash } from 'crypto'
@@ -11,6 +11,7 @@ import { probeMedia } from './probe'
 import { levelVoiceClip, REFERENCE_LEVEL } from './voiceLeveling'
 import { DEFAULT_VOICE_TONE, type VoxCpmDevice, type DubbingGenerationGroup, type ReferenceClipQuality, type VoiceTone } from '@shared/dubbing'
 import type { DubbingLineDebug, EmotionProfile } from '@shared/dubbingPerformance'
+import { DEFAULT_INNER_VOICE_ECHO, type InnerVoiceEcho } from '@shared/innerVoice'
 import { runInBackground } from './processPriority'
 
 /** VoxCPM2 has a hard ~8,192-token context ceiling shared between reference
@@ -612,7 +613,9 @@ export function runVoxCpmBatch(
   const p = voxcpmPaths(installDir)
   const perLine = !!options.lineJobs && existsSync(voxcpmRunnerPath())
 
-  return mkdtemp(join(tmpdir(), 'voxcpm-')).then((workDir) => {
+  // Kept with the app's data, not the temp folder: the lines it makes go
+  // on the Timeline (see dubAudioStore.ts).
+  return createDubAudioWorkDir('voxcpm-').then((workDir) => {
     const inputFile = join(workDir, perLine ? 'input.jsonl' : 'input.txt')
     const outputDir = join(workDir, 'out')
     return writeFile(inputFile, perLine ? buildRunnerJobsJsonl(texts, options.lineJobs!) : texts.join('\n'), 'utf-8').then(
@@ -731,13 +734,62 @@ export function computeAutoFitSpeed(generatedDurationSeconds: number, slotDurati
  * tempo/pitch range in one pass with much higher-fidelity time-stretching,
  * and `formant=preserved` keeps a pitch-shifted voice sounding like a human
  * voice instead of a sped-up/slowed-down tape ("chipmunk" effect). */
-/** The inner-voice echo (a character's thought, shared/innerVoice.ts):
- * three repeats at 60/120/200 ms fading out, over a short pad so the last
- * word's echo is heard instead of cut off. Measured with the app's own echo
- * detector as clearly echoed. */
-export const INNER_VOICE_ECHO_FILTER = 'apad=pad_dur=0.35,aecho=0.85:0.75:60|120|200:0.35|0.22|0.12'
+/** A room for the voice to sound in: noise that dies away over one second,
+ * darker than the voice -- convolved with the take (afir) it is a smooth
+ * reverb, where a handful of echo taps (what `aecho` gives) rings like a
+ * pipe. The seed is fixed: every line gets the same room. */
+const ECHO_ROOM = "anoisesrc=d=1.0:c=white:r=48000:a=1:s=7:n=256,volume=volume='exp(-6.908*t/1.0)':eval=frame,highpass=f=300,lowpass=f=5000"
+/** The end of the tail faded to nothing, so the clip never stops on sound. */
+const ECHO_END = 'areverse,afade=t=in:d=0.2,areverse'
 
-export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number; volumeDb: number; echo?: boolean }): string | null {
+/** The inner-voice effect (a character's thought, shared/innerVoice.ts), in
+ * each of its styles. All keep the voice itself untouched and in front, put
+ * the effect under it, give the clip half a second for the tail and bring
+ * the line back to the loudness it had (the effect adds about 1 dB).
+ * Measured on real takes: the reverb sits 5 dB under the voice and is gone
+ * 0.45 s after the last word.
+ *   hall  - the room alone, 35 ms behind the voice.
+ *   dream - a quieter room, and the voice once more after 230 ms.
+ *   echo  - the voice again after 190, 380 and 570 ms, each fainter and
+ *           darker; no room.
+ *   soft  - three close repeats at 60/120/200 ms: the effect of earlier
+ *           versions (its pad cut from 0.35 s to 0.1 s -- the tail it was
+ *           left for is 0.1 s long, and the rest only pushed the next line
+ *           later). */
+export function innerVoiceEchoFilter(style: InnerVoiceEcho = DEFAULT_INNER_VOICE_ECHO): string {
+  switch (style) {
+    case 'soft':
+      return 'apad=pad_dur=0.1,aecho=0.85:0.75:60|120|200:0.35|0.22|0.12'
+    case 'echo':
+      return [
+        'aresample=48000,apad=pad_dur=0.6,asplit=4[d][a][b][c]',
+        '[a]adelay=190:all=1,highpass=f=200,lowpass=f=4500,volume=-8dB[a1]',
+        '[b]adelay=380:all=1,highpass=f=250,lowpass=f=3200,volume=-15dB[b1]',
+        '[c]adelay=570:all=1,highpass=f=300,lowpass=f=2400,volume=-22dB[c1]',
+        `[d][a1][b1][c1]amix=inputs=4:normalize=0:duration=first,volume=-0.8dB,${ECHO_END},alimiter=limit=0.97`
+      ].join(';')
+    case 'dream':
+      return [
+        'aresample=48000,apad=pad_dur=0.55,asplit=3[d][w][e]',
+        `${ECHO_ROOM}[ir]`,
+        '[w]highpass=f=180,adelay=35:all=1[wp]',
+        '[wp][ir]afir=gtype=-1:irfmt=mono,volume=-36.5dB[wet]',
+        '[e]adelay=230:all=1,highpass=f=250,lowpass=f=3500,volume=-13dB[e1]',
+        `[d][wet][e1]amix=inputs=3:normalize=0:duration=first,volume=-0.9dB,${ECHO_END},alimiter=limit=0.97`
+      ].join(';')
+    case 'hall':
+    default:
+      return [
+        'aresample=48000,apad=pad_dur=0.5,asplit[d][w]',
+        `${ECHO_ROOM}[ir]`,
+        '[w]highpass=f=180,adelay=35:all=1[wp]',
+        '[wp][ir]afir=gtype=-1:irfmt=mono,volume=-34.5dB[wet]',
+        `[d][wet]amix=inputs=2:normalize=0:duration=first,volume=-1dB,${ECHO_END},alimiter=limit=0.97`
+      ].join(';')
+  }
+}
+
+export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number; volumeDb: number; echo?: InnerVoiceEcho | boolean }): string | null {
   const steps: string[] = []
 
   const pitchRatio = Math.pow(2, fx.pitch / 12)
@@ -756,7 +808,7 @@ export function buildDubbingPostFxFilterGraph(fx: { pitch: number; speed: number
   if (fx.volumeDb !== 0) steps.push(`volume=${fx.volumeDb}dB`)
 
   // Last, after speed-fit: the echo tail is not speech to be fitted.
-  if (fx.echo) steps.push(INNER_VOICE_ECHO_FILTER)
+  if (fx.echo) steps.push(innerVoiceEchoFilter(fx.echo === true ? undefined : fx.echo))
 
   return steps.length > 0 ? steps.join(',') : null
 }
@@ -846,7 +898,7 @@ export function fileNameSafe(id: string): string {
   return id.replace(/[^A-Za-z0-9._-]+/g, '-')
 }
 
-export async function applyDubbingPostFx(jobId: string, inputPath: string, fx: { pitch: number; speed: number; volumeDb: number; echo?: boolean }): Promise<string> {
+export async function applyDubbingPostFx(jobId: string, inputPath: string, fx: { pitch: number; speed: number; volumeDb: number; echo?: InnerVoiceEcho | boolean }): Promise<string> {
   const filterGraph = buildDubbingPostFxFilterGraph(fx)
   if (!filterGraph) return inputPath
   // Always writes .wav regardless of what came in -- VoxCPM2 produces .wav,

@@ -4,6 +4,7 @@ import { createEmptySequence } from '@shared/project'
 import type { TimelineTrackKind } from '@shared/timelineTracks'
 import {
   insertClip as insertClipOp,
+  insertClipShiftingAll as insertClipShiftingAllOp,
   moveClip as moveClipOp,
   moveClipSet as moveClipSetOp,
   moveClipToTrack as moveClipToTrackOp,
@@ -32,6 +33,10 @@ import {
   extractAudio as extractAudioOp,
   selectedWithLinkedClips,
   setClipsEnabled as setClipsEnabledOp,
+  setClipsMirrored as setClipsMirroredOp,
+  setClipsPlacement as setClipsPlacementOp,
+  type ClipPlacement,
+  applyEachClipProperties as applyEachClipPropertiesOp,
   groupClips as groupClipsOp,
   ungroupClips as ungroupClipsOp,
   moveClipsToTrack as moveClipsToTrackOp,
@@ -86,6 +91,10 @@ interface SequenceContextValue {
   /** Video/image/audio insertion rules (see sequenceOps.buildInsertedClips).
    * Returns the id(s) of the newly-inserted clip(s) and selects them. */
   insertClip: (asset: InsertableAsset, atTime: number, trackId: string, overrides?: Partial<Pick<TimelineClip, 'muted'>>) => void
+  /** Inserts at `atTime` and moves every clip from there on (all tracks)
+   * and the markers later by the clip's length -- see
+   * sequenceOps.insertClipShiftingAll. */
+  insertClipShiftingAll: (asset: InsertableAsset, atTime: number, trackId: string) => void
   /** Bulk, exact re-timing with no ripple -- see sequenceOps.setClipStartTimes. */
   setClipStartTimes: (updates: { clipId: string; startTime: number }[]) => void
   /** Bulk-inserts every planned placement (see placementPlanning.ts) as one
@@ -191,7 +200,7 @@ interface SequenceContextValue {
   replaceClipMedia: (clipId: string, newMediaId: string, newSourceDurationSeconds: number) => void
   /** Remove Vocal: the instrumental under each video clip, timed like it,
    * and the clip muted -- see sequenceOps.addMirroredAudioClips. */
-  mirrorAudioUnderClips: (videoClipIds: string[], audioMediaId: string) => void
+  mirrorAudioUnderClips: (videoClipIds: string[], audioMediaId: string, replaces?: (mediaId: string) => boolean) => void
   /** Audio Effects: the clip plays another file of the same sound. */
   setClipAudioSource: (clipId: string, patch: { mediaId: string; sourceIn: number; sourceOut: number; audioEffect: TimelineClip['audioEffect'] }) => void
 
@@ -208,6 +217,12 @@ interface SequenceContextValue {
 
   /** Enable/Disable (clip context menu) -- see sequenceOps.setClipsEnabled. */
   setSelectedEnabled: (enabled: boolean) => void
+  /** Mirror (toolbar): the pictures among `clipIds` flipped left-right, or back -- one change for them all. */
+  mirrorClips: (clipIds: string[], mirrored: boolean) => void
+  /** The same place/size/turn for every picture among `clipIds`, each keeping its own Mirror -- one change for them all. */
+  placeClips: (clipIds: string[], placement: ClipPlacement) => void
+  /** A different property patch for each clip, as one change (Auto Reframe). */
+  updateEachClipProperties: (patches: Record<string, ClipPropertyPatch>) => void
   /** Group/Ungroup Selected -- arbitrary multi-clip "move together" set,
    * independent of Linkage (see TimelineClip.groupId). */
   groupSelected: () => void
@@ -317,6 +332,10 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       setSelectedTimelineClipIds(newIds)
       return next
     })
+  }, [])
+
+  const insertClipShiftingAll = useCallback((asset: InsertableAsset, atTime: number, trackId: string) => {
+    setSequence((prev) => insertClipShiftingAllOp(prev, asset, atTime, trackId))
   }, [])
 
   const insertPlannedClips = useCallback((placements: PlannedPlacement[]) => {
@@ -469,6 +488,18 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     [selectedTimelineClipIds]
   )
 
+  const mirrorClips = useCallback((clipIds: string[], mirrored: boolean) => {
+    setSequence((prev) => setClipsMirroredOp(prev, clipIds, mirrored))
+  }, [])
+
+  const placeClips = useCallback((clipIds: string[], placement: ClipPlacement) => {
+    setSequence((prev) => setClipsPlacementOp(prev, clipIds, placement))
+  }, [])
+
+  const updateEachClipProperties = useCallback((patches: Record<string, ClipPropertyPatch>) => {
+    setSequence((prev) => applyEachClipPropertiesOp(prev, patches))
+  }, [])
+
   const groupSelected = useCallback(() => {
     setSequence((prev) => groupClipsOp(prev, selectedTimelineClipIds))
   }, [selectedTimelineClipIds])
@@ -612,8 +643,8 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
     setSequence((prev) => setClipStartTimesOp(prev, updates))
   }, [])
 
-  const mirrorAudioUnderClips = useCallback((videoClipIds: string[], audioMediaId: string) => {
-    setSequence((prev) => addMirroredAudioClips(prev, videoClipIds, audioMediaId))
+  const mirrorAudioUnderClips = useCallback((videoClipIds: string[], audioMediaId: string, replaces?: (mediaId: string) => boolean) => {
+    setSequence((prev) => addMirroredAudioClips(prev, videoClipIds, audioMediaId, undefined, replaces))
   }, [])
 
   const toggleClipMute = useCallback((clipId: string) => {
@@ -704,6 +735,7 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       selectClips,
       clearClipSelection,
       insertClip,
+      insertClipShiftingAll,
       insertPlannedClips,
       moveClip,
       moveClipSet,
@@ -738,6 +770,9 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       rollEditClips,
       deleteRange,
       setSelectedEnabled,
+      mirrorClips,
+      placeClips,
+      updateEachClipProperties,
       groupSelected,
       ungroupSelected,
       moveSelectedToTrack,
@@ -772,6 +807,7 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       selectClips,
       clearClipSelection,
       insertClip,
+      insertClipShiftingAll,
       insertPlannedClips,
       moveClip,
       moveClipSet,
@@ -806,6 +842,9 @@ export function SequenceProvider({ children }: { children: ReactNode }): JSX.Ele
       rollEditClips,
       deleteRange,
       setSelectedEnabled,
+      mirrorClips,
+      placeClips,
+      updateEachClipProperties,
       groupSelected,
       ungroupSelected,
       moveSelectedToTrack,

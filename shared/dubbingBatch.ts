@@ -185,3 +185,39 @@ export function pairSrtsWithVideos(videoNames: string[], srtNames: string[]): (n
   })
   return result
 }
+
+/** One SRT whose lines run past the end of every video on the Timeline was
+ * written in Timeline time (Save SRTs -> "One file, all joined", perhaps
+ * reworded elsewhere): it belongs to the whole Timeline, not to the one
+ * video its name seems to match -- "My_Drama_56EP_Khmer.srt" is the whole
+ * 56-episode series, not Episode 56 (placed there it was cut to that
+ * video's minute and every other line was lost). */
+export function srtSpansTimeline(cueEndTimes: number[], partLengths: number[]): boolean {
+  if (partLengths.length < 2 || cueEndTimes.length === 0) return false
+  return cueEndTimes.reduce((a, b) => Math.max(a, b), 0) > partLengths.reduce((a, b) => Math.max(a, b), 0) + 1
+}
+
+/** An SRT's text for each line already on the Timeline at the same times
+ * (start and end within 50 ms): an SRT saved from here, translated or
+ * reworded elsewhere and loaded back. Its text becomes those lines'
+ * translation and their original text stays. Null unless nearly all the
+ * lines (90%) of both line up -- then it is a different SRT. */
+export function textsAtSameTimes(
+  lines: Pick<TranscriptSegment, 'id' | 'startTime' | 'endTime'>[],
+  cues: Pick<TranscriptSegment, 'startTime' | 'endTime' | 'text'>[]
+): Record<string, string> | null {
+  if (lines.length === 0 || cues.length === 0) return null
+  const slot = (t: number): number => Math.round(t * 20)
+  const bySlot = new Map<number, Pick<TranscriptSegment, 'id' | 'startTime' | 'endTime'>[]>()
+  for (const line of lines) bySlot.set(slot(line.startTime), [...(bySlot.get(slot(line.startTime)) ?? []), line])
+  const texts: Record<string, string> = {}
+  for (const cue of cues) {
+    const s = slot(cue.startTime)
+    const line = [s - 1, s, s + 1]
+      .flatMap((k) => bySlot.get(k) ?? [])
+      .find((l) => texts[l.id] === undefined && Math.abs(l.startTime - cue.startTime) <= 0.05 && Math.abs(l.endTime - cue.endTime) <= 0.05)
+    if (line) texts[line.id] = cue.text
+  }
+  const matched = Object.keys(texts).length
+  return matched >= 0.9 * Math.max(lines.length, cues.length) ? texts : null
+}

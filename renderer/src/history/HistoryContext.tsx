@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Scene, BrandPreset, ProjectSequence } from '@shared/project'
 import type { StoryAnalysis, EntityBible, VisualPlan, StorySceneGroup, StoryVisualTheme } from '@shared/story'
 import { useScenes } from '../scenes/SceneContext'
+import { isTypingTarget, isWindowOpen, shortcutKey } from '../timeline/shortcutKey'
 import { useBrandPreset } from '../brand/BrandPresetContext'
 import { useSequence } from '../sequence/SequenceContext'
 import { useStory } from '../story/StoryContext'
@@ -201,12 +202,12 @@ export function HistoryProvider({ children }: { children: ReactNode }): JSX.Elem
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (!(e.ctrlKey || e.metaKey)) return
-      const target = e.target as HTMLElement | null
-      const tag = target?.tagName
-      const isEditingText = tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable
-      if (isEditingText) return // let the browser's native field undo/redo run instead
+      // Let a field being typed in undo its own text; and wait while a
+      // window is in front of the editor.
+      if (isTypingTarget(e.target) || isWindowOpen()) return
 
-      const key = e.key.toLowerCase()
+      // By the key's place: with the Khmer layout on, Z types ឋ.
+      const key = shortcutKey(e)
       if (key === 'z' && !e.shiftKey) {
         e.preventDefault()
         undo()

@@ -59,6 +59,22 @@ export function episodeSrtFileName(videoFileName: string): string {
   return `${base || 'episode'}.srt`
 }
 
+/** The file name for ONE SRT of a whole run of episodes ("Save SRTs" as one
+ * file): the series' name -- the first video's, its episode number taken
+ * out -- and how many episodes it holds. "My Drama EP03.mp4" and 30 videos
+ * give "My Drama - 30 episodes.srt". */
+export function seriesSrtFileName(videoFileNames: string[]): string {
+  const first = (videoFileNames[0] ?? '').replace(/\.[^./\\]+$/, '')
+  const series = first
+    .replace(/(?:^|[\s._-])(?:episode|ep|e|ភាគ(?:ទី)?)\s*\.?\s*\d+\b/giu, ' ')
+    .replace(/\s*[-–—_|]+\s*$/u, '')
+    .replace(/^\s*[-–—_|]+\s*/u, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const count = videoFileNames.length
+  return `${series || 'All episodes'} - ${count} episode${count === 1 ? '' : 's'}.srt`
+}
+
 /** Episodes Auto SRT still has to do, in order. */
 export function episodesToTranscribe(episodes: DubbingEpisode[]): string[] {
   return episodes.filter((episode) => episode.status === 'waiting' || episode.status === 'failed').map((episode) => episode.mediaId)

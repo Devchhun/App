@@ -1,4 +1,5 @@
 import type { ClipMotion } from './clipMotion'
+import type { ClipAdjust } from './clipAdjust'
 // Shared project-file data model, used by both the Electron main process
 // and the renderer UI. See plan section "Data model (project file)".
 import type { AudioEffectSettings } from './audioEffects'
@@ -435,6 +436,12 @@ export interface TimelineClip {
   fadeIn?: number
   /** Seconds, from this clip's own end. Undefined/0 = no fade. */
   fadeOut?: number
+  /** Video/image only: seconds the PICTURE takes to come in from black (from
+   * see-through, over a track below) at the clip's start, and to go out at
+   * its end -- fadeIn/fadeOut above fade the sound. Undefined/0 = none.
+   * See shared/pictureFade.ts. */
+  pictureFadeIn?: number
+  pictureFadeOut?: number
   /** Video/image only. Undefined = identity (centered, unscaled, unrotated,
    * uncropped) -- matches how the clip renders today without this field. */
   transform?: ClipTransform
@@ -447,6 +454,13 @@ export interface TimelineClip {
   /** A looping motion on the picture (a logo that floats, bounces,
    * wanders...) -- see shared/clipMotion.ts. Player and Export both. */
   motion?: ClipMotion
+  /** Clip Properties > Adjustment: brightness, contrast, saturation, hue
+   * -- see shared/clipAdjust.ts. Player and Export both. */
+  adjust?: ClipAdjust
+  /** Background > Blur, 1..100: the frame's empty bars filled with this
+   * clip itself, enlarged and blurred (shared/clipAdjust.ts). Unset = the
+   * bars stay black. */
+  backgroundBlur?: number
 }
 
 export interface ClipTransform {

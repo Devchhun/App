@@ -1,12 +1,15 @@
 import { CLIP_MOTION_HINTS, CLIP_MOTION_LABELS, CLIP_MOTION_PRESETS, DEFAULT_CLIP_MOTION_AMOUNT, DEFAULT_CLIP_MOTION_SPEED, type ClipMotion, type ClipMotionPreset } from '@shared/clipMotion'
 
+/** Motions that run to the screen's edges: picked at their full travel. */
+const FULL_SCREEN = new Set<ClipMotionPreset>(['wander', 'updown', 'leftright', 'around'])
+
 /** Clip Properties > Animation: a looping motion for the clip's picture --
  * a logo that floats, bounces, wanders around the screen... Each card
  * shows its own motion; the Player and the export both play it
  * (shared/clipMotion.ts). */
 export function MotionPicker({ motion, disabled, onChange }: { motion: ClipMotion | undefined; disabled: boolean; onChange: (next: ClipMotion | undefined) => void }): JSX.Element {
   const pick = (preset: ClipMotionPreset): void =>
-    onChange({ preset, speed: motion?.speed ?? DEFAULT_CLIP_MOTION_SPEED, amount: motion?.amount ?? (preset === 'wander' ? 1 : DEFAULT_CLIP_MOTION_AMOUNT) })
+    onChange({ preset, speed: motion?.speed ?? DEFAULT_CLIP_MOTION_SPEED, amount: motion?.amount ?? (FULL_SCREEN.has(preset) ? 1 : DEFAULT_CLIP_MOTION_AMOUNT) })
   return (
     <div className="motion-picker">
       <div className="motion-picker-grid" role="radiogroup" aria-label="Motion">

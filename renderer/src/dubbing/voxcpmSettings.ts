@@ -8,6 +8,7 @@
 // stale path from someone else's Downloads folder.
 
 import { DEFAULT_VOICE_TONE, type VoxCpmDevice, type DubbingEngine, type VoiceTone } from '@shared/dubbing'
+import { DEFAULT_INNER_VOICE_ECHO, isInnerVoiceEcho, type InnerVoiceEcho } from '@shared/innerVoice'
 
 export type { VoiceTone }
 
@@ -35,11 +36,22 @@ export interface VoxCpmSettings {
    * different amounts, next to lines asked to be slow or fast, made one
    * voice sound fast on one line and slow on the next. */
   steadyPace: boolean
-  /** KiriTTS only: send each line's emotion as `instructions` ("very
-   * angry, hard, forceful"). Off by default: on a cloned voice the acting
+  /** Neighbouring subtitle lines read as ONE take (smoother phrasing). Off
+   * by default: a joined take is one run of speech placed at its first
+   * line's start, so the words of the lines after it are spoken where the
+   * voice happens to get to them, not on their own subtitles -- measured
+   * on a real episode: in 25 of 35 joined takes a later line was spoken
+   * half a second or more early, and 7 takes were over before their last
+   * subtitle had even begun. Off, every subtitle has its own clip starting
+   * on it. */
+  joinLines: boolean
+  /** KiriTTS only: send each line's emotion as `instructions` (how it is
+   * to be said -- shared/kiriTts.ts's kiriInstructions). Off by default: on a cloned voice the acting
    * words made takes fail more often (babble, a tail) and, by ear, the
    * plain voice sounded better. */
   kiriActing: boolean
+  /** How the inner-voice lines are echoed -- see shared/innerVoice.ts. */
+  echoStyle: InnerVoiceEcho
 }
 
 // installDir starts EMPTY on purpose. It used to be hardcoded to one
@@ -55,7 +67,9 @@ export const DEFAULT_VOXCPM_SETTINGS: VoxCpmSettings = {
   pitchMatch: true,
   tone: DEFAULT_VOICE_TONE,
   steadyPace: true,
-  kiriActing: false
+  joinLines: false,
+  kiriActing: false,
+  echoStyle: DEFAULT_INNER_VOICE_ECHO
 }
 
 const DEVICES: VoxCpmDevice[] = ['auto', 'cuda', 'cpu']
@@ -82,7 +96,9 @@ export function parseStoredVoxCpmSettings(raw: string | null): VoxCpmSettings {
       pitchMatch: typeof parsed.pitchMatch === 'boolean' ? parsed.pitchMatch : DEFAULT_VOXCPM_SETTINGS.pitchMatch,
       tone: TONES.includes(parsed.tone as VoiceTone) ? (parsed.tone as VoiceTone) : DEFAULT_VOXCPM_SETTINGS.tone,
       steadyPace: typeof parsed.steadyPace === 'boolean' ? parsed.steadyPace : DEFAULT_VOXCPM_SETTINGS.steadyPace,
-      kiriActing: typeof parsed.kiriActing === 'boolean' ? parsed.kiriActing : DEFAULT_VOXCPM_SETTINGS.kiriActing
+      joinLines: typeof parsed.joinLines === 'boolean' ? parsed.joinLines : DEFAULT_VOXCPM_SETTINGS.joinLines,
+      kiriActing: typeof parsed.kiriActing === 'boolean' ? parsed.kiriActing : DEFAULT_VOXCPM_SETTINGS.kiriActing,
+      echoStyle: isInnerVoiceEcho(parsed.echoStyle) ? parsed.echoStyle : DEFAULT_VOXCPM_SETTINGS.echoStyle
     }
   } catch {
     return DEFAULT_VOXCPM_SETTINGS

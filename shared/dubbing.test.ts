@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultDubbingWorkspaceState, defaultDubbingSegmentState, referenceClipVerdict } from './dubbing'
+import { createDefaultDubbingWorkspaceState, defaultDubbingSegmentState, referenceClipVerdict, reopenLinesWithLostAudio } from './dubbing'
 
 describe('createDefaultDubbingWorkspaceState', () => {
   it('starts inactive, idle, with no segments', () => {
@@ -39,5 +39,31 @@ describe('referenceClipVerdict', () => {
   it('treats heavy clipping or mostly-silence as weak regardless of consistency', () => {
     expect(referenceClipVerdict({ consistency: 0.9, clippedRatio: 0.01, speechRatio: 0.99 })).toBe('weak')
     expect(referenceClipVerdict({ consistency: 0.9, clippedRatio: 0, speechRatio: 0.3 })).toBe('weak')
+  })
+})
+
+describe('reopenLinesWithLostAudio', () => {
+  const line = (id: string, patch: Partial<ReturnType<typeof defaultDubbingSegmentState>>) => ({ ...defaultDubbingSegmentState(id), status: 'generated' as const, ...patch })
+
+  it('puts lines whose clip lost its audio back to not made yet, and leaves the rest alone', () => {
+    const state = {
+      ...createDefaultDubbingWorkspaceState(),
+      segments: {
+        a: line('a', { generatedClipId: 'c1', voiceId: 'kiri:Kattt' }),
+        b: line('b', { generatedClipId: 'c2' }),
+        j: line('j', { generatedClipId: 'c1', joinedInto: 'a' }),
+        t: line('t', { generatedClipId: 'c3', togetherClipIds: ['c4'] }),
+        f: line('f', { status: 'pending' })
+      }
+    }
+    const out = reopenLinesWithLostAudio(state, new Set(['c1', 'c4']))
+    expect(out.segments.a.status).toBe('voice-assigned')
+    expect(out.segments.a.generatedClipId).toBe('c1')
+    expect(out.segments.j.status).toBe('pending')
+    expect(out.segments.t.status).toBe('pending')
+    expect(out.segments.b).toBe(state.segments.b)
+    expect(out.segments.f).toBe(state.segments.f)
+    // Nothing lost: the same state back.
+    expect(reopenLinesWithLostAudio(state, new Set(['zz']))).toBe(state)
   })
 })

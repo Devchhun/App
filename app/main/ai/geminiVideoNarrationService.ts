@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { createGemini } from './geminiClient'
 import { mkdir, rm } from 'fs/promises'
 import { join } from 'path'
 import { GoogleGenAI, FileState } from '@google/genai'
@@ -567,7 +568,7 @@ export async function generateVideoStoryNarration(request: VideoStoryNarrationRe
   active.set(request.jobId, controller)
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
   try {
     onProgress({ jobId: request.jobId, phase: 'preparing', percent: 1, message: 'Preparing video and subtitles…' })
     const range = narrativeMediaRange(request.videoDurationSeconds, request.segments)
@@ -625,7 +626,7 @@ export async function regenerateVideoStoryScene(request: RegenerateNarrationScen
   active.set(request.jobId, controller)
   const apiKey = await getGeminiApiKey()
   if (!apiKey) throw new Error('Gemini API key is not configured. Add it under Settings > AI API Keys.')
-  const ai = new GoogleGenAI({ apiKey })
+  const ai = createGemini(apiKey)
   try {
     const analyzed = await analyzeRange(ai, {
       jobId: request.jobId,

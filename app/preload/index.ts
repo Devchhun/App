@@ -1,11 +1,13 @@
 import type { LogoTemplate, RemoveBackgroundProgress, RemoveBackgroundResult } from '@shared/media'
 import { KIRI_IPC, type KiriCloneResult, type KiriListResult } from '@shared/kiriTts'
+import type { CastScanLine, CastScanProgress, CastScanRequest, CastScanResult } from '@shared/cast'
 import type { ExportOverlay } from '@shared/videoOverlay'
 import { AI_ANIMATION_IPC, type AnimationIpcResult, type AnimationProgress, type AnimationRequest } from '@shared/aiAnimation'
+import { MANGA_IPC, type MangaIpcResult, type MangaProgress, type MangaRequest, type MangaScenesResult } from '@shared/mangaRecap'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { MEDIA_IPC } from '@shared/media'
-import type { FfmpegAvailability, MediaItem, MediaProgressUpdate, WaveformData } from '@shared/media'
+import type { FfmpegAvailability, MediaItem, MediaProgressUpdate, SaveClipAudioRequest, WaveformData } from '@shared/media'
 import { TRANSCRIPTION_IPC } from '@shared/transcription'
 import type {
   DeviceInfo,
@@ -22,7 +24,8 @@ import type {
   CorrectionCategory,
   DetectSpeakersRequest,
   DetectSpeakersResult,
-  DetectSpeakersProgress
+  DetectSpeakersProgress,
+  SpeakerGender
 } from '@shared/transcription'
 import { PROJECT_IPC } from '@shared/project'
 import type { ProjectFile, MediaSource, ProjectSequence, ProjectSummary } from '@shared/project'
@@ -47,7 +50,8 @@ import type { DetectSpeakerResult, NarrationOptimizationSettings } from '@shared
 import { DUBBING_IPC, type RefitClipAudioResult, type PrepareReferenceClipResult, type VoxCpmDevice } from '@shared/dubbing'
 import type { ValidateVoxCpmInstallResult, DubbingGenerationRequest, DubbingGenerationProgressEvent, AnalyzePerformanceLine, AnalyzePerformanceResult } from '@shared/dubbing'
 import { VIDEO_STORY_NARRATION_IPC, type RegenerateNarrationSceneRequest, type StoryLibrary, type StoryOutlineIpcResult, type StoryOutlineRequest, type StoryScriptRequest, type VideoStoryNarrationIpcResult, type VideoStoryNarrationProgress, type VideoStoryNarrationRequest, type VideoStoryNarrationScene } from '@shared/videoStoryNarration'
-import { VOCAL_REMOVAL_IPC, type RemoveVocalsResult, type VocalRemovalProgress } from '@shared/vocalRemoval'
+import { VOCAL_REMOVAL_IPC, type RemoveVocalsResult, type SpeechRange, type VocalRemovalProgress } from '@shared/vocalRemoval'
+import { REFRAME_IPC, type ReframeAnalyzeResult, type ReframeProgress } from '@shared/reframe'
 import { TRANSLATION_IPC } from '@shared/translation'
 import type { TranslateSubtitlesResult, TranslationError } from '@shared/translation'
 
@@ -74,6 +78,7 @@ const mediaApi = {
     ipcRenderer.invoke(MEDIA_IPC.saveGeneratedFile, fileName, data),
   saveStillFrame: (dirPath: string, fileName: string, data: Uint8Array): Promise<string> => ipcRenderer.invoke(MEDIA_IPC.saveStillFrame, { dirPath, fileName, data }),
   getDefaultStillDir: (): Promise<string> => ipcRenderer.invoke(MEDIA_IPC.getDefaultStillDir),
+  saveClipAudio: (request: SaveClipAudioRequest): Promise<string | null> => ipcRenderer.invoke(MEDIA_IPC.saveClipAudio, request),
   ensureWaveform: (mediaId: string, originalPath: string): Promise<WaveformData | null> => ipcRenderer.invoke(MEDIA_IPC.ensureWaveform, { mediaId, originalPath }),
   onProgress: (callback: (update: MediaProgressUpdate) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, update: MediaProgressUpdate): void => callback(update)
@@ -199,9 +204,21 @@ const aiApi = {
     ipcRenderer.invoke(AI_IPC.transformScript, { requestId, text, mode })
 }
 
+const reframeApi = {
+  analyze: (jobId: string, path: string): Promise<ReframeAnalyzeResult> => ipcRenderer.invoke(REFRAME_IPC.analyze, { jobId, path }),
+  cancel: (jobId: string): Promise<boolean> => ipcRenderer.invoke(REFRAME_IPC.cancel, jobId),
+  onProgress: (callback: (progress: ReframeProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: ReframeProgress): void => callback(progress)
+    ipcRenderer.on(REFRAME_IPC.progress, listener)
+    return () => ipcRenderer.removeListener(REFRAME_IPC.progress, listener)
+  }
+}
+
 const vocalRemovalApi = {
   removeVocals: (jobId: string, sourcePath: string, installDir?: string, device?: VoxCpmDevice): Promise<RemoveVocalsResult> =>
     ipcRenderer.invoke(VOCAL_REMOVAL_IPC.removeVocals, { jobId, sourcePath, installDir, device }),
+  removeVocalsAtLines: (jobId: string, sourcePath: string, ranges: SpeechRange[], installDir?: string, device?: VoxCpmDevice): Promise<RemoveVocalsResult> =>
+    ipcRenderer.invoke(VOCAL_REMOVAL_IPC.removeVocalsAtLines, { jobId, sourcePath, ranges, installDir, device }),
   cancel: (jobId: string): Promise<boolean> => ipcRenderer.invoke(VOCAL_REMOVAL_IPC.cancel, jobId),
   onProgress: (callback: (progress: VocalRemovalProgress) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: VocalRemovalProgress): void => callback(progress)
@@ -266,7 +283,8 @@ const kiriApi = {
   clearKey: (): Promise<void> => ipcRenderer.invoke(KIRI_IPC.clearKey),
   listVoices: (): Promise<KiriListResult> => ipcRenderer.invoke(KIRI_IPC.listVoices),
   cloneVoice: (name: string, sourcePath?: string, options?: import('@shared/kiriTts').KiriCloneOptions): Promise<KiriCloneResult> => ipcRenderer.invoke(KIRI_IPC.cloneVoice, { name, sourcePath, options }),
-  pickCloneSource: (): Promise<import('@shared/kiriTts').KiriCloneSource> => ipcRenderer.invoke(KIRI_IPC.pickCloneSource)
+  pickCloneSource: (): Promise<import('@shared/kiriTts').KiriCloneSource> => ipcRenderer.invoke(KIRI_IPC.pickCloneSource),
+  voiceSample: (voice: string): Promise<{ ok: true; url: string } | { ok: false; error: string }> => ipcRenderer.invoke(KIRI_IPC.voiceSample, voice)
 }
 
 const exportApi = {
@@ -364,6 +382,19 @@ const dubbingApi = {
     const listener = (_event: Electron.IpcRendererEvent, payload: DubbingGenerationProgressEvent): void => callback(payload)
     ipcRenderer.on(DUBBING_IPC.generationProgress, listener)
     return () => ipcRenderer.removeListener(DUBBING_IPC.generationProgress, listener)
+  },
+  /** The Cast window's scan: the voices of the given lines, grouped, each
+   * with faces -- see shared/cast.ts. */
+  scanCast: (request: CastScanRequest): Promise<{ ok: true; result: CastScanResult } | { ok: false; error: string; canceled?: boolean }> =>
+    ipcRenderer.invoke(DUBBING_IPC.scanCast, request),
+  cancelCast: (jobId: string): Promise<boolean> => ipcRenderer.invoke(DUBBING_IPC.cancelCast, jobId),
+  /** Male or female for every given line (voice prints, grouped by voice). */
+  detectGenders: (request: { jobId: string; lines: CastScanLine[] }): Promise<{ ok: true; genders: Record<string, { gender: SpeakerGender; confidence: number }> } | { ok: false; error: string }> =>
+    ipcRenderer.invoke(DUBBING_IPC.detectGenders, request),
+  onCastProgress: (callback: (progress: CastScanProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: CastScanProgress): void => callback(payload)
+    ipcRenderer.on(DUBBING_IPC.castProgress, listener)
+    return () => ipcRenderer.removeListener(DUBBING_IPC.castProgress, listener)
   }
 }
 
@@ -399,6 +430,22 @@ const aiAnimationApi = {
   }
 }
 
+const mangaApi = {
+  pickImages: (): Promise<string[]> => ipcRenderer.invoke(MANGA_IPC.pickImages),
+  thumbs: (paths: string[]): Promise<string[]> => ipcRenderer.invoke(MANGA_IPC.thumbs, paths),
+  episodes: (link: string): Promise<import('@shared/mangaRecap').MangaEpisodesResult> => ipcRenderer.invoke(MANGA_IPC.episodes, link),
+  getChapter: (jobId: string, pageUrl: string): Promise<MangaScenesResult> => ipcRenderer.invoke(MANGA_IPC.getChapter, jobId, pageUrl),
+  cutScenes: (jobId: string, paths: string[]): Promise<MangaScenesResult> => ipcRenderer.invoke(MANGA_IPC.cutScenes, jobId, paths),
+  backdrops: (jobId: string, paths: string[]): Promise<string[]> => ipcRenderer.invoke(MANGA_IPC.backdrops, jobId, paths),
+  generate: (request: MangaRequest): Promise<MangaIpcResult> => ipcRenderer.invoke(MANGA_IPC.generate, request),
+  cancel: (jobId: string): Promise<boolean> => ipcRenderer.invoke(MANGA_IPC.cancel, jobId),
+  onProgress: (callback: (progress: MangaProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: MangaProgress): void => callback(progress)
+    ipcRenderer.on(MANGA_IPC.progress, listener)
+    return () => ipcRenderer.removeListener(MANGA_IPC.progress, listener)
+  }
+}
+
 const api = {
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   media: mediaApi,
@@ -415,8 +462,10 @@ const api = {
   dubbing: dubbingApi,
   videoStoryNarration: videoStoryNarrationApi,
   aiAnimation: aiAnimationApi,
+  manga: mangaApi,
   translation: translationApi,
   vocalRemoval: vocalRemovalApi,
+  reframe: reframeApi,
   license: {
     getStatus: (): Promise<LicenseStatus> => ipcRenderer.invoke(LICENSE_IPC.getStatus),
     activate: (key: string): Promise<ActivateLicenseResult> => ipcRenderer.invoke(LICENSE_IPC.activate, key),

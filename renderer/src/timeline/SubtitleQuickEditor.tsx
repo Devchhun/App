@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { kiriExpectedSeconds } from '@shared/kiriTts'
 import { useAiDubber } from '../dubbing/AiDubberContext'
 import { ENGINE_LABEL, useEngineVoices } from '../dubbing/engineVoices'
-import { resolveLineVoice } from '../dubbing/dubbingPlan'
+import { VOICE_MODELS } from '../dubbing/voiceModels'
+import { resolveLineVoice, voiceUsage } from '../dubbing/dubbingPlan'
+import { loadStoryVoices } from '../dubbing/storyVoices'
 import { kiriCopyOf } from '../dubbing/useKiriVoices'
 import { parseStoredVoxCpmSettings, getVoxCpmSettingsStorageKey, type DubbingEngine } from '../dubbing/voxcpmSettings'
 
@@ -110,11 +112,38 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
   const defaultVoice = useMemo(() => {
     if (voices.length === 0) return ''
     const speakerId = segState.speakerId ?? segment?.speakerId
-    const { voiceId, gender } = resolveLineVoice(segState, speakerId ? aiDubber.state.speakers[speakerId] : undefined, engine, (id) => kiriCopyOf(id))
+    const { voiceId, gender } = resolveLineVoice(segState, speakerId ? aiDubber.state.speakers[speakerId] : undefined, engine, (id) => kiriCopyOf(id), loadStoryVoices(engine))
     if (voices.some((v) => v.id === voiceId)) return voiceId
     return (voices.find((v) => v.gender === gender) ?? voices[0]).id
   }, [voices, segState, segment?.speakerId, aiDubber.state.speakers, engine])
   const voiceId = voiceByEngine[engine] && voices.some((v) => v.id === voiceByEngine[engine]) ? voiceByEngine[engine]! : defaultVoice
+
+  // Every voice the script speaks in (in this engine) and how many lines
+  // each has -- what Detect Gender and the hand picks added up to. One of
+  // them chosen here turns Generate into "change all its lines".
+  const usage = useMemo(
+    () =>
+      voiceUsage(
+        aiDubber.segments.map((s) => {
+          const st = aiDubber.getSegmentState(s.id)
+          const speakerId = st.speakerId ?? s.speakerId
+          return { id: s.id, state: st, speaker: speakerId ? aiDubber.state.speakers[speakerId] : undefined }
+        }),
+        engine,
+        (id) => kiriCopyOf(id),
+        loadStoryVoices(engine)
+      ),
+    // getSegmentState follows state.segments.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aiDubber.segments, aiDubber.state.segments, aiDubber.state.speakers, engine]
+  )
+  const [groupVoiceId, setGroupVoiceId] = useState<string | null>(null)
+  const group = groupVoiceId ? usage.find((u) => u.voiceId === groupVoiceId) : undefined
+  // The lines a group run was started for: its progress is shown here.
+  const [groupRun, setGroupRun] = useState<{ ids: string[]; name: string } | null>(null)
+  const voiceName = (id: string): string => voices.find((v) => v.id === id)?.name ?? VOICE_MODELS.find((v) => v.id === id)?.name ?? id
+  // Another engine has other voices: a group chosen in one is not one there.
+  useEffect(() => setGroupVoiceId(null), [engine])
 
   // Inside the window whatever happens (it grows, the window shrinks).
   const clampToWindow = (left: number, top: number): { left: number; top: number } => {
@@ -195,12 +224,20 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
   // without being closed: what was typed is still kept.
   const persistRef = useRef(persist)
   persistRef.current = persist
-  useEffect(
-    () => () => {
-      if (!closedRef.current) persistRef.current()
-    },
-    []
-  )
+  // Kept a moment and dropped if the panel is mounted again at once: React's
+  // development check unmounts and remounts every new component, and a new
+  // line still empty then was deleted before its panel ever showed ("Add
+  // Subtitle Here does nothing" in the dev app).
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      setTimeout(() => {
+        if (!mountedRef.current && !closedRef.current) persistRef.current()
+      }, 0)
+    }
+  }, [])
 
   // The subtitle went away (deleted elsewhere): nothing to edit. (A line
   // just added is not there on the very first render -- not "gone".)
@@ -228,13 +265,34 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
     save()
     setPending({ engine, voiceId })
   }
+  // The chosen voice's lines, all given the voice picked above and made
+  // again -- nothing else in the dub is touched.
+  const groupBusy = !!groupRun && groupRun.ids.some((id) => aiDubber.getSegmentState(id).status === 'generating')
+  const anyGenerating = aiDubber.segments.some((s) => aiDubber.getSegmentState(s.id).status === 'generating')
+  const canGenerateGroup = !!group && !!voiceId && !anyGenerating && !pending
+  const generateGroup = (): void => {
+    if (!group || !canGenerateGroup) return
+    save()
+    setGroupRun({ ids: group.segmentIds, name: voiceName(voiceId) })
+    setRequested(false)
+    aiDubber.generateSegmentsWith(group.segmentIds, engine, voiceId)
+    setGroupVoiceId(null)
+  }
 
   if (!segment) return null
   const index = aiDubber.segments.findIndex((s) => s.id === segmentId)
   const lineNumber = index + 1
   const next = aiDubber.segments[index + 1]
   const overlap = next && segment.endTime > next.startTime + 0.01 ? index + 2 : null
-  const status = generating
+  const groupDone = groupRun ? groupRun.ids.filter((id) => aiDubber.getSegmentState(id).status === 'generated').length : 0
+  const groupFailed = groupRun ? groupRun.ids.filter((id) => aiDubber.getSegmentState(id).status === 'needs-review').length : 0
+  const status = groupBusy
+    ? { kind: 'busy', label: `Changing ${groupRun!.ids.length} lines to ${groupRun!.name}… ${groupDone} done` }
+    : groupRun
+      ? groupFailed > 0
+        ? { kind: 'error', label: `${groupDone} of ${groupRun.ids.length} lines changed to ${groupRun.name}; ${groupFailed} could not be made${aiDubber.state.generationError ? ` (${aiDubber.state.generationError})` : ''}.` }
+        : { kind: 'done', label: `${groupDone} of ${groupRun.ids.length} lines changed to ${groupRun.name}. The other lines were not touched.` }
+      : generating
     ? { kind: 'busy', label: `Making the voice with ${ENGINE_LABEL[engine]}…` }
     : requested && segState.status === 'generated'
       ? { kind: 'done', label: 'Voice ready — it is on the dub track under this line.' }
@@ -329,6 +387,45 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
         </select>
       </label>
       {voicesError && <p className="subtitle-quick-editor-status subtitle-quick-editor-status-error">{voicesError}</p>}
+      {usage.length > 0 && (
+        <div className="subtitle-quick-editor-usage">
+          <div className="subtitle-quick-editor-usage-head">
+            <span>Voices in use</span>
+            <small>{group ? 'Pick the new voice above' : 'Click one to change all its lines'}</small>
+          </div>
+          <div className="subtitle-quick-editor-usage-list">
+            {usage.map((u) => {
+              const mine = u.segmentIds.includes(segmentId)
+              // The voice's own gender when it has one (a line can carry a
+              // voice without a detected gender of its own).
+              const voiceGender = voices.find((v) => v.id === u.voiceId)?.gender ?? VOICE_MODELS.find((v) => v.id === u.voiceId)?.gender
+              const gender = voiceGender === 'male' || voiceGender === 'female' ? voiceGender : u.gender
+              return (
+                <button
+                  key={u.voiceId}
+                  className={u.voiceId === groupVoiceId ? 'subtitle-quick-editor-usage-row subtitle-quick-editor-usage-row-active' : 'subtitle-quick-editor-usage-row'}
+                  aria-pressed={u.voiceId === groupVoiceId}
+                  title={`${u.segmentIds.length} line${u.segmentIds.length === 1 ? '' : 's'} speak in ${voiceName(u.voiceId)}`}
+                  onClick={() => {
+                    setGroupRun(null)
+                    setGroupVoiceId((current) => (current === u.voiceId ? null : u.voiceId))
+                  }}
+                >
+                  <i className={`subtitle-quick-editor-usage-dot subtitle-quick-editor-usage-dot-${gender}`} aria-hidden />
+                  <span className="subtitle-quick-editor-usage-name">{voiceName(u.voiceId)}</span>
+                  <small>{gender === 'male' ? 'Male' : gender === 'female' ? 'Female' : ''}{mine ? `${gender === 'unknown' ? '' : ' · '}this line` : ''}</small>
+                  <b>{u.segmentIds.length}</b>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {group && (
+        <p className="subtitle-quick-editor-status subtitle-quick-editor-status-info">
+          {group.segmentIds.length} line{group.segmentIds.length === 1 ? '' : 's'} speak in {voiceName(group.voiceId)}. Choose the new voice in Voice above, then Generate: only {group.segmentIds.length === 1 ? 'that line is' : `those ${group.segmentIds.length} lines are`} made again.
+        </p>
+      )}
       {status && <p className={`subtitle-quick-editor-status subtitle-quick-editor-status-${status.kind}`}>{status.kind === 'busy' && <span className="subtitle-quick-editor-spinner" aria-hidden />}{status.label}</p>}
       <div className="subtitle-quick-editor-actions">
         <span className="subtitle-quick-editor-hint">Enter save · Ctrl+Enter generate</span>
@@ -342,9 +439,15 @@ export function SubtitleQuickEditor({ segmentId, isNew, onClose }: Props): JSX.E
         >
           Save
         </button>
-        <button className="subtitle-quick-editor-generate" onClick={generate} disabled={!canGenerate} title={!text.trim() ? 'Type the line first' : running ? 'Another generation is running' : undefined}>
-          {segState.generatedClipId ? 'Generate again' : 'Generate voice'}
-        </button>
+        {group ? (
+          <button className="subtitle-quick-editor-generate" onClick={generateGroup} disabled={!canGenerateGroup} title={anyGenerating ? 'Another generation is running' : `Give ${voiceName(voiceId)} to these lines and make them again`}>
+            Generate {group.segmentIds.length} line{group.segmentIds.length === 1 ? '' : 's'}
+          </button>
+        ) : (
+          <button className="subtitle-quick-editor-generate" onClick={generate} disabled={!canGenerate} title={!text.trim() ? 'Type the line first' : running ? 'Another generation is running' : undefined}>
+            {segState.generatedClipId ? 'Generate again' : 'Generate voice'}
+          </button>
+        )}
       </div>
     </div>
   )

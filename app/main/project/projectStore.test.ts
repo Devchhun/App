@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'fs/promises'
+import { mkdtemp, rm, readFile, writeFile, stat, utimes } from 'fs/promises'
+import { existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createNewProjectFile } from '@shared/project'
@@ -445,6 +446,114 @@ describe('project persistence', () => {
     const reopened = await getOrCreateStartupProject()
     expect(reopened.id).toBe(project.id)
     expect(reopened.name).toBe('Reopened Project')
+  })
+
+  // What the computer losing power mid-save leaves behind: a file of the
+  // right length, every byte zero.
+  async function zeroOut(path: string): Promise<void> {
+    await writeFile(path, Buffer.alloc((await stat(path)).size))
+  }
+
+  it('a project whose file was zeroed by a power cut opens from its backup, and is still listed on Home', async () => {
+    const { saveProjectAtomic, loadProject, listProjects } = await import('./projectStore')
+    const project = createNewProjectFile('Hours Of Work')
+    const path = await saveProjectAtomic(project)
+    // The second save is the one that keeps the first as the backup.
+    await saveProjectAtomic({ ...project, name: 'Hours Of Work, later' })
+    await zeroOut(path)
+
+    const loaded = await loadProject(path)
+    expect(loaded.id).toBe(project.id)
+    expect(loaded.name).toBe('Hours Of Work')
+    expect((await listProjects()).map((p) => p.id)).toEqual([project.id])
+  })
+
+  it('a damaged file never takes the place of a good backup', async () => {
+    const { saveProjectAtomic, loadProject } = await import('./projectStore')
+    const project = createNewProjectFile('First Version')
+    const path = await saveProjectAtomic(project)
+    await saveProjectAtomic({ ...project, name: 'Second Version' })
+    // Long enough ago that the next save would refresh the backup.
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000)
+    await utimes(`${path}.bak`, longAgo, longAgo)
+    await zeroOut(path)
+
+    await saveProjectAtomic({ ...project, name: 'Third Version' })
+    expect(JSON.parse(await readFile(`${path}.bak`, 'utf-8')).name).toBe('First Version')
+    expect((await loadProject(path)).name).toBe('Third Version')
+  })
+
+  it('the backup follows the project: refreshed once it is old, left alone while it is recent', async () => {
+    const { saveProjectAtomic } = await import('./projectStore')
+    const project = createNewProjectFile('v1')
+    const path = await saveProjectAtomic(project)
+    await saveProjectAtomic({ ...project, name: 'v2' })
+    await saveProjectAtomic({ ...project, name: 'v3' })
+    expect(JSON.parse(await readFile(`${path}.bak`, 'utf-8')).name).toBe('v1')
+
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000)
+    await utimes(`${path}.bak`, longAgo, longAgo)
+    await saveProjectAtomic({ ...project, name: 'v4' })
+    expect(JSON.parse(await readFile(`${path}.bak`, 'utf-8')).name).toBe('v3')
+  })
+
+  it('with the note of what was open zeroed, launch reopens the newest readable project instead of starting an empty one', async () => {
+    const { saveProjectAtomic, getOrCreateStartupProject, listProjects } = await import('./projectStore')
+    const older = createNewProjectFile('Older')
+    await saveProjectAtomic(older)
+    await new Promise((r) => setTimeout(r, 15))
+    const newer = createNewProjectFile('Newer')
+    await saveProjectAtomic(newer)
+    await zeroOut(join(userDataDir, 'app-state.json'))
+
+    const reopened = await getOrCreateStartupProject()
+    expect(reopened.id).toBe(newer.id)
+    expect((await listProjects()).map((p) => p.name).sort()).toEqual(['Newer', 'Older'])
+    // ...and the note is written afresh, so the next launch needs no rescue.
+    expect(JSON.parse(await readFile(join(userDataDir, 'app-state.json'), 'utf-8')).lastProjectPath).toContain(newer.id)
+  })
+
+  it('with the open project itself zeroed (and no backup yet), launch reopens the next newest one', async () => {
+    const { saveProjectAtomic, getOrCreateStartupProject } = await import('./projectStore')
+    const kept = createNewProjectFile('Kept')
+    await saveProjectAtomic(kept)
+    await new Promise((r) => setTimeout(r, 15))
+    const lost = createNewProjectFile('Lost')
+    const lostPath = await saveProjectAtomic(lost)
+    await zeroOut(lostPath)
+
+    expect((await getOrCreateStartupProject()).id).toBe(kept.id)
+  })
+
+  it('two launches asking at the same moment get one project, not two', async () => {
+    const { getOrCreateStartupProject, listProjects } = await import('./projectStore')
+    const [first, second] = await Promise.all([getOrCreateStartupProject(), getOrCreateStartupProject()])
+    expect(second.id).toBe(first.id)
+    expect(await listProjects()).toHaveLength(1)
+  })
+
+  it('saves of one project made at the same moment all land, the last one winning', async () => {
+    const { saveProjectAtomic, loadProject } = await import('./projectStore')
+    const project = createNewProjectFile('Busy')
+    const paths = await Promise.all([1, 2, 3, 4, 5].map((n) => saveProjectAtomic({ ...project, name: `Save ${n}` })))
+    expect((await loadProject(paths[0])).name).toBe('Save 5')
+  })
+
+  it('a project moved to Trash and back keeps its backup with it', async () => {
+    const { saveProjectAtomic, trashProject, restoreProject, loadProject, deleteProjectForever } = await import('./projectStore')
+    const project = createNewProjectFile('Trashed')
+    const path = await saveProjectAtomic(project)
+    await saveProjectAtomic({ ...project, name: 'Trashed, later' })
+
+    await trashProject(project.id)
+    expect(existsSync(`${path}.bak`)).toBe(false)
+    await restoreProject(project.id)
+    await zeroOut(path)
+    expect((await loadProject(path)).name).toBe('Trashed')
+
+    await trashProject(project.id)
+    await deleteProjectForever(project.id)
+    expect(existsSync(join(userDataDir, 'Projects', 'Trash', `${project.id}.json.bak`))).toBe(false)
   })
 
   it('a project with a single clip loads compact (no empty Overlay/Graphics/Music/caption clutter), and reopening it repeatedly never grows the track list or reintroduces empty tracks', async () => {

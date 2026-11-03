@@ -6,7 +6,7 @@ const H = 90
 
 /** A noisy dark scene, a fixed logo top-left, and (optionally) a line of
  * bright "text" strokes at rows 74-79 whose columns change frame to frame. */
-function frame(seed: number, withText = true): Uint8Array {
+function frame(seed: number, withText = true, textRow = 74): Uint8Array {
   const f = new Uint8Array(W * H)
   let r = seed * 9301 + 49297
   const rand = (): number => ((r = (r * 9301 + 49297) % 233280) / 233280)
@@ -15,7 +15,7 @@ function frame(seed: number, withText = true): Uint8Array {
   if (withText) {
     const start = 40 + (seed % 5) * 3
     const end = 120 - (seed % 4) * 4
-    for (let y = 74; y < 80; y++) for (let x = start; x < end; x++) if ((x + seed) % 4 < 2) f[y * W + x] = 240
+    for (let y = textRow; y < textRow + 6; y++) for (let x = start; x < end; x++) if ((x + seed) % 4 < 2) f[y * W + x] = 240
   }
   return f
 }
@@ -29,6 +29,15 @@ describe('findSubtitleBand', () => {
     expect(band.y).toBeGreaterThan(0.6)
     expect(band.x).toBeLessThan(45 / W)
     expect(band.x + band.w).toBeGreaterThan(110 / W)
+  })
+
+  it('finds a line in the middle of the picture (the vertical AI-made dramas)', () => {
+    // Rows 41-46 of 90: centred on the middle, above the old lower-half search.
+    const band = findSubtitleBand(Array.from({ length: 12 }, (_, i) => frame(i + 1, true, 41)), W, H)!
+    expect(band).not.toBeNull()
+    expect(band.y).toBeLessThan(41 / H)
+    expect(band.y + band.h).toBeGreaterThan(47 / H)
+    expect(band.y).toBeGreaterThan(0.3)
   })
 
   it('nothing when there is no text', () => {

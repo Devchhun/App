@@ -4,8 +4,9 @@ import { CLIP_MOTION_PRESETS, clipMotionAt, clipMotionExprs, type ClipMotion } f
 /** Evaluates one of the ffmpeg expressions in JS: the same functions, the
  * frame's W/H, and `t`. */
 function evalExpr(expr: string, vars: { t: number; W: number; H: number; w?: number; h?: number }): number {
-  const js = expr.replace(/\bPI\b/g, 'Math.PI').replace(/\b(sin|abs|floor|max)\(/g, 'Math.$1(')
-  return new Function('t', 'W', 'H', 'w', 'h', `return ${js}`)(vars.t, vars.W, vars.H, vars.w ?? 0, vars.h ?? 0) as number
+  const js = expr.replace(/\bPI\b/g, 'Math.PI').replace(/\b(sin|abs|floor|max)\(/g, 'Math.$1(').replace(/\bclip\(/g, 'clip(')
+  const clip = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x))
+  return new Function('clip', 't', 'W', 'H', 'w', 'h', `return ${js}`)(clip, vars.t, vars.W, vars.H, vars.w ?? 0, vars.h ?? 0) as number
 }
 
 describe('clip motion', () => {
@@ -38,6 +39,35 @@ describe('clip motion', () => {
       reachedX = Math.max(reachedX, Math.abs(at.dx))
     }
     expect(reachedX).toBeGreaterThan((frame.width - picture.width) / 2 - 20)
+  })
+
+  it('runs up and down, left and right, and around the screen edge to edge, never leaving it', () => {
+    const picture = { width: 300, height: 180 }
+    const roomX = (frame.width - picture.width) / 2
+    const roomY = (frame.height - picture.height) / 2
+    // Up & Down / Left & Right start where the clip was put.
+    expect(clipMotionAt({ preset: 'updown', speed: 1, amount: 1 }, 0, frame, picture).dy).toBeCloseTo(0, 6)
+    expect(clipMotionAt({ preset: 'leftright', speed: 1, amount: 1 }, 0, frame, picture).dx).toBeCloseTo(0, 6)
+    const reach = (preset: ClipMotion['preset']): { x: number; y: number } => {
+      let x = 0
+      let y = 0
+      for (let t = 0; t < 24; t += 0.05) {
+        const at = clipMotionAt({ preset, speed: 1, amount: 1 }, t, frame, picture)
+        expect(Math.abs(at.dx)).toBeLessThanOrEqual(roomX + 1e-6)
+        expect(Math.abs(at.dy)).toBeLessThanOrEqual(roomY + 1e-6)
+        x = Math.max(x, Math.abs(at.dx))
+        y = Math.max(y, Math.abs(at.dy))
+      }
+      return { x, y }
+    }
+    expect(reach('updown')).toEqual({ x: 0, y: expect.closeTo(roomY, 0) })
+    expect(reach('leftright')).toEqual({ x: expect.closeTo(roomX, 0), y: 0 })
+    expect(reach('around')).toEqual({ x: expect.closeTo(roomX, 0), y: expect.closeTo(roomY, 0) })
+    // Around keeps to the edges: at every moment it is on one of them.
+    for (let t = 0; t < 12; t += 0.1) {
+      const at = clipMotionAt({ preset: 'around', speed: 1, amount: 1 }, t, frame, picture)
+      expect(Math.abs(Math.abs(at.dx) - roomX) < 1e-6 || Math.abs(Math.abs(at.dy) - roomY) < 1e-6).toBe(true)
+    }
   })
 
   it('keeps on from where an earlier piece of a long export stopped', () => {

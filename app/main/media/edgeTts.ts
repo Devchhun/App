@@ -1,12 +1,11 @@
 import { app } from 'electron'
 import { existsSync } from 'fs'
-import { mkdtemp } from 'fs/promises'
-import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { getBundledPythonPath } from '../ai/pythonRuntime'
 import { unreadableScriptFor, voiceLanguageOf } from '@shared/ttsLanguage'
 import { runInBackground } from './processPriority'
+import { createDubAudioWorkDir } from './dubAudioStore'
 
 /** python-worker/edge_tts_runner.py: edge_tts at 96 kbps instead of the
  * 48 kbps stream the library hard-codes. At 48 kbps every line carries MP3
@@ -173,10 +172,11 @@ export function runEdgeTtsLine(installDir: string, voice: string, text: string, 
   })
 }
 
-/** One temp directory per generation run, so each line's own mp3 gets a
- * stable, collision-free path (mirrors runVoxCpmBatch's own mkdtemp). */
+/** One directory per generation run, so each line's own mp3 gets a
+ * stable, collision-free path -- kept with the app's data, not in the temp
+ * folder: the lines go on the Timeline (see dubAudioStore.ts). */
 export async function createEdgeTtsWorkDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'edge-tts-'))
+  return createDubAudioWorkDir('edge-tts-')
 }
 
 export function edgeTtsOutputPath(workDir: string, index: number): string {

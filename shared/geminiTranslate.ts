@@ -50,6 +50,7 @@ RULES:
 - Output only the translation: no notes, explanations, original text, parentheses, quotation marks you were not given, or romanization.
 - An interjection or sound ("Ah!", "Hmm") becomes the natural ${targetLanguage} equivalent.
 - The lines are consecutive dialogue from one video; use neighbouring lines to resolve who is being addressed and what a short line means.
+- Some lines were read off the picture by OCR and may have a wrongly read character or two (a look-alike character, a stray letter or symbol). Where a line makes no sense as written, work out from its neighbours which word was meant and translate that; never translate the mistake literally, and never mention it.
 
 EARLIER LINES AND THEIR TRANSLATIONS (for consistent names and terms; do not translate these again):
 ${earlier}

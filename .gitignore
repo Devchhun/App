@@ -14,6 +14,8 @@ resources/python-runtime/*
 !resources/python-runtime/.gitkeep
 # Demucs (htdemucs) separation weights -- shipped via electron-builder extraResources, never committed.
 resources/demucs-models/*.th
+# The Cast window's speaker-recognition and face-detection networks -- shipped the same way, fetched by the app when missing.
+resources/cast-models/*.onnx
 
 # License signing private key -- never commit
 admin-panel/signing-key.private.json
@@ -27,3 +29,9 @@ admin-panel/
 # Creative AI Downloader: binaries staged by downloader/scripts/fetch-bin.cjs, and its installer output.
 downloader/bin/
 dist-downloader/
+
+# Local scratch: test browser profiles, emulator backups, vite's temporary config copies, Python caches.
+.tmp-chrome-subtitle/
+scratch/
+electron.vite.config.*.mjs
+__pycache__/

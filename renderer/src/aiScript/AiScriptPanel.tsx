@@ -4,8 +4,11 @@ import { useAiSuggestions } from '../suggestions/AiSuggestionsContext'
 import { useUiState } from '../nav/UiStateContext'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { MicrophoneIcon } from '../nav/icons'
-import { CustomVoiceReference } from '../dubbing/CustomVoiceReference'
-import { SCRIPT_CHANGED_EVENT } from './useRecapNarration'
+import { SCRIPT_CHANGED_EVENT, markRecapScriptFilled, recapScriptWasFilled } from './useRecapNarration'
+import { NarratorVoicePanel } from './NarratorVoicePanel'
+import { useScenes } from '../scenes/SceneContext'
+import { useSequence } from '../sequence/SequenceContext'
+import { mangaScriptFromScenes } from '../manga/mangaScript'
 import { loadStoryNarratorVoiceId, subscribeSavedVoices, subscribeStoryNarrator, narratorDisplayName } from '../dubbing/savedVoices'
 import type { ScriptTransformMode, GenerateSuggestionsError } from '@shared/suggestions'
 
@@ -110,6 +113,19 @@ export function AiScriptPanel(): JSX.Element {
     return () => window.removeEventListener(SCRIPT_CHANGED_EVENT, refreshExternalScript)
   }, [projectId])
 
+  // An AI Manga recap made before AI Manga wrote its script here: an empty
+  // box takes the recap from its subtitles, once.
+  const { scenesByMedia } = useScenes()
+  const { sequence } = useSequence()
+  useEffect(() => {
+    if (text || busy || recapScriptWasFilled(projectId)) return
+    const pictureStarts = sequence.clips.filter((c) => c.type === 'image').map((c) => c.startTime)
+    const script = mangaScriptFromScenes(Object.values(scenesByMedia).flat(), pictureStarts)
+    if (!script) return
+    markRecapScriptFilled(projectId)
+    setText(script)
+  }, [text, busy, projectId, scenesByMedia, sequence.clips])
+
   // Cancel whatever is in flight if the panel goes away mid-request.
   useEffect(() => {
     return () => {
@@ -171,13 +187,13 @@ export function AiScriptPanel(): JSX.Element {
     <div className="ai-script-panel">
       <div className="ai-script-card">
         <div className="ai-script-head">
-          {/* The badge is the My Voice toggle: record / choose your own
-              voice for narrating the story (see CustomVoiceReference's
-              'script' variant below). */}
+          {/* The badge opens the Narrator voice panel, floating over the
+              editor: the engine and voice that read this script, your own
+              recorded voice, and Generate voice. */}
           <button
             type="button"
             className={voiceOpen ? 'ai-script-badge ai-script-badge-active ai-script-badge-open' : 'ai-script-badge ai-script-badge-active'}
-            title={voiceOpen ? 'Hide My Voice' : 'My Voice / សម្លេងខ្ញុំ -- record or choose your own voice to narrate the story'}
+            title={voiceOpen ? 'Close Narrator voice' : 'Narrator voice / សំឡេងនិទាន -- choose the voice (VoxCPM2, Edge TTS, KiriTTS) and generate'}
             aria-pressed={voiceOpen}
             onClick={() => setVoiceOpen((v) => !v)}
           >
@@ -202,18 +218,7 @@ export function AiScriptPanel(): JSX.Element {
           </button>
         )}
 
-        {voiceOpen && (
-          <div className="ai-script-voice-drawer">
-            <div className="ai-script-voice-drawer-head">
-              <MicrophoneIcon size={13} />
-              <span>My Voice / សម្លេងខ្ញុំ</span>
-              <button type="button" className="ai-script-voice-drawer-close" title="Close" onClick={() => setVoiceOpen(false)}>
-                ×
-              </button>
-            </div>
-            <CustomVoiceReference variant="script" />
-          </div>
-        )}
+        {voiceOpen && <NarratorVoicePanel onClose={() => setVoiceOpen(false)} />}
 
         <textarea
           ref={textareaRef}
