@@ -1,4 +1,8 @@
 import { spawn, type ChildProcess } from 'child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { fitCommandLine } from './ffmpegArgs'
 import { ffmpegPath } from './ffmpeg'
 import { parseFfmpegProgressPercent } from './ffmpegProgress'
 import { runInBackground } from './processPriority'
@@ -81,7 +85,19 @@ export function ffmpegFailureMessage(problemLines: string[], stderr: string, cod
 
 export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptions = {}): Promise<RunFfmpegResult> {
   return new Promise((resolve, reject) => {
-    const proc = runInBackground(spawn(ffmpegPath, args))
+    // A filter graph too long for a Windows command line is read from a
+    // file (see ffmpegArgs.ts), removed again when ffmpeg is done.
+    let scriptDir: string | null = null
+    const fitted = fitCommandLine(ffmpegPath, args, (graph) => {
+      scriptDir ??= mkdtempSync(join(tmpdir(), 'ffmpeg-graph-'))
+      const file = join(scriptDir, `graph-${Math.random().toString(36).slice(2)}.txt`)
+      writeFileSync(file, graph, 'utf8')
+      return file
+    })
+    const cleanUp = (): void => {
+      if (scriptDir) rmSync(scriptDir, { recursive: true, force: true })
+    }
+    const proc = runInBackground(spawn(ffmpegPath, fitted))
     activeJobs.set(jobId, proc)
 
     const stdoutChunks: Buffer[] = []
@@ -143,6 +159,7 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
 
     proc.on('error', (err) => {
       clearTimeout(stallTimer)
+      cleanUp()
       activeJobs.delete(jobId)
       canceledJobs.delete(jobId)
       reject(err)
@@ -150,6 +167,7 @@ export function runFfmpeg(jobId: string, args: string[], options: RunFfmpegOptio
 
     proc.on('close', (code) => {
       clearTimeout(stallTimer)
+      cleanUp()
       activeJobs.delete(jobId)
       const wasCanceled = canceledJobs.delete(jobId)
       if (timedOut) {

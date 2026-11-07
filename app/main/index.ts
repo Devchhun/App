@@ -13,6 +13,7 @@ import { registerDubbingIpc } from './ipc/dubbing'
 import { registerVideoStoryNarrationIpc } from './ipc/videoStoryNarration'
 import { registerAiAnimationIpc } from './ipc/aiAnimation'
 import { registerMangaIpc } from './ipc/manga'
+import { registerAiEditingIpc } from './ipc/aiEditing'
 import { registerVocalRemovalIpc } from './ipc/vocalRemoval'
 import { registerReframeIpc } from './ipc/reframe'
 import { registerKiriIpc } from './ipc/kiri'
@@ -161,6 +162,7 @@ app.whenReady().then(() => {
   registerVideoStoryNarrationIpc()
   registerAiAnimationIpc()
   registerMangaIpc()
+  registerAiEditingIpc()
   registerVocalRemovalIpc()
   registerReframeIpc()
   registerKiriIpc()

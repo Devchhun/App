@@ -16,7 +16,7 @@ import { cancelVideoStoryNarration, generateVideoStoryNarration, regenerateVideo
 import { buildStoryOutline, cancelStoryRecap, writeRecapScript } from '../ai/storyRecapService'
 import { loadStoryLibrary, saveStoryLibrary } from '../ai/storyLibraryStore'
 import { CanceledError } from '../media/jobRunner'
-import { clearGeminiApiKey, hasGeminiApiKey, setGeminiApiKey } from '../ai/geminiApiKeyStore'
+import { checkGeminiApiKeys, clearGeminiApiKey, geminiRouterStatus, hasGeminiApiKey, setGeminiApiKey, testGeminiRouterKeys } from '../ai/geminiApiKeyStore'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.name === 'AbortError') return 'Canceled'
@@ -27,6 +27,9 @@ export function registerVideoStoryNarrationIpc(): void {
   ipcMain.handle(VIDEO_STORY_NARRATION_IPC.hasApiKey, () => hasGeminiApiKey())
   ipcMain.handle(VIDEO_STORY_NARRATION_IPC.setApiKey, (_event, key: string) => setGeminiApiKey(String(key ?? '')))
   ipcMain.handle(VIDEO_STORY_NARRATION_IPC.clearApiKey, () => clearGeminiApiKey())
+  ipcMain.handle(VIDEO_STORY_NARRATION_IPC.checkApiKeys, () => checkGeminiApiKeys())
+  ipcMain.handle(VIDEO_STORY_NARRATION_IPC.routerStatus, () => geminiRouterStatus())
+  ipcMain.handle(VIDEO_STORY_NARRATION_IPC.testRouterKeys, () => testGeminiRouterKeys())
 
   ipcMain.handle(VIDEO_STORY_NARRATION_IPC.analyze, async (event, request: VideoStoryNarrationRequest): Promise<VideoStoryNarrationIpcResult> => {
     try {

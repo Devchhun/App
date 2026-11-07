@@ -1,0 +1,157 @@
+/* The Router screen (geminiRouterView.tsx). Its own look on both apps, whatever
+   theme is around it. The world is the picture; everything else stays quiet.
+   Colour appears only where a key's state needs saying. */
+.grt {
+  --grt-active: #4cc38a;
+  --grt-ready: #8d9aab;
+  --grt-minute: #e2c044;
+  --grt-quota: #e08a3c;
+  --grt-refused: #ee6a62;
+  --grt-text: #e4e8ee;
+  --grt-dim: #8a95a5;
+  --grt-faint: rgba(228, 232, 238, 0.09);
+  --grt-sea: #0b0e13;
+  --grt-surface: #161b22;
+  --grt-mono: ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  color: var(--grt-text);
+  background: var(--grt-sea);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+.grt *, .grt *::before, .grt *::after { box-sizing: border-box; }
+.grt button { font: inherit; cursor: pointer; }
+.grt button:focus-visible, .grt-win-title:focus-visible { outline: 2px solid var(--grt-text); outline-offset: -2px; }
+.grt-bg-active { background: var(--grt-active); }
+.grt-bg-ready { background: var(--grt-ready); }
+.grt-bg-minute { background: var(--grt-minute); }
+.grt-bg-quota { background: var(--grt-quota); }
+.grt-bg-refused { background: var(--grt-refused); }
+.grt-fg-text { color: var(--grt-text); }
+.grt-fg-minute { color: var(--grt-minute); }
+.grt-fg-quota { color: var(--grt-quota); }
+.grt-fg-refused { color: var(--grt-refused); }
+
+.grt-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 46px; padding: 8px 10px 8px 16px; }
+.grt-name { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.grt-status { color: var(--grt-dim); white-space: nowrap; }
+.grt-status.is-down { color: var(--grt-refused); }
+.grt-head-gap { flex: 1; }
+.grt-btn, .grt-seg button { min-height: 30px; padding: 0 10px; border: 0; border-radius: 6px; color: var(--grt-dim); background: transparent; white-space: nowrap; }
+.grt-btn:hover, .grt-seg button:hover { color: var(--grt-text); background: var(--grt-faint); }
+.grt-seg { display: flex; gap: 2px; }
+.grt-seg button.is-on { color: var(--grt-text); background: var(--grt-faint); }
+.grt-close { width: 32px; padding: 0; font-size: 18px !important; line-height: 1; }
+
+.grt-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.grt-canvas { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.grt-canvas.is-grabbing { cursor: grabbing; }
+.grt-canvas canvas, .grt-canvas svg { position: absolute; inset: 0; display: block; }
+
+.grt-link { fill: none; stroke: rgba(228, 232, 238, 0.2); stroke-width: 1; pointer-events: none; }
+.grt-link-active { stroke: var(--grt-active); stroke-width: 1.5; }
+.grt-link-minute { stroke: var(--grt-minute); stroke-dasharray: 1 5; stroke-linecap: round; }
+.grt-link-quota { stroke: var(--grt-quota); stroke-dasharray: 1 5; stroke-linecap: round; }
+.grt-link-refused { stroke: var(--grt-refused); stroke-dasharray: 1 5; stroke-linecap: round; }
+.grt-pulse { fill: var(--grt-text); offset-rotate: 0deg; opacity: 0; pointer-events: none; animation: grt-run 0.8s ease-in-out forwards; }
+@keyframes grt-run {
+  0% { offset-distance: 0%; opacity: 1; }
+  90% { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+
+/* An invisible circle larger than the mark: easy to hit with a finger. */
+.grt-hit { fill: transparent; }
+.grt-hub { cursor: grab; outline: none; }
+.grt-hub-ring { fill: var(--grt-sea); stroke: var(--grt-text); stroke-width: 1.5; }
+.grt-hub-core { fill: var(--grt-text); pointer-events: none; }
+.grt-node { color: var(--grt-ready); cursor: grab; outline: none; }
+.grt-canvas.is-grabbing .grt-node, .grt-canvas.is-grabbing .grt-hub { cursor: grabbing; }
+.grt-node-active { color: var(--grt-active); }
+.grt-node-minute { color: var(--grt-minute); }
+.grt-node-quota { color: var(--grt-quota); }
+.grt-node-refused { color: var(--grt-refused); }
+.grt-node-disc { fill: var(--grt-sea); stroke: currentColor; stroke-width: 1.5; }
+.grt-node:hover .grt-node-disc { fill: var(--grt-surface); }
+.grt-node.is-selected .grt-node-disc { fill: currentColor; }
+.grt-node.is-selected .grt-node-num { fill: var(--grt-sea); }
+.grt-node:focus-visible .grt-node-disc, .grt-hub:focus-visible .grt-hub-ring { stroke: #fff; stroke-width: 2.5; }
+.grt-node-num { fill: currentColor; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+.grt-node-label { display: none; fill: var(--grt-text); font-family: var(--grt-mono); font-size: 10.5px; paint-order: stroke; stroke: var(--grt-sea); stroke-width: 3px; pointer-events: none; }
+.grt-node:hover .grt-node-label, .grt-node.is-selected .grt-node-label { display: block; }
+.is-behind { opacity: 0.18; pointer-events: none; }
+.grt-empty { position: absolute; left: 50%; top: 42%; width: min(84%, 300px); margin: 0; transform: translateX(-50%); color: var(--grt-dim); text-align: center; pointer-events: none; }
+
+.grt-zoom { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: flex; flex-direction: column; overflow: hidden; border-radius: 8px; background: var(--grt-surface); cursor: default; }
+.grt-zoom button { width: 32px; height: 30px; padding: 0; border: 0; color: var(--grt-dim); background: transparent; font-size: 16px !important; line-height: 1; }
+.grt-zoom button:hover { color: var(--grt-text); background: var(--grt-faint); }
+
+.grt-win { display: flex; flex-direction: column; min-height: 0; border-radius: 10px; background: var(--grt-surface); }
+.grt-win.is-floating { position: absolute; }
+.grt-win-title { flex: none; padding: 11px 14px 5px; color: var(--grt-dim); font-size: 12px; user-select: none; -webkit-user-select: none; }
+.is-floating > .grt-win-title { cursor: move; touch-action: none; }
+.is-floating > .grt-win-title:hover { color: var(--grt-text); }
+.grt-win-body { flex: 1; min-height: 0; padding: 0 6px 8px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--grt-faint) transparent; }
+/* Sized from an invisible corner; it shows only when the pointer comes near. */
+.grt-win-grip { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; opacity: 0; background: linear-gradient(135deg, transparent 62%, var(--grt-dim) 62%, var(--grt-dim) 70%, transparent 70%, transparent 82%, var(--grt-dim) 82%, var(--grt-dim) 90%, transparent 90%); transition: opacity 0.12s; }
+.grt-win:hover .grt-win-grip { opacity: 0.7; }
+
+.grt-keys { margin: 0; padding: 0; list-style: none; }
+.grt-key { display: grid; grid-template-columns: 8px 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--grt-text); background: transparent; text-align: left; }
+.grt-key:hover, .is-selected > .grt-key { background: var(--grt-faint); }
+.grt-mark { width: 7px; height: 7px; border-radius: 50%; }
+.grt-key-num { color: var(--grt-dim); font-variant-numeric: tabular-nums; text-align: right; }
+.grt-key-name { font-family: var(--grt-mono); font-size: 12px; }
+.grt-key-state { color: var(--grt-dim); font-size: 12px; white-space: nowrap; }
+.grt-state-active { color: var(--grt-active); }
+.grt-state-minute { color: var(--grt-minute); }
+.grt-state-quota { color: var(--grt-quota); }
+.grt-state-refused { color: var(--grt-refused); }
+.grt-detail { display: grid; gap: 2px; margin: 4px 0 8px; padding: 0 8px 0 40px; }
+.grt-detail div { display: flex; justify-content: space-between; gap: 12px; }
+.grt-detail dt { color: var(--grt-dim); font-size: 12px; }
+.grt-detail dd { margin: 0; font-family: var(--grt-mono); font-size: 11.5px; text-align: right; overflow-wrap: anywhere; }
+.grt-keys-foot { display: grid; gap: 7px; margin-top: 8px; padding: 0 8px 2px; }
+.grt-keys-foot small { color: var(--grt-dim); font-size: 11.5px; }
+.grt-test { width: 100%; min-height: 32px; padding: 0 8px; border: 0; border-radius: 6px; color: var(--grt-text); background: var(--grt-faint); }
+.grt-test:hover:not(:disabled) { background: rgba(228, 232, 238, 0.16); }
+.grt-test:disabled { cursor: default; opacity: 0.5; }
+
+.grt-quiet { margin: 0; padding: 0 8px 4px; color: var(--grt-dim); font-size: 12px; }
+.grt-log { margin: 0; padding: 0 8px; list-style: none; font-size: 12px; }
+.grt-log li { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 0 9px; padding: 3px 0; color: var(--grt-dim); }
+.grt-log time, .grt-log b { font-family: var(--grt-mono); font-size: 11px; font-weight: 400; line-height: 1.55; }
+.grt-log span { overflow-wrap: anywhere; }
+
+/* A phone: the world first, the panels stacked under it, all of it scrolling. */
+@media (max-width: 760px) {
+  .grt { display: block; height: auto; min-height: 100%; overflow: visible; }
+  .grt-head { padding: 8px 8px 8px 14px; }
+  .grt-head-gap { flex-basis: 100%; height: 0; order: 1; }
+  .grt-seg { order: 2; }
+  .grt-btn { order: 3; }
+  .grt-close { order: 0; margin-left: auto; width: 36px; }
+  .grt-btn, .grt-seg button { min-height: 36px; }
+  .grt-stage { display: flex; flex-direction: column; height: auto; overflow: visible; padding: min(88vw, 420px) 0 16px; }
+  .grt-canvas { bottom: auto; height: min(88vw, 420px); }
+  .grt-zoom button { width: 40px; height: 38px; }
+  .grt-win { margin: 10px 10px 0; }
+  .grt-win-body { overflow: visible; }
+  .grt-win-activity .grt-win-body { max-height: 280px; overflow: auto; }
+  .grt-key { min-height: 42px; }
+  .grt-test { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grt-pulse { animation: none; }
+}
+
+.grt-failed { align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
+.grt-failed p { max-width: 460px; margin: 0; color: var(--grt-dim); overflow-wrap: anywhere; }
+.grt-failed div { display: flex; gap: 8px; width: min(280px, 100%); margin-top: 6px; }

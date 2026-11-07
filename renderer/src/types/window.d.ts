@@ -262,8 +262,11 @@ declare global {
       }
       videoStoryNarration: {
         hasApiKey: () => Promise<boolean>
-        setApiKey: (key: string) => Promise<void>
+        setApiKey: (key: string) => Promise<number>
         clearApiKey: () => Promise<void>
+        checkApiKeys: () => Promise<{ mask: string; state: 'ok' | 'refused' | 'unknown'; note: string }[]>
+        routerStatus: () => Promise<import('@shared/geminiKeyPool').GeminiRouterSnapshot>
+        testRouterKeys: () => Promise<import('@shared/geminiKeyPool').GeminiRouterSnapshot>
         analyze: (request: VideoStoryNarrationRequest) => Promise<VideoStoryNarrationIpcResult>
         buildOutline: (request: StoryOutlineRequest) => Promise<StoryOutlineIpcResult>
         writeScript: (request: StoryScriptRequest) => Promise<VideoStoryNarrationIpcResult>
@@ -284,12 +287,32 @@ declare global {
       }
       manga: {
         pickImages: () => Promise<string[]>
+        thumbs: (paths: string[]) => Promise<string[]>
+        episodes: (link: string) => Promise<import('@shared/mangaRecap').MangaEpisodesResult>
         getChapter: (jobId: string, pageUrl: string) => Promise<import('@shared/mangaRecap').MangaScenesResult>
         cutScenes: (jobId: string, paths: string[]) => Promise<import('@shared/mangaRecap').MangaScenesResult>
         backdrops: (jobId: string, paths: string[]) => Promise<string[]>
         generate: (request: import('@shared/mangaRecap').MangaRequest) => Promise<import('@shared/mangaRecap').MangaIpcResult>
         cancel: (jobId: string) => Promise<boolean>
         onProgress: (callback: (progress: import('@shared/mangaRecap').MangaProgress) => void) => (() => void)
+      }
+      aiEditing: {
+        listProjects: () => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProjectSummary[]>>
+        createProject: (name: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        getProject: (id: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject | null>>
+        deleteProject: (id: string) => Promise<import('@shared/aiEditing').AiEditResult<true>>
+        renameProject: (id: string, name: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        pickVideo: (title: string) => Promise<string | null>
+        pickVideos: (title: string) => Promise<string[]>
+        pickVideoFolder: (title: string) => Promise<string[]>
+        addPair: (projectId: string, original: string, edited: string, options?: { name?: string; narrationAudioPath?: string; scriptPath?: string }) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        addPairs: (projectId: string, originals: string[], editeds: string[]) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        removePair: (projectId: string, pairId: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        analyzePair: (projectId: string, pairId: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        transcribeNarration: (projectId: string, pairId: string, modelId: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProject>>
+        autoEdit: (projectId: string, sourceVideoPath: string, narrationPath: string, modelId: string) => Promise<import('@shared/aiEditing').AiEditResult<import('@shared/autoEdit').AutoEditResult>>
+        cancelAnalyze: (pairId: string) => Promise<boolean>
+        onProgress: (callback: (progress: import('@shared/aiEditing').AiEditProgress) => void) => (() => void)
       }
       translation: {
         previewTranslation: (segments: TranscriptSegment[]) => Promise<CloudRequestPreview>

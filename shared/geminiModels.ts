@@ -108,9 +108,10 @@ export function isDailyQuotaError(text: string): boolean {
   return wait !== null && wait > 10 * 60 * 1000
 }
 
-/** Google's "this model is overloaded right now" (503). */
+/** Google's "this model is overloaded right now" (503). UNAVAILABLE only as
+ * the capital status name: a refusal can link to "...#project-unavailable". */
 export function isBusyModelError(text: string): boolean {
-  return /high demand|overloaded|UNAVAILABLE|503/i.test(text)
+  return /high demand|overloaded|\b503\b/i.test(text) || /UNAVAILABLE/.test(text)
 }
 
 /** Every model that can stand in for `preferred` when it is retired, out of

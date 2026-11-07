@@ -4,6 +4,7 @@ import type { CastScanLine, CastScanProgress, CastScanRequest, CastScanResult } 
 import type { ExportOverlay } from '@shared/videoOverlay'
 import { AI_ANIMATION_IPC, type AnimationIpcResult, type AnimationProgress, type AnimationRequest } from '@shared/aiAnimation'
 import { MANGA_IPC, type MangaIpcResult, type MangaProgress, type MangaRequest, type MangaScenesResult } from '@shared/mangaRecap'
+import { AI_EDIT_IPC } from '@shared/aiEditing'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { MEDIA_IPC } from '@shared/media'
@@ -400,8 +401,11 @@ const dubbingApi = {
 
 const videoStoryNarrationApi = {
   hasApiKey: (): Promise<boolean> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.hasApiKey),
-  setApiKey: (key: string): Promise<void> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.setApiKey, key),
+  setApiKey: (key: string): Promise<number> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.setApiKey, key),
   clearApiKey: (): Promise<void> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.clearApiKey),
+  checkApiKeys: (): Promise<{ mask: string; state: 'ok' | 'refused' | 'unknown'; note: string }[]> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.checkApiKeys),
+  routerStatus: (): Promise<import('@shared/geminiKeyPool').GeminiRouterSnapshot> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.routerStatus),
+  testRouterKeys: (): Promise<import('@shared/geminiKeyPool').GeminiRouterSnapshot> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.testRouterKeys),
   analyze: (request: VideoStoryNarrationRequest): Promise<VideoStoryNarrationIpcResult> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.analyze, request),
   buildOutline: (request: StoryOutlineRequest): Promise<StoryOutlineIpcResult> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.buildOutline, request),
   writeScript: (request: StoryScriptRequest): Promise<VideoStoryNarrationIpcResult> => ipcRenderer.invoke(VIDEO_STORY_NARRATION_IPC.writeScript, request),
@@ -428,6 +432,32 @@ const aiAnimationApi = {
     ipcRenderer.on(AI_ANIMATION_IPC.progress, listener)
     return () => ipcRenderer.removeListener(AI_ANIMATION_IPC.progress, listener)
   }
+}
+
+const aiEditingApi = {
+  listProjects: (): Promise<import('@shared/aiEditing').AiEditResult<import('@shared/aiEditing').TrainingProjectSummary[]>> =>
+    ipcRenderer.invoke(AI_EDIT_IPC.listProjects),
+  createProject: (name: string) => ipcRenderer.invoke(AI_EDIT_IPC.createProject, name),
+  getProject: (id: string) => ipcRenderer.invoke(AI_EDIT_IPC.getProject, id),
+  deleteProject: (id: string) => ipcRenderer.invoke(AI_EDIT_IPC.deleteProject, id),
+  renameProject: (id: string, name: string) => ipcRenderer.invoke(AI_EDIT_IPC.renameProject, id, name),
+  pickVideo: (title: string): Promise<string | null> => ipcRenderer.invoke(AI_EDIT_IPC.pickVideo, title),
+  pickVideos: (title: string): Promise<string[]> => ipcRenderer.invoke(AI_EDIT_IPC.pickVideos, title),
+  pickVideoFolder: (title: string): Promise<string[]> => ipcRenderer.invoke(AI_EDIT_IPC.pickVideoFolder, title),
+  addPair: (projectId: string, original: string, edited: string, options?: { name?: string; narrationAudioPath?: string; scriptPath?: string }) =>
+    ipcRenderer.invoke(AI_EDIT_IPC.addPair, projectId, original, edited, options ?? {}),
+  addPairs: (projectId: string, originals: string[], editeds: string[]) => ipcRenderer.invoke(AI_EDIT_IPC.addPairs, projectId, originals, editeds),
+  removePair: (projectId: string, pairId: string) => ipcRenderer.invoke(AI_EDIT_IPC.removePair, projectId, pairId),
+  analyzePair: (projectId: string, pairId: string) => ipcRenderer.invoke(AI_EDIT_IPC.analyzePair, projectId, pairId),
+  transcribeNarration: (projectId: string, pairId: string, modelId: string) => ipcRenderer.invoke(AI_EDIT_IPC.transcribeNarration, projectId, pairId, modelId),
+  autoEdit: (projectId: string, sourceVideoPath: string, narrationPath: string, modelId: string): Promise<import('@shared/aiEditing').AiEditResult<import('@shared/autoEdit').AutoEditResult>> =>
+    ipcRenderer.invoke(AI_EDIT_IPC.autoEdit, projectId, sourceVideoPath, narrationPath, modelId),
+  cancelAnalyze: (pairId: string): Promise<boolean> => ipcRenderer.invoke(AI_EDIT_IPC.cancelAnalyze, pairId),
+  onProgress: (callback: (progress: import('@shared/aiEditing').AiEditProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: import('@shared/aiEditing').AiEditProgress): void => callback(progress)
+    ipcRenderer.on(AI_EDIT_IPC.progress, listener)
+    return () => ipcRenderer.removeListener(AI_EDIT_IPC.progress, listener)
+  },
 }
 
 const mangaApi = {
@@ -463,6 +493,7 @@ const api = {
   videoStoryNarration: videoStoryNarrationApi,
   aiAnimation: aiAnimationApi,
   manga: mangaApi,
+  aiEditing: aiEditingApi,
   translation: translationApi,
   vocalRemoval: vocalRemovalApi,
   reframe: reframeApi,

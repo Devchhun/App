@@ -29,12 +29,14 @@ describe('batchPrompt', () => {
     expect(prompt).toContain('Never tell an event before its picture comes')
     expect(prompt).toContain('Name a character only when')
     expect(prompt).toContain('A picture with no one in it')
+    expect(prompt).toContain('publisher')
   })
 
   it('carries a long video from chapter to chapter without new openings or goodbyes', () => {
     const middle = batchPrompt('km', '', 'Ye Tian got the copy system.', 0, 30, 30, 1, { continues: true, more: true })
     expect(middle).toContain('follows straight on in the same video from the chapter before')
     expect(middle).toContain('end this one mid-story')
+    expect(middle).toContain('cover of the comic again')
     expect(middle).not.toContain('opens the video')
     expect(middle).not.toContain('wants the next episode')
   })

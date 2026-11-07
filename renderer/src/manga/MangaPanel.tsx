@@ -28,6 +28,8 @@ import { MANGA_SUBTITLE_REASON, mangaScriptFromPassages } from './mangaScript'
  * mangaPlacement.ts. */
 
 const FORM_KEY = 'cae-ai-manga-form-v1'
+/** Per project: the story so far of its manga video (MangaResult.storySoFar). */
+const STORY_KEY = 'cae-ai-manga-story-v1:'
 
 interface FormState { voice: string; language: MangaLanguage; notes: string; subtitles: boolean; layout: MangaLayout; layoutPicked?: boolean; grid: 'small' | 'large'; compact: boolean }
 const DEFAULT_FORM: FormState = { voice: '', language: 'km', notes: '', subtitles: true, layout: 'single', grid: 'small', compact: false }
@@ -221,7 +223,27 @@ export function MangaPanel(): JSX.Element {
 
   const generate = async (): Promise<void> => {
     if (chosenChapters.length > 1) return void makeChapters(chosenChapters)
-    await makeChapter(panels, {})
+    const before = storyBefore()
+    await makeChapter(panels, before ? { storySoFar: before, continues: true } : {})
+  }
+
+  /** The story told so far in this project's manga video (the last chapter
+   * made onto it), when its Timeline still has pictures: a chapter made
+   * later carries straight on -- no new opening, the same names. */
+  const storyBefore = (): string => {
+    if (!sequence.clips.some((c) => c.type === 'image')) return ''
+    try {
+      return localStorage.getItem(`${STORY_KEY}${projectId ?? 'draft'}`) ?? ''
+    } catch {
+      return ''
+    }
+  }
+  const rememberStory = (story: string): void => {
+    try {
+      if (story) localStorage.setItem(`${STORY_KEY}${projectId ?? 'draft'}`, story)
+    } catch {
+      // Not remembered: a later chapter starts its own story.
+    }
   }
 
   /** One chapter: written, voiced and placed after what is on the Timeline.
@@ -250,7 +272,9 @@ export function MangaPanel(): JSX.Element {
     const placedOk = new Promise<boolean>((resolve) => { placedRef.current = resolve })
     setPlacing(true)
     void importPaths(jobFiles(pending.current))
-    return (await placedOk) ? (answer.data.storySoFar ?? '') : null
+    if (!(await placedOk)) return null
+    rememberStory(answer.data.storySoFar ?? '')
+    return answer.data.storySoFar ?? ''
   }
 
   /** Several chapters, one after another, into one long video: each one
@@ -258,7 +282,8 @@ export function MangaPanel(): JSX.Element {
    * from the story so far, and placed after the one before. */
   const makeChapters = async (chapters: MangaEpisode[]): Promise<void> => {
     stopRunRef.current = false
-    let story = ''
+    let story = storyBefore()
+    const continuing = !!story
     let made = 0
     for (const [k, chapter] of chapters.entries()) {
       if (stopRunRef.current) break
@@ -282,7 +307,7 @@ export function MangaPanel(): JSX.Element {
         setLoadedUrl(chapter.url)
       }
       if (stopRunRef.current) break
-      const next = await makeChapter(paths, { storySoFar: story, continues: k > 0, more: k < chapters.length - 1 })
+      const next = await makeChapter(paths, { storySoFar: story, continues: k > 0 || continuing, more: k < chapters.length - 1 })
       if (next === null) {
         if (stopRunRef.current) break
         setError((current) => `${chapter.title}: ${current ?? 'it could not be made'} ${made} chapter(s) are on the Timeline.`)

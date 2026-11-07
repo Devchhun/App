@@ -1,4 +1,4 @@
-export type SettingsCategoryId = 'appearance' | 'transcription' | 'apiKeys' | 'aiSuggestions' | 'localAi' | 'story' | 'voice' | 'license' | 'updates' | 'about'
+export type SettingsCategoryId = 'appearance' | 'transcription' | 'apiKeys' | 'aiSuggestions' | 'localAi' | 'story' | 'aiEditing' | 'voice' | 'license' | 'updates' | 'about'
 
 export interface SettingsCategory {
   id: SettingsCategoryId
@@ -24,6 +24,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
   { id: 'aiSuggestions', label: 'AI Suggestions', icon: 'sparkle', keywords: 'ai suggestions generate graphics cloud anthropic claude titles captions', kind: 'tool' },
   { id: 'localAi', label: 'Local AI Planner', icon: 'chip', keywords: 'local ai planner ollama scene plan model offline', kind: 'tool' },
   { id: 'story', label: 'Story Visuals', icon: 'story', keywords: 'story visuals narrative graph connected scenes', kind: 'tool' },
+  { id: 'aiEditing', label: 'Learn My Editing', icon: 'sparkle', keywords: 'ai edit editing style learn train auto cut footage reverse analyse analysis pairs original edited khmer narration pacing', kind: 'tool' },
   { id: 'voice', label: 'Voice Engine', icon: 'voice', keywords: 'voxcpm edge tts dubbing ai voice engine device gpu cuda cpu install folder python' },
   { id: 'license', label: 'License', icon: 'license', keywords: 'license key activate activation machine id serial expire plan deactivate' },
   { id: 'updates', label: 'Updates', icon: 'updates', keywords: 'update version upgrade download install release' },

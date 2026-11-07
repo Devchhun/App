@@ -4,6 +4,7 @@ import { SettingsPanel } from './SettingsPanel'
 import { AiSuggestionsPanel } from '../suggestions/AiSuggestionsPanel'
 import { LocalAiPanel } from '../localAi/LocalAiPanel'
 import { StoryVisualsPanel } from '../story/StoryVisualsPanel'
+import { AiEditingPanel } from '../aiEditing/AiEditingPanel'
 import { SettingsIcon, SunIcon, TranscriptIcon, SparkleIcon, ChipIcon, StoryIcon, MicrophoneIcon, UpdateIcon, HelpIcon, LockIcon } from './icons'
 import { SETTINGS_CATEGORIES, isToolCategory, matchSettingsCategories, type SettingsCategoryId } from './settingsSections'
 
@@ -29,6 +30,8 @@ function ToolPanel({ category }: { category: SettingsCategoryId }): JSX.Element 
       return <LocalAiPanel />
     case 'story':
       return <StoryVisualsPanel />
+    case 'aiEditing':
+      return <AiEditingPanel />
     default:
       return null
   }

@@ -3690,6 +3690,14 @@ body {
 .gemini-key-status.ready { border-color: rgba(47, 211, 196, 0.32); color: #66e1d3; background: rgba(47, 211, 196, 0.08); }
 .gemini-key-form { display: flex; align-items: center; gap: 8px; }
 .gemini-key-form input { flex: 1; min-width: 0; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+.gemini-key-head-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.gemini-key-card .settings-row-hint { max-width: none; margin-top: 0; line-height: 1.5; }
+.gemini-key-form textarea { flex: 1; min-width: 0; height: auto; resize: none; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; -webkit-text-security: disc; }
+.gemini-key-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.gemini-key-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--surface-elevated); font-size: 11px; }
+.gemini-key-row code { color: var(--text); font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 11px; }
+.gemini-key-row.ok span { color: #66e1d3; }
+.gemini-key-row.refused span { color: #ff8a8a; }
 .gemini-key-form .settings-button { flex-shrink: 0; }
 
 /* Second line under a row label for the explanation that doesn't belong
@@ -22216,8 +22224,9 @@ button:hover:not(:disabled) .icon-settings-gear {
 .manga-studio-toggle button:disabled { cursor: default; }
 
 .manga-studio-gallery {
-  flex: 1 1 auto;
-  min-height: 150px;
+  /* Gives way first in a short sidebar, so the Make button stays in view. */
+  flex: 1 1 0;
+  min-height: 96px;
   overflow-y: auto;
   border-radius: 12px;
   background: var(--ms-bg);
@@ -22467,3 +22476,6 @@ button:hover:not(:disabled) .icon-settings-gear {
 .manga-studio-range select option { background: var(--ms-card); }
 .manga-studio-range-sep { color: var(--ms-muted); }
 .manga-studio-range-note { margin-left: auto; color: #f5c84c; white-space: nowrap; }
+
+.gemini-router-overlay { position: fixed; inset: 0; z-index: 1300; }
+.gemini-router-loading { display: flex; align-items: center; justify-content: center; gap: 12px; height: 100%; color: var(--text); background: #0d1122; }

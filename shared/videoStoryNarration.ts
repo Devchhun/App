@@ -230,6 +230,9 @@ export const VIDEO_STORY_NARRATION_IPC = {
   hasApiKey: 'video-story-narration:has-api-key',
   setApiKey: 'video-story-narration:set-api-key',
   clearApiKey: 'video-story-narration:clear-api-key',
+  checkApiKeys: 'video-story-narration:check-api-keys',
+  routerStatus: 'video-story-narration:router-status',
+  testRouterKeys: 'video-story-narration:test-router-keys',
   analyze: 'video-story-narration:analyze',
   /** Step 1 of the story-first recap: the whole video -> StoryOutline. */
   buildOutline: 'video-story-narration:build-outline',
